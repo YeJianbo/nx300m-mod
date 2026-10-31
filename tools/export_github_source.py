@@ -212,6 +212,12 @@ def main() -> int:
             'docs/repository/project.example.json': 'project.example.json',
             'docs/repository/APP_README.md': 'mod/nxconnect/README.md',
             'docs/repository/DELIVERY.md': 'docs/DELIVERY.md',
+            'docs/repository/INSTALL.md': 'docs/INSTALL.md',
+            'docs/repository/MFW_SERVICES.md': 'docs/MFW_SERVICES.md',
+            'docs/repository/NXCONNECT.md': 'docs/NXCONNECT.md',
+            'docs/repository/QUICKSHARE.md': 'docs/QUICKSHARE.md',
+            'docs/repository/LOOKS.md': 'docs/LOOKS.md',
+            'docs/repository/MFW_EXPOSURE_TEST.md': 'docs/MFW_EXPOSURE_TEST.md',
         }.items():
             (target / destination).write_text(sanitize((ROOT/source).read_text('utf-8'), identifiers), encoding='utf-8', newline='\n')
         # Templates have been placed at their final paths; avoid duplicate copies.
