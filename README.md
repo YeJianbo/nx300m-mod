@@ -1,57 +1,83 @@
 # NX300M Mod / NXConnect
 
-三星 NX300M 的相机端 Mod、Android 客户端，以及原厂 ARM 程序运行与逆向研究工具。
+为三星 NX300M 增加机内 LUT、手机相册与遥控、拍摄参数扩展和 Quick Share 分享。相机端通过 NX300M 1.15 / MFW 的脚本入口加载，手机端基于 NXConnectForNX500 适配。
 
-## 项目组成
+## 我们改了什么
+
+### 相机端
+
+- **机内 LUT**：在 RAM 中挂接原厂 LUT 更新和写表入口，把自定义表交给原厂 ISP；支持 0–100% 强度、换表、原厂恢复和状态读回。
+- **LUT 转换**：标准 `.cube` 转为 NX300M 的 9³、10 bit D4 表，并为 sRGB 风格生成原厂组合表；保留源文件、色彩空间及来源信息。
+- **拍摄设置**：接入 ISO 步长、扩展 ISO、Auto ISO 上限、最快快门限制、拨盘锁，以及 Picture Wizard、RGB 和配方参数接口。
+- **相册服务**：同名 RAW＋JPEG 合并显示，提取内嵌缩略图和预览，提供原文件下载与分享入口。
+- **Quick Share**：接入 rquickshare 核心，增加相册文件交接、设备选择、PIN、进度和取消；当前通过已有 IP 网络传输。
+- **启动与菜单**：整合 SD 启动、RAM 服务运行、单实例启停、按键入口和分段性能计时。
+- **手动镜头**：增加无线入口镜头检查的 RAM 补丁，以及电子镜头状态和镜头校正更新链的诊断工具。
+
+### Android App
+
+当前版本 **0.20.29 / 77**。
+
+- **界面重做**：采用 One UI 8.5 / 9 风格，统一折叠标题、浮动栏、底部弹框、详情排版、图标、明暗主题和页面过渡。
+- **连接**：增加 NX300M 服务识别、自动发现、手动地址、WLAN 连接、NFC 配对入口和断线状态更新。
+- **相册**：照片网格、批量选择、大图预览、缩略图条、上滑详情、RAW＋JPEG 配对、下载和分享。
+- **照片信息**：编辑镜头预设、镜头型号和等效焦距，导出时写入 JPEG／兼容 SRW 副本。
+- **遥控**：接入原厂 Remote Viewfinder 实时画面、对焦和快门协议，以及 Mod 屏幕镜像、MENU、方向键和 OK 操作。
+- **相机设置与 Mod 管理**：集中管理曝光、配方、色彩参数、LUT 和启动配置，读取模块状态，检查本地 Mod 安装包与固件文件。
+- **LUT 库**：选择相机已部署 LUT、调整强度、恢复原厂；手机端支持 cube 批量导入、重命名、排序、导出和删除。
+
+详细实现和待办见 [当前进展](docs/DELIVERY.md)。
+
+## LUT 怎么工作
+
+```text
+.cube / 风格数据 → D4 原生表 → App／机身选择 → RAM Hook
+                                           ↓
+                           原厂写表函数 → ISP → JPEG
+```
+
+效果在原厂 JPEG 编码前进入成像链。转换、加载与实拍校色分别维护，见 [LUT 模块](docs/LUT_MOD.md) 和 [校色流程](docs/LUT_CALIBRATION.md)。
+
+## 目录
 
 | 目录 | 内容 |
 | --- | --- |
-| `mod/nxconnect/` | NXConnect Android 客户端：相册、连接、遥控、相机设置、LUT 库管理 |
-| `mod/metol/` | Metol 菜单适配、统一遥控服务及 LUT / 配方后端 |
-| `mod/quickshare/` | 基于 rquickshare 的无界面传输核心与相机命令行接口 |
-| `mod/deployment/` | SD 卡启动、服务启停和菜单入口脚本 |
-| `runtime/` | ARM 运行时适配、RAM LUT 加载器、诊断和实验性硬件接口 |
-| `tools/` | 构建、固件只读解析、模拟器、部署及校色工具 |
-| `docs/` | 功能边界、接口、逆向证据和安装研究 |
-| `looks/` | 自制 Hard Mono 测试风格；其他风格数据需自行提供 |
+| `mod/nxconnect/` | Android App |
+| `mod/metol/` | Metol 菜单适配、遥控服务与 LUT／配方后端 |
+| `mod/quickshare/` | Quick Share 核心与相机 CLI |
+| `mod/deployment/` | 启动、启停和菜单脚本 |
+| `runtime/` | ARM 适配、RAM 加载器和硬件接口研究 |
+| `tools/` | 构建、模拟器、固件分析、部署及色彩转换 |
+| `docs/` | 接口、实现和逆向记录 |
+| `looks/` | 自制 Hard Mono；其他风格通过导入工具生成 |
 
-## 当前状态
+## 构建
 
-NXConnect 为 **0.20.29 / 77**。App 提供相机 LUT 选择与强度设置，以及手机本地 cube 的导入、重命名、排序、导出和删除。手机本地导入尚不等于上传安装到相机。
-
-相机端已有免刷机 RAM LUT 加载实现。原厂取景、成片 JPEG、RAW、遥控拍摄是不同验证范围；不能以接口返回成功或模拟器通过代替实拍效果。遥控快门断链及部分机身菜单显示问题仍需继续验证。
-
-模拟器运行原厂 ARM 用户态程序，硬件接口包含替代实现和显式回放输入，不能保证完整 ISP 等效、实体机开机或刷机安全。安装说明和历史实验仅供开发参考，仓库不提供可直接刷写的固件。
-
-## Android 构建
-
-需要 JDK 17、Android SDK 35；Gradle Wrapper 随源码保留。
+Android 需要 JDK 17 和 Android SDK 35：
 
 ```sh
 cd mod/nxconnect/NXConnect
 ./gradlew :app:assembleDebug
 ```
 
-Windows 使用 `gradlew.bat`。本地 SDK 路径写在该目录的 `local.properties`，不要提交。正式签名材料自行生成；仓库没有发布密钥或口令。
+Windows 使用 `gradlew.bat`。SDK 路径配置在 `local.properties`，发布签名通过本地 `keystore.properties` 配置。
 
-## ARM / 模拟器开发
+ARM／模拟器使用 Conda：
 
 ```sh
 conda env create -f environment.yml
 conda activate nx300m-mod
 ```
 
-复制 `project.example.json` 为 `project.local.json`，配置自行获取的 NX300M 1.15 原厂 rootfs 和匹配 SDK。ARM 构建另需 Clang/LLD 或对应交叉工具链；模拟器还需 Linux/WSL、QEMU 和 X11/Xvfb。各工具的输入和依赖见相关文档。
+复制 `project.example.json` 为 `project.local.json`，配置 NX300M 1.15 rootfs 和匹配 SDK。ARM 构建使用 Clang/LLD 或交叉工具链；模拟器使用 Linux/WSL、QEMU 和 X11/Xvfb，执行原厂 ARM 程序并提供硬件替代接口及回放输入。
 
-- [功能与部署边界](docs/DELIVERY.md)
+## 文档与来源
+
+- [当前进展与待办](docs/DELIVERY.md)
 - [LUT 模块](docs/LUT_MOD.md) / [App LUT 库](docs/NXCONNECT_LUT_LIBRARY.md)
-- [遥控服务](docs/REMOTE.md) / [Quick Share](docs/QUICKSHARE.md)
-- [菜单性能](docs/MENU_PERFORMANCE.md)
-- [手动镜头校正调查](docs/MANUAL_LENS_CS_RAM.md)
-- [参考项目源码核对](docs/NX300_UPSTREAM_LUT_REVIEW.md)
+- [遥控与相册](docs/REMOTE.md) / [Quick Share](docs/QUICKSHARE.md)
+- [菜单性能](docs/MENU_PERFORMANCE.md) / [手动镜头校正](docs/MANUAL_LENS_CS_RAM.md)
+- [安装与启动](docs/INSTALL.md) / [ARM VM](docs/ARM_VM.md)
+- [第三方来源与许可](THIRD_PARTY.md) / [源码与素材范围](SOURCE_SCOPE.md)
 
-## 源码范围与许可
-
-本仓库保存经过筛选的源码快照，不包含个人照片、相机固件、rootfs、内存转储、Android 签名材料、个人 Lightroom 配置及旧 Git 历史。缺失的专有依赖必须自行合法获取；依赖本地数据的研究工具不能在空仓库中直接运行。
-
-各组件保留自己的许可证和作者署名，见 [THIRD_PARTY.md](THIRD_PARTY.md)。尚未统一选择根目录原创代码的公开许可证，不能把本仓库整体视为已按单一许可证发布。具体排除项和公开前剩余事项见 [SOURCE_SCOPE.md](SOURCE_SCOPE.md)。
+各组件沿用所在目录的 LICENSE 和 NOTICE；项目原创部分的公开许可证待确定。

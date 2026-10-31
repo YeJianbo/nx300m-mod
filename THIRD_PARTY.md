@@ -1,6 +1,6 @@
 # 第三方来源与许可
 
-各目录的 LICENSE、NOTICE 和源码头部声明继续有效；本文件不替代或扩大它们。
+本项目使用的组件、来源和许可如下，各目录保留 LICENSE、NOTICE 与源码署名。
 
 | 组件 | 来源 | 许可与修改 |
 | --- | --- | --- |
@@ -13,8 +13,7 @@
 
 Nuklear 相关声明见其源文件及 Metol 上游。Cargo / Gradle 依赖按各自许可证获取，不随本仓库打包依赖缓存。
 
-参考项目 `Akira144/nx300-lut`、`blodburn/new_nx300m` 在本次审计快照中均没有明确开源许可证；本仓库仅保留参考结论和链接，没有复制其实现。
 
 Samsung 固件、SDK、工厂标定、Adobe / 第三方相机配置及由其导出的风格数据不在源码快照中。App 中相机产品图仅用于说明兼容机型，原始权利不因放入仓库而改变，公开前需另核实图片授权或换成自绘素材。
 
-Metol 继承的历史血缘与待核实事项继续见 `mod/metol/ATTRIBUTION.md`；不能以本次整理视为全部第三方授权已完成。
+Metol 历史血缘见 `mod/metol/ATTRIBUTION.md`。项目公开准备事项集中记录在 [SOURCE_SCOPE.md](SOURCE_SCOPE.md)。

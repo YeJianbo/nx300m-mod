@@ -52,7 +52,8 @@ def allowed(p: Path) -> bool:
         return True
     if rel.parts[0] == 'tools' and (p.suffix not in {'.py', '.c', '.sh', '.ps1'} or p.name in SKIP_TOOLS):
         return False
-    if rel.as_posix() in {'docs/DELIVERY.md', 'mod/nxconnect/tools/publish.ps1'}:
+    if rel.as_posix() in {'docs/DELIVERY.md', 'docs/NX300_UPSTREAM_LUT_REVIEW.md',
+                          'mod/nxconnect/tools/publish.ps1'}:
         return False
     if p.name in {'README.md', '.gitignore', '.gitattributes'}:
         # Use current integration descriptions instead of the old app landing page.
