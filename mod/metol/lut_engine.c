@@ -46,13 +46,13 @@ static int udd_base(int pid,unsigned long *base) {
     }
     fclose(maps);return found;
 }
-static int stage_state(int set) {
+static int stage_state(void) {
     int pid=camera_pid_scan();
     if (!pid) { puts("REJECT original camera process not found");return 3; }
     unsigned long udd=0;
     if (!udd_base(pid,&udd)) { puts("REJECT libudd mapping not found");return 3; }
     char path[64];snprintf(path,sizeof path,"/proc/%d/mem",pid);
-    int fd=open(path,set?O_RDWR:O_RDONLY);
+    int fd=open(path,O_RDONLY);
     if (fd<0) { printf("REJECT camera memory open failed errno=%d\n",errno);return 3; }
     unsigned int regs=0,control=0,location=0;
     if (pread(fd,&regs,UDD_REG_BASE_SIZE,(off_t)(udd+UDD_REG_BASE_OFFSET))!=UDD_REG_BASE_SIZE || !regs) {
@@ -61,13 +61,6 @@ static int stage_state(int set) {
     location=regs+IPCS_LUT_ENABLE;
     if (pread(fd,&control,sizeof control,(off_t)location)!=sizeof control) {
         printf("REJECT stage register unreadable at %08lx errno=%d\n",(unsigned long)location,errno);close(fd);return 3;
-    }
-    if (set) {
-        unsigned int updated=set>0?(control|(1u<<IPCS_LUT_ENABLE_BIT)):(control&~(1u<<IPCS_LUT_ENABLE_BIT));
-        if (pwrite(fd,&updated,sizeof updated,(off_t)location)!=sizeof updated) {
-            printf("REJECT stage register write failed errno=%d\n",errno);close(fd);return 3;
-        }
-        if (pread(fd,&control,sizeof control,(off_t)location)!=sizeof control) {close(fd);return 3;}
     }
     close(fd);
     printf("{\"camera_pid\":%d,\"regs\":\"0x%08x\",\"control\":\"0x%08x\",\"lut_stage_on\":%s}\n",
@@ -118,9 +111,7 @@ static int action(int argc,char **argv) {
 int main(int argc,char **argv) {
     char root[PATH_MAX];if (!nx_lut_root(root)) { fputs("Invalid or missing NX300M_MOD_ROOT\n",stderr);return 2; }
     if (argc>=2 && !strcmp(argv[1],"ready")) return action(argc,argv);
-    if (argc>=2 && !strcmp(argv[1],"stage-state")) return stage_state(0);
-    if (argc>=2 && !strcmp(argv[1],"stage-on")) return stage_state(1);
-    if (argc>=2 && !strcmp(argv[1],"stage-off")) return stage_state(-1);
+    if (argc>=2 && !strcmp(argv[1],"stage-state")) return stage_state();
     /* Panel and HTTP requests share the same private runtime state. */
     int lock=nx_lut_lock(0,1);if (lock<0) return 4;
     int result=action(argc,argv);close(lock);return result;

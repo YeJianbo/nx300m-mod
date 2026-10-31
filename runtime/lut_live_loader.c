@@ -77,6 +77,14 @@ static int dynamic_abi(struct image *iq) {
             vfound++;}}
     uint32_t value;return found==1 && vfound==1 && file_vaddr(iq,&value,4,0x3bfd08) && value==0;
 }
+static int stock_writer_slot(int mem,const struct image *iq,const struct image *udd,uint32_t value) {
+    if(value==udd->bias+0x955c8) return 1;
+    /* The untouched JUMP_SLOT is rebased PLT0 until the first stock call.
+     * Admit that exact original code, then call the resolved UDD function
+     * from the adapter; PLT0 itself requires the caller's PLT frame. */
+    return value==iq->bias+STOCK_LUT_RESOLVER &&
+        code_check(mem,value,stock_lut_resolver);
+}
 struct live_state {
     uint32_t magic,abi,pid;unsigned long long start;
     uint32_t iq,udd,region,length,update,ipcs,config,contexts,stride,count;
@@ -86,15 +94,15 @@ static int state_path(unsigned pid,char *path,unsigned size) {
     if((unsigned long)fs.f_type!=0x01021994UL && (unsigned long)fs.f_type!=0x858458f6UL)return 0;
     return snprintf(path,size,"/var/run/nx300m-lut-live-%u.state",pid)>0;
 }
-static int read_blob(const char *path,unsigned char **bytes,struct nx_lut_ram_header *h) {
+static int read_blob(const char *path,unsigned char **bytes,struct nx_lut_ram_header *h,int known) {
     int fd=open(path,O_RDONLY|O_CLOEXEC);if(fd<0)return 0;
     struct stat64 st;int ok=!__fxstat64(3,fd,&st)&&S_ISREG(st.st_mode)&&st.st_size>=64&&st.st_size<=1024*1024;
     if(ok)ok=read_exact(fd,h,sizeof *h,0);
-    if(ok)ok=h->magic==NX_LUT_RAM_MAGIC&&h->abi==NX_LUT_RAM_ABI&&h->blob_size==(unsigned)st.st_size&&h->data_offset>=4096&&
+    if(ok)ok=h->magic==NX_LUT_RAM_MAGIC&&h->abi==NX_LUT_RAM_ABI&&(known||h->reserved[3]==NX_LUT_BLOB_BUILD)&&h->blob_size==(unsigned)st.st_size&&h->data_offset>=4096&&
         h->data_offset%4096==0&&h->data_offset<=h->blob_size&&h->code_size==h->data_offset&&h->data_size>0&&
         h->data_size==h->blob_size-h->data_offset&&h->config_size<=h->data_size&&
-        h->config_size==sizeof(struct nx_lut_ram_config)&&h->config_offset>=h->data_offset&&h->config_offset%4==0&&
-        h->config_offset<=h->blob_size-sizeof(struct nx_lut_ram_config)&&h->update_entry>=64&&h->update_entry<h->code_size&&
+        (h->config_size==sizeof(struct nx_lut_ram_config)||(known&&h->config_size==200))&&h->config_offset>=h->data_offset&&h->config_offset%4==0&&
+        h->config_offset<=h->blob_size-h->config_size&&h->update_entry>=64&&h->update_entry<h->code_size&&
         h->ipcs_entry>=64&&h->ipcs_entry<h->code_size&&!(h->update_entry%4)&&!(h->ipcs_entry%4)&&
         h->reserved[0]>=h->data_offset&&h->reserved[1]>=4&&h->reserved[1]%4==0&&h->reserved[2]>0&&h->reserved[2]<=32&&
         h->reserved[0]<=h->data_offset+h->data_size&&h->reserved[1]*h->reserved[2]<=h->data_offset+h->data_size-h->reserved[0];
@@ -177,9 +185,11 @@ static int invalidate_lut_cache(int mem,unsigned tid,uint32_t iq,uint32_t *cache
 static int mutate(unsigned pid,const char *command,const char *blob_path,const char *root,int fixture) {
     char path[128];if(!state_path(pid,path,sizeof path)){fprintf(stderr,"State directory must be tmpfs/ramfs; no target changed.\n");return 3;}
     struct live_state state;memset(&state,0,sizeof state);
-    int restoring=!strcmp(command,"restore"),existing=0;
-    if(restoring||access(path,F_OK)==0){
-        if(!read_state(path,pid,&state)){fprintf(stderr,"Invalid existing live state; refusing mutation.\n");return 3;}
+    int known=!strcmp(command,"restore-known"),restoring=!strcmp(command,"restore")||known,existing=0;
+    if(!known&&(restoring||access(path,F_OK)==0)){
+        if(!read_state(path,pid,&state)){
+            fprintf(stderr,"Invalid existing live state; refusing mutation.\n");return 3;
+        }
         existing=1;
     }
     if(!attach_all(pid)){int detached=detach_all();clear_markers(pid);fprintf(stderr,"Thread admission/attach failed; detached=%d; no slot write.\n",detached);return 3;}
@@ -212,9 +222,36 @@ static int mutate(unsigned pid,const char *command,const char *blob_path,const c
     struct mapping *ma=cover(slot_a,4,1,0),*mb=cover(slot_b,4,1,0);
     if(!ma||!mb||ma->inode!=iq.first->inode||mb->inode!=iq.first->inode||!read_exact(mem,&a,4,slot_a)||!read_exact(mem,&b,4,slot_b))goto done;
     state_path(pid,path,sizeof path);
+    if(known){
+        /* Lost marker files do not establish ownership. An explicitly saved
+         * image must match every immutable resident code byte before we even
+         * disable it. Keep the allocation resident after restoring the slots. */
+        unsigned char *saved=NULL;struct nx_lut_ram_header header;
+        if(!read_blob(blob_path,&saved,&header,1)){
+            fprintf(stderr,"Invalid saved compatibility blob; no target changed.\n");goto done;
+        }
+        uint32_t region=a>=header.update_entry?a-header.update_entry:0;
+        struct mapping *rx=region?cover(region,header.code_size,0,1):NULL;
+        struct mapping *rw=region&&region<=UINT32_MAX-header.blob_size?cover(region+header.data_offset,header.data_size,1,0):NULL;
+        struct nx_lut_ram_config resident;
+        int match=region&&region%4096==0&&rx&&rw&&!rx->inode&&!rw->inode&&
+            !strcmp(rx->perm,"r-xp")&&!strcmp(rw->perm,"rw-p")&&b==region+header.ipcs_entry&&
+            bytes_match(mem,region,saved,header.code_size)&&
+            read_exact(mem,&resident,sizeof resident,region+header.config_offset)&&
+            resident.abi==NX_LUT_RAM_ABI&&resident.size==header.config_size&&resident.enabled<=1&&
+            resident.original_update==iq.bias+0x350dc0&&resident.original_reset==iq.bias+0x350e0c&&
+            resident.original_ipcs==udd.bias+0x955c8&&resident.lut_vptr==iq.bias+0x3bfd08&&
+            resident.factory_red==iq.bias+STOCK_FACTORY_RED&&memchr(resident.root,0,sizeof resident.root)&&!strcmp(resident.root,root);
+        free(saved);
+        if(!match){fprintf(stderr,"Saved blob does not match both resident hooks, code and config; no target changed.\n");goto done;}
+        state.start=start;state.iq=iq.bias;state.udd=udd.bias;state.region=region;state.length=header.blob_size;
+        state.update=region+header.update_entry;state.ipcs=region+header.ipcs_entry;
+        state.config=region+header.config_offset;state.contexts=region+header.reserved[0];
+        state.stride=header.reserved[1];state.count=header.reserved[2];
+    }
     if(restoring){
         if(state.start!=start||state.iq!=iq.bias||state.udd!=udd.bias||
-           (a!=state.update&&a!=iq.bias+0x350dc0)||(b!=state.ipcs&&b!=udd.bias+0x955c8)||
+           (a!=state.update&&a!=iq.bias+0x350dc0)||(b!=state.ipcs&&!stock_writer_slot(mem,&iq,&udd,b))||
            !cover(state.config,sizeof(struct nx_lut_ram_config),1,0)||!cover(state.update,4,0,1)||!cover(state.ipcs,4,0,1))goto done;
         uint32_t disabled=0;if(!poke(pid,state.config+28,&disabled,4))goto done;
         /* Stop new contexts first. Existing wrapper contexts drain while all
@@ -234,18 +271,18 @@ static int mutate(unsigned pid,const char *command,const char *blob_path,const c
     }
     stage="blob-admission";
     unsigned char *blob=NULL;struct nx_lut_ram_header h;
-    if(!read_blob(blob_path,&blob,&h)){fprintf(stderr,"Invalid RAM blob/header.\n");goto done;}
+    if(!read_blob(blob_path,&blob,&h,0)){fprintf(stderr,"Invalid RAM blob/header.\n");goto done;}
     struct nx_lut_ram_config cfg;memset(&cfg,0,sizeof cfg);cfg.abi=1;cfg.size=sizeof cfg;
     cfg.original_update=iq.bias+0x350dc0;cfg.original_reset=iq.bias+0x350e0c;cfg.original_ipcs=udd.bias+0x955c8;
-    cfg.lut_vptr=iq.bias+0x3bfd08;cfg.factory_red=iq.bias+STOCK_FACTORY_RED;cfg.enabled=1;strcpy(cfg.root,root);cfg.build=NX_LUT_BLOB_BUILD;
+    cfg.lut_vptr=iq.bias+0x3bfd08;cfg.factory_red=iq.bias+STOCK_FACTORY_RED;cfg.enabled=1;strcpy(cfg.root,root);
     if(existing){
         stage="existing-RAM-image-admission";struct nx_lut_ram_config installed;
         int same=reusable_image(mem,&state,&h,blob,&cfg,start,iq.bias,udd.bias,&installed);
         free(blob);blob=NULL;
-        if(!same){fprintf(stderr,"Existing RAM image, identity, root or code differs; refusing replacement.\n");goto done;}
+        if(!same){fprintf(stderr,"Existing RAM image, identity, root or code differs; validated restore required before upgrade.\n");rc=7;goto done;}
         mapping_reused=1;
         if(a==state.update&&b==state.ipcs&&installed.enabled==1){already_installed=1;rc=0;goto done;}
-        if(a!=iq.bias+0x350dc0||b!=udd.bias+0x955c8||installed.enabled!=0){
+        if(a!=iq.bias+0x350dc0||!stock_writer_slot(mem,&iq,&udd,b)||installed.enabled!=0){
             fprintf(stderr,"Existing hooks are not fully installed or fully restored/disabled; refusing reapply.\n");goto done;}
         for(unsigned i=0;i<state.count;i++){uint32_t tid;
             if(!read_exact(mem,&tid,4,state.contexts+i*state.stride))goto done;
@@ -256,26 +293,9 @@ static int mutate(unsigned pid,const char *command,const char *blob_path,const c
         if(!read_exact(mem,&actual,4,state.config+28)||actual!=enabled)goto done;
         goto commit_slots;
     }
-    if(a!=iq.bias+0x350dc0||b!=udd.bias+0x955c8){
-        /* A power cycle with snapshot restore resurrects the camera process
-         * with hooks still installed while /var/run (and the state file) is
-         * wiped. Without state the mapping cannot be adopted, but both slots
-         * pointing into one anonymous executable mapping identify our own
-         * orphaned blob: invalidate the node cache, restore the stock slots
-         * and apply fresh. Anything else is refused unchanged. */
-        struct mapping *oa=cover(a,4,1,0),*ob=cover(b,4,1,0);
-        /* The snapshot-restored mapping can come back without PROT_EXEC;
-         * anonymity (no file inode) is what identifies our own blob. */
-        if(!oa||!ob||oa->lo!=ob->lo||oa->hi!=ob->hi||oa->inode||ob->inode){
-            fprintf(stderr,"Refusing: slots hold unrecognized values with no live state; restore or power-cycle cleanly.\n");goto done;}
-        uint32_t cache=0;
-        if(!invalidate_lut_cache(mem,pid,iq.bias,&cache)){
-            fprintf(stderr,"Orphan recovery: stock LUT node chain could not be validated; retry.\n");goto done;}
-        uint32_t stock_a=iq.bias+0x350dc0,stock_b=udd.bias+0x955c8;
-        if(!poke(pid,slot_a,&stock_a,4)||!poke(pid,slot_b,&stock_b,4))goto done;
-        uint32_t verify_a,verify_b;
-        if(!read_exact(mem,&verify_a,4,slot_a)||!read_exact(mem,&verify_b,4,slot_b)||verify_a!=stock_a||verify_b!=stock_b)goto done;
-        fprintf(stderr,"Orphaned hook installation neutralized; applying fresh.\n");
+    if(a!=iq.bias+0x350dc0||!stock_writer_slot(mem,&iq,&udd,b)){
+        fprintf(stderr,"Unrecognized resident hooks without a valid live state: update=%08x writer=%08x; refusing replacement.\n",a,b);
+        free(blob);goto done;
     }
     memcpy(blob+h.config_offset,&cfg,sizeof cfg);
     uint32_t size=(h.data_offset+h.data_size+4095)&~4095U,args[6]={0,size,3,0x22,0xffffffff,0},region;
@@ -328,19 +348,19 @@ done:
     if(libc.fd>=0)close(libc.fd);
     if(transaction_poisoned){clear_markers(pid);fprintf(stderr,"FATAL: context recovery incomplete; no success claimed.\n");return 5;}
     if(!detach_all()){clear_markers(pid);fprintf(stderr,"FATAL: not all TIDs detached.\n");return 5;}
+    if(known&&!rc){state_path(pid,path,sizeof path);unlink(path);}
     if(restoring||rc)clear_markers(pid);
     if(restoring&&!rc)printf("{\"command\":\"restore\",\"pid\":%u,\"restored\":true,\"mapping_retained\":true,\"cache_invalidated\":%s,\"ready\":false,\"image_verified\":false}\n",pid,restore_cache?"true":"false");
     if(!restoring&&!rc){
         if(!publish_markers(pid,&state,root)){clear_markers(pid);fprintf(stderr,"Hooks installed, marker publication failed; restore required.\n");return 6;}
         printf("{\"command\":\"apply\",\"pid\":%u,\"hooks_installed\":true,\"region\":%u,\"mapping_reused\":%s,\"already_installed\":%s,\"ready\":true,\"image_verified\":false}\n",pid,state.region,mapping_reused?"true":"false",already_installed?"true":"false");
-        /* The engine's ready gate requires this file to carry the current
-         * build. The blob rewrites it with live per-shot state on the first
-         * channel triplet; until then the install itself is the evidence. */
+        /* Initial telemetry is optional. Readiness checks the installed code
+         * header and bindings, never this mutable per-shot status file. */
         FILE *status=fopen("/var/run/nx300m-lut-status.json","w");
         if(status){
             fprintf(status,"{\"command\":\"apply\",\"pid\":%u,\"hooks_installed\":true,\"ready\":true,\"build\":%u,\"loader\":\"ram-blob\"}",pid,NX_LUT_BLOB_BUILD);
             fclose(status);
-        } else fprintf(stderr,"Status publication failed errno=%d; the engine may report not-ready until the first reload.\n",errno);}
+        } else fprintf(stderr,"Initial telemetry publication failed errno=%d; readiness still uses live bindings.\n",errno);}
     if(rc==3)fprintf(stderr,"Admission/syscall/patch failed at %s (errno=%d); no successful installation claimed.\n",stage,errno);
     return rc;
 }
@@ -390,7 +410,7 @@ static int inspect(unsigned pid) {
         struct mapping *a=cover(iq.bias+0x3bfd08,4,1,0),*b=cover(iq.bias+0x3c2ab4,4,1,0);
         slots=a&&b&&a->inode==iq.first->inode&&b->inode==iq.first->inode&&
             read_exact(mem,&slot_update,4,iq.bias+0x3bfd08)&&read_exact(mem,&slot_lut,4,iq.bias+0x3c2ab4)&&
-            slot_update==iq.bias+0x350dc0&&slot_lut==udd.bias+0x955c8;
+            slot_update==iq.bias+0x350dc0&&stock_writer_slot(mem,&iq,&udd,slot_lut);
         char saved[128];if(state_path(pid,saved,sizeof saved)){
             struct live_state s;int fd=open(saved,O_RDONLY|O_CLOEXEC);int got=fd>=0&&read(fd,&s,sizeof s)==sizeof s;
             if(fd>=0)close(fd);
@@ -427,7 +447,7 @@ static int inspect(unsigned pid) {
 int main(int argc,char **argv) {
     const char *command="status";unsigned pid=0;int next=1;
     if(argc>1&&argv[1][0]!='-'){command=argv[1];next=2;}
-    if(strcmp(command,"status")&&strcmp(command,"apply")&&strcmp(command,"restore")){fprintf(stderr,"usage: lut_live_loader.arm [status|apply|restore] --pid PID\n");return 64;}
+    if(strcmp(command,"status")&&strcmp(command,"apply")&&strcmp(command,"restore")&&strcmp(command,"restore-known")){fprintf(stderr,"usage: lut_live_loader.arm [status|apply|restore|restore-known] --pid PID\n");return 64;}
     const char *blob=NULL,*root=NULL;int fixture=0;
     for(int i=next;i<argc;i++){
         if(!strcmp(argv[i],"--fixture")){fixture=1;continue;}
@@ -445,5 +465,5 @@ int main(int argc,char **argv) {
     for(const char *p=root;*p;p++)if(!((*p>='a'&&*p<='z')||(*p>='A'&&*p<='Z')||(*p>='0'&&*p<='9')||*p=='/'||*p=='_'||*p=='-'||*p=='.'))goto usage;
     return supervised_mutate(pid,command,blob,root,fixture);
 usage:
-    fprintf(stderr,"usage: lut_live_loader.arm [status|apply|restore] --pid PID [--blob FILE --root DIR] [--fixture]\n");return 64;
+    fprintf(stderr,"usage: lut_live_loader.arm [status|apply|restore|restore-known] --pid PID [--blob FILE --root DIR] [--fixture]\n");return 64;
 }

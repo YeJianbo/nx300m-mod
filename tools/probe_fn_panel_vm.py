@@ -178,6 +178,9 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
             relative = name.removeprefix('nx300m-mod/')
             if relative.startswith(('bin/', 'fn-panel/')) or relative in ('mfw-panel-actions.sh','common.sh'):
                 entries['perf/mod/'+relative] = (0o100755, archive.read(name))
+    # The zip's binaries lag the source tree; the lock-tag work only exists in
+    # the current build, so the maintained UI must be staged from outputs.
+    entries['perf/mod/bin/nxui.arm'] = (0o100755,(PROJECT/'outputs/metol/nxui.arm').read_bytes())
     # Launcher scripts move with the source tree; the deployment zip can lag.
     entries['perf/mod/mfw-panel.sh'] = (0o100755,(PROJECT/'mod/deployment/mfw/fn-panel.sh').read_bytes().replace(b'\r\n',b'\n'))
     entries['perf/mod/fn-panel/mfw-panel-actions.sh'] = (0o100755,(PROJECT/'mod/deployment/mfw/fn-panel-actions.sh').read_bytes().replace(b'\r\n',b'\n'))

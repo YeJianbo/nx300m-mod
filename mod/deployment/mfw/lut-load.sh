@@ -35,6 +35,8 @@ runtime=$(mktemp -d /tmp/nx300m-lut-load.XXXXXX) || fail 'cannot create RAM dire
 kind=$(stat -f -c '%T' "$runtime")
 case $kind in tmpfs|ramfs) ;; *) fail 'temporary directory is not RAM backed' ;; esac
 cleanup() {
+    rm -f "$runtime"/compat/*.bin
+    rmdir "$runtime/compat" 2>/dev/null || :
     rm -f "$runtime/lut_live_loader.arm" "$runtime/lut_ram_blob.bin"
     rmdir "$runtime" 2>/dev/null || :
 }
@@ -44,6 +46,12 @@ for name in bin/lut_live_loader.arm lib/lut_ram_blob.bin; do
     destination=$runtime/${name##*/}
     cp "$CODE_ROOT/$name" "$destination" || fail "copy failed: $name"
     cmp -s "$CODE_ROOT/$name" "$destination" || fail "copy mismatch: $name"
+done
+mkdir "$runtime/compat"
+for saved in "$CODE_ROOT"/lib/lut-compat/*.bin; do
+    [ -f "$saved" ] && [ ! -L "$saved" ] || continue
+    target=$runtime/compat/${saved##*/}
+    cp "$saved" "$target" && cmp -s "$saved" "$target" || fail 'compatibility image copy differs'
 done
 chmod 700 "$runtime/lut_live_loader.arm"
 printf 'loader_runtime=%s\nlut_data_root=%s\n' "$runtime" "$ROOT"
@@ -56,21 +64,36 @@ run_loader() {
 }
 loader_exit=0
 run_loader || loader_exit=$?
-# A refused reapply usually means a stale or half-restored resident blob from
-# an earlier build. Restore it, then try once more; power-off is never needed.
-if [ "$operation" = apply ] && [ "$loader_exit" -ne 0 ] && [ "$loader_exit" -ne 4 ] && [ "$loader_exit" -ne 5 ]; then
-    restore_exit=0
-    "$runtime/lut_live_loader.arm" restore --pid "$camera_pid" || restore_exit=$?
-    [ -n "${NX_FN_KEY_LOG:-}" ] && \
-        printf '%s lut-load recovery restore exit=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$restore_exit" \
-            >>"$NX_FN_KEY_LOG" 2>/dev/null
-    # With the hooks neutralized the resident mapping is unreachable. Drop the
-    # state record so the retry installs fresh instead of adopting a mapping
-    # whose layout may belong to an older blob build.
-    [ "$restore_exit" -eq 0 ] || exit 1
-    rm -f "/var/run/nx300m-lut-live-$camera_pid.state"
-    loader_exit=0
-    run_loader || loader_exit=$?
+# Upgrade a valid old installation, or recognize an orphan only by an exact
+# match to a saved immutable code image. Never overwrite unidentified hooks.
+if [ "$operation" = apply ] && { [ "$loader_exit" -eq 3 ] || [ "$loader_exit" -eq 7 ]; }; then
+    recovered=0
+    if [ "$loader_exit" -eq 7 ]; then
+        restore_exit=0
+        "$runtime/lut_live_loader.arm" restore --pid "$camera_pid" || restore_exit=$?
+        case $restore_exit in
+            0) recovered=1; rm -f "/var/run/nx300m-lut-live-$camera_pid.state" ;;
+            4|5) exit "$restore_exit" ;;
+        esac
+    fi
+    if [ "$recovered" -eq 0 ]; then
+        for saved in "$runtime/lut_ram_blob.bin" "$runtime"/compat/*.bin; do
+            [ -f "$saved" ] || continue
+            restore_exit=0
+            "$runtime/lut_live_loader.arm" restore-known --pid "$camera_pid" --blob "$saved" --root "$ROOT" || restore_exit=$?
+            case $restore_exit in
+                0) recovered=1; break ;;
+                4|5) exit "$restore_exit" ;;
+            esac
+        done
+    fi
+    if [ "$recovered" -eq 1 ]; then
+        loader_exit=0
+        run_loader || loader_exit=$?
+    else
+        printf 'Resident hooks did not match saved code; read-only status follows.\n' >&2
+        "$runtime/lut_live_loader.arm" status --pid "$camera_pid" || :
+    fi
 fi
 # Result evidence must survive power-off for the physical camera loop.
 [ -n "${NX_FN_KEY_LOG:-}" ] && \

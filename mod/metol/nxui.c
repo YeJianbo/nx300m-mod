@@ -850,11 +850,17 @@ int main(int argc, char **argv) {
         /* Acquire both existing locks in-process. Neither backend exec nor a
          * cancelled status reader should retain a copy of the launcher lock. */
         int launcher_lock = open(launch_path, O_CREAT|O_WRONLY, 0600);
-        if (launcher_lock < 0 || flock(launcher_lock, LOCK_EX|LOCK_NB) != 0) return 3;
+        if (launcher_lock < 0 || flock(launcher_lock, LOCK_EX|LOCK_NB) != 0) {
+            fprintf(stderr,"NXUI launcher lock unavailable path=%s errno=%d\n",launch_path,errno);
+            return 3;
+        }
         fcntl(launcher_lock, F_SETFD, FD_CLOEXEC);
     }
     lockfd = open(ui_path, O_CREAT|O_RDWR, 0600);
-    if (lockfd < 0 || flock(lockfd, LOCK_EX|LOCK_NB) != 0) return 3;
+    if (lockfd < 0 || flock(lockfd, LOCK_EX|LOCK_NB) != 0) {
+        fprintf(stderr,"NXUI ui lock unavailable path=%s errno=%d\n",ui_path,errno);
+        return 3;
+    }
     fcntl(lockfd, F_SETFD, FD_CLOEXEC);
     signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
     signal(SIGALRM, on_display_timeout);

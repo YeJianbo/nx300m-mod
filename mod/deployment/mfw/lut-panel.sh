@@ -44,7 +44,9 @@ awk -v path="$ram_tmp" '
     }
     END {exit !(type=="tmpfs" && options ~ /(^|,)rw(,|$)/ && options !~ /(^|,)noexec(,|$)/)}
 ' /proc/mounts || fail '/tmp must resolve to writable executable tmpfs'
-exec 8>"$ram_tmp/nx300m-panel-launch.lock"
+# The cycle flash runs with NXUI_LOCK_TAG=-flash so it never blocks the real
+# panel a user may open while the flash is still on screen.
+exec 8>"$ram_tmp/nx300m-panel-launch${NXUI_LOCK_TAG:-}.lock"
 flock -n 8 || fail 'a native panel is already open'
 runtime=$(mktemp -d "$ram_tmp/nx300m-lut-panel.XXXXXX") || fail 'cannot allocate RAM panel directory'
 for asset in nxui.arm lut_engine.arm; do
@@ -61,25 +63,15 @@ live=0
 if [ "$force_dry" -eq 0 ] && "$runtime/lut_engine.arm" ready; then
     live=1
 elif [ "$force_dry" -eq 0 ]; then
-    # The adapter is not resident yet. It is a reversible RAM patch into the
-    # running camera (restore undoes it; power loss clears it), and the panel
-    # is useless in browse mode, so load it here instead of failing silently.
+    # Load once, then verify the installed code before enabling changes.
     printf '%s lut panel: adapter not resident, applying\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
         >>"${NX_FN_KEY_LOG:-/dev/null}" 2>/dev/null || :
     # lut-load.sh lives on the SD data root; it stages its own RAM copies.
-    # The first attempt can fail while the camera still holds an orphaned
-    # installation whose slots the stock firmware resets on its next reload,
-    # so retry instead of dropping the user into browse mode.
+    # Admission errors do not improve by repeating the same ptrace operation.
     adapter_applied=0
-    for attempt in 1 2 3; do
-        if [ -r "$ROOT/lut-load.sh" ] && /bin/sh "$ROOT/lut-load.sh" apply; then
-            adapter_applied=1
-            break
-        fi
-        printf '%s lut panel: adapter apply attempt %d failed\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$attempt" \
-            >>"${NX_FN_KEY_LOG:-/dev/null}" 2>/dev/null || :
-        sleep 2
-    done
+    if [ -r "$ROOT/lut-load.sh" ] && /bin/sh "$ROOT/lut-load.sh" apply; then
+        adapter_applied=1
+    fi
     if [ "$adapter_applied" = 1 ]; then
         printf '%s lut panel: adapter applied\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
             >>"${NX_FN_KEY_LOG:-/dev/null}" 2>/dev/null || :

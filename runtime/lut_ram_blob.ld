@@ -5,9 +5,9 @@ SECTIONS {
     LONG(0x4e584c42) LONG(1) LONG(__blob_end) LONG(__data_start)
     LONG(__data_start) LONG(__blob_end - __data_start)
     LONG(nx_lut_ram_update) LONG(nx_lut_ram_ipcs)
-    LONG(nx_lut_ram_config) LONG(200)
+    LONG(nx_lut_ram_config) LONG(196)
     LONG(nx_lut_ram_contexts) LONG(4720) LONG(8)
-    LONG(0) LONG(0) LONG(0)
+    LONG(nx_lut_build_tag) LONG(0) LONG(0)
   }
   .text : { *(.text .text.*) }
   .rodata : { *(.rodata .rodata.*) }

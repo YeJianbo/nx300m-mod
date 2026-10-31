@@ -58,7 +58,7 @@ engine=$ROOT/bin/lut_engine.arm
 if ! NX300M_MOD_ROOT="$ROOT" "$engine" ready >/dev/null 2>&1; then
     note 'lut cycle: adapter not resident, applying'
     status_file=$(mktemp /tmp/nx300m-lut-apply.XXXXXX)
-    ( /bin/sh "$ROOT/lut-load.sh" apply 2>&1; echo $? >"$status_file" ) |
+    ( apply_code=0; /bin/sh "$ROOT/lut-load.sh" apply 2>&1 || apply_code=$?; printf '%s\n' "$apply_code" >"$status_file" ) |
         while IFS= read -r line; do note "lut-load: $line"; done
     apply_status=$(cat "$status_file" 2>/dev/null || echo 1)
     rm -f "$status_file"
@@ -72,6 +72,7 @@ else
     NX300M_MOD_ROOT="$ROOT" "$engine" apply "$next" "$strength" 2>&1 || result=$?
 fi
 note "lut cycle engine exit=$result next=$next"
+[ "$result" -eq 0 ] || exit "$result"
 # Persist the selection so reboots do not silently reset the look to stock.
 mkdir -p "$ROOT/.state" 2>/dev/null || :
 if [ -r /var/run/nx300m-lut-selection ]; then
@@ -81,7 +82,6 @@ else
 fi
 # Show which look is active: flash the panel over the viewfinder briefly.
 # It highlights the current selection and closes itself; best effort only.
-# Flash even after a failed staging so the visible state is never a mystery.
 label=$(awk -F'|' -v k="$next" '$1==k{print $2; exit}' "$ROOT/looks.txt" 2>/dev/null || :)
 [ -n "$label" ] || label=$next
 [ "$next" = stock ] && label='原样'

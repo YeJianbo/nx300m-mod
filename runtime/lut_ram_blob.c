@@ -4,7 +4,6 @@
  * through. Fixed slots fail open when busy; no waiting on stopped threads.
  */
 #include "lut_ram_blob.h"
-#include "lut_ram_blob_build.h"
 typedef unsigned u32;
 typedef unsigned short u16;
 enum { WORDS=730, TOTAL=2190, SLOTS=8, DIRECT=0, COMPOSED=1, TABLE_ERROR=2 };
@@ -88,23 +87,16 @@ static void trace(struct context *s,const char *stage) {
     q=append(temp,path);append(q,".tmp");
     if(!write_file(temp,text,(unsigned)(p-text))) sys3(38,(int)temp,(int)path,0);
 }
-static unsigned unmatched_logged;
-/* Context-less callers (the viewfinder writes tables without our Update
- * wrapper) are passed through untouched. Their evidence must survive power
- * off, so append to the card log next to the rest of the chain evidence.
- * Rate-limited: the viewfinder can write per frame. */
 static void unmatched(u32 tid,unsigned channel,const u16 *source) {
-    if(unmatched_logged>=64) return;
-    char text[192]; char *p=text;
+    if(!tracing()) return;
+    char text[192],path[96],temp[104];char *p=text;
     p=append(p,"{\"context_found\":false,\"writer_tid\":");p=number(p,tid);
     p=append(p,",\"channel\":");p=number(p,channel);
     p=append(p,",\"source_ptr\":");p=number(p,(u32)source);
     p=append(p,",\"forwarded_ptr\":");p=number(p,(u32)source);p=append(p,"}\n");
-    char path[128],temp[136];char *q=append(path,nx_lut_ram_config.root);
-    q=append(q,"/logs/lut-unmatched.log");
+    char *q=append(path,"/var/run/nx300m-lut-unmatched-");q=number(q,tid);append(q,".json");
     q=append(temp,path);append(q,".tmp");
     if(!write_file(temp,text,(unsigned)(p-text))) sys3(38,(int)temp,(int)path,0);
-    unmatched_logged++;
 }
 static int decimal(const char **p,u32 *value) {
     unsigned n=0,v=0;
@@ -184,38 +176,9 @@ static void publish(struct context *s) {
     p=append(p,s->active?"forwarded-to-stock-api":s->composed==TABLE_ERROR?"invalid-or-unreadable-table":"stock");
     p=append(p,"\",\"composition\":\"");
     p=append(p,s->active&&s->composed==COMPOSED?"after-stock-3d-lut":"direct");
-    p=append(p,"\",\"image_verified\":false,\"loader\":\"ram-blob\",\"build\":");p=number(p,NX_LUT_BLOB_BUILD);p=append(p,"}\n");
+    p=append(p,"\",\"image_verified\":false,\"loader\":\"ram-blob\"}\n");
     char *q=append(temp,"/var/run/nx300m-lut-ram-");q=number(q,s->tid);append(q,".tmp");
     if(!write_file(temp,text,(unsigned)(p-text))) sys3(38,(int)temp,(int)"/var/run/nx300m-lut-status.json",0);
-}
-
-/* Viewfinder stage experiment. The preview pipeline never calls the hooked
- * Update/IPCS paths, so the firmware appears to gate the 3D LUT stage off in
- * viewfinder mode (bit 13 of the IPCS control word). While a look is staged,
- * re-arm that bit on every still-path event: if the firmware leaves it set
- * when returning to live view, the preview shows the staged table. Cycling
- * to stock clears the bit again; reboot restores stock regardless. */
-static void stage_follow(struct context *s) {
-    unsigned udd=nx_lut_ram_config.original_ipcs-0x955c8U;
-    unsigned *reg_slot=(unsigned *)(udd+0x127bd8U);
-    unsigned regs=*reg_slot;
-    if(!regs) return;
-    volatile unsigned *control=(volatile unsigned *)(regs+0x1040U);
-    unsigned before=*control,after;
-    if(s->active) after=before|0x2000U;
-    else after=before&~0x2000U;
-    if(after==before) return;
-    *control=after;
-    if(s->trace_enabled || tracing()) {
-        char text[160],path[128],temp[136];char *p=text;
-        p=append(p,"{\"stage_follow\":\"applied\",\"active\":");p=number(p,s->active);
-        p=append(p,",\"before\":");p=number(p,before);
-        p=append(p,",\"after\":");p=number(p,after);p=append(p,"}\n");
-        char *q=append(path,nx_lut_ram_config.root);
-        q=append(q,"/logs/lut-stage-follow.log");
-        q=append(temp,path);append(q,".tmp");
-        if(!write_file(temp,text,(unsigned)(p-text))) sys3(38,(int)temp,(int)path,0);
-    }
 }
 
 __attribute__((visibility("hidden")))
@@ -237,7 +200,6 @@ void nx_lut_ram_update(void *self,void *params) {
      * 3D-LUT virtual method enters here; no other parameter cache is touched. */
     ((u32 *)self)[1]=~0U;
     original(self,params);
-    stage_follow(s);
     trace(s,"update-return");
     __sync_synchronize();s->tid=0;
 }

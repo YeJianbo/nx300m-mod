@@ -162,6 +162,7 @@ static inline int nx_lut_ram_hook_ready(int camera_pid,int host_pid,const char *
     config.size=0;
     if (!nx_lut_mem(fd,base,&h,sizeof h)) {why="header-unreadable";goto done;}
     if (h.magic!=NX_LUT_RAM_MAGIC||h.abi!=NX_LUT_RAM_ABI) {why="header-magic";goto done;}
+    if (h.reserved[3]!=NX_LUT_BLOB_BUILD) {why="resident-code-build";goto done;}
     if (h.blob_size!=size) {why="header-size";goto done;}
     if (h.code_size!=h.data_offset || h.data_offset<4096 || h.data_offset>=size ||
         h.data_offset%4096 || h.data_size!=size-h.data_offset) {why="header-layout";goto done;}
@@ -256,26 +257,8 @@ static inline int nx_lut_hook_ready(void) {
     if (strcmp(name,"di-camera-app-nx300") && strcmp(name,"di-camera-app")) {nx_lut_ready_diag("wrong-target");return 0;}
     struct stat state;
     if (!lstat(NX_LUT_RAM_MARKER,&state)) {
-        /* A snapshot-restored camera can resurrect an older blob mapping with
-         * its marker intact. The blob publishes its build in the status file;
-         * an absent or mismatched tag means the resident adapter is stale. */
-        FILE *status=fopen("/var/run/nx300m-lut-status.json","r");
-        int build_ok=0;char raw[960];raw[0]=0;unsigned raw_len=0;
-        if (status) {
-            raw_len=(unsigned)fread(raw,1,sizeof raw-1,status);fclose(status);raw[raw_len]=0;
-            const char *tag=strstr(raw,"\"build\":");
-            if (tag) {
-                tag+=8;unsigned value=0;
-                if (nx_lut_uint(tag,&value)) build_ok=value==NX_LUT_BLOB_BUILD;
-            }
-        } else nx_lut_ready_diag("no-status-file");
-        if (!build_ok) {
-            if (raw_len) {
-                const char *log=getenv("NX_FN_KEY_LOG");
-                if (log) { FILE *out=fopen(log,"a");if (out) {fprintf(out,"%s status build mismatch: %s\n","NX_READY_DIAG:",raw);fclose(out);} }
-            }
-            return 0;
-        }
+        /* Readiness comes from the resident immutable header and live call
+         * slots. Per-shot telemetry may be absent or replaced at any time. */
         return nx_lut_ram_hook_ready((int)pid,(int)pid,configured);
     }
     if (errno==ENOENT && nx_lut_so_mapped((int)pid)) return 1;

@@ -69,6 +69,13 @@ def main():
     if dynsym.get_symbol(rel['r_info_sym']).name != 'ipcs_3d_lut' or rel['r_info_type'] != 22:
         raise ValueError('Expected ipcs_3d_lut R_ARM_JUMP_SLOT not found')
     iq_info['lut_got'] = int(rel['r_offset'])
+    # Before the first call, the ARM JUMP_SLOT contains the relocated PLT0
+    # address. It is a normal stock state, distinct from a resident hook.
+    resolver = struct.unpack('<I', bytes_at(iq, EXPECTED['lut_got'], 4))[0]
+    plt = iq.get_section_by_name('.plt')
+    if resolver != int(plt['sh_addr']):
+        raise ValueError('Original LUT GOT does not point to the ARM PLT resolver')
+    iq_info['lut_resolver'] = resolver
     actual = {k: iq_info[k] if k in iq_info else udd_info[k] for k in EXPECTED}
     if actual != EXPECTED:
         raise ValueError(f'Stock ABI changed: {actual}')
@@ -84,6 +91,9 @@ def main():
     for key, elf, address in checks:
         raw = bytes_at(elf, address, 32)
         header.append(f'static const unsigned char stock_{key}[32] = {{' + ','.join(str(x) for x in raw) + '};')
+    resolver_bytes = bytes_at(iq, resolver, 32)
+    header += [f'#define STOCK_LUT_RESOLVER {resolver}U',
+               'static const unsigned char stock_lut_resolver[32] = {' + ','.join(str(x) for x in resolver_bytes) + '};']
     for key, rec in [('iq', iq_info), ('udd', udd_info), ('libc', libc_info), ('app', app_info)]:
         header += [f'#define STOCK_{key.upper()}_SIZE {rec["bytes"]}U',
                    f'#define STOCK_{key.upper()}_SHA "{rec["sha256"]}"']

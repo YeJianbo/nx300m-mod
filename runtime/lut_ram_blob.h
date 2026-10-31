@@ -9,7 +9,6 @@ struct nx_lut_ram_config {
     unsigned abi, size, original_update, original_reset, original_ipcs;
     unsigned lut_vptr, factory_red, enabled;
     char root[164];
-    unsigned build;
 };
 #define NX_LUT_RAM_MAGIC 0x4e584c42U
 #define NX_LUT_RAM_ABI 1U

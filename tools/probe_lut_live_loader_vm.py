@@ -92,10 +92,6 @@ select_strength() {
     printf '%s %s %s\n' "$generation" "$ROOT/looks/ricoh-negative-exact/table.d4lut" "$1" > /var/run/nx300m-lut-selection.tmp
     mv /var/run/nx300m-lut-selection.tmp /var/run/nx300m-lut-selection
 }
-if [ "$NX_LUT_FACTORY_ONLY" -eq 0 ]; then rpc 0 1 baseline-direct; fi
-rpc 1 1 baseline-composed
-# This unchanged Update must skip the original cached write before injection.
-rpc 1 0 cached-before
 loader_status() {
     label=$1
     set +e
@@ -117,6 +113,19 @@ restore_loader() {
         attempt=$((attempt+1)); [ "$attempt" -lt 20 ]; /rescue/busybox usleep 100000
     done
 }
+# Reproduce a fresh camera before its first ipcs_3d_lut call. Taking the
+# baseline first resolves JUMP_SLOT and hides this real startup state.
+loader_status lazy-before
+select_strength 100
+"$LOADER" apply --pid "$pid" --blob /mnt/mmc/lut_ram_blob.bin --root "$ROOT" --fixture > "$OUT/lazy-apply.json" 2> "$OUT/lazy-apply.stderr"
+rpc 1 1 lazy-composed
+restore_loader lazy-restore
+loader_status lazy-restored
+rm -f "/var/run/nx300m-lut-live-$pid.state" /var/run/nx300m-lut-selection
+if [ "$NX_LUT_FACTORY_ONLY" -eq 0 ]; then rpc 0 1 baseline-direct; fi
+rpc 1 1 baseline-composed
+# This unchanged Update must skip the original cached write before injection.
+rpc 1 0 cached-before
 loader_status before
 select_strength 100
 "$LOADER" apply --pid "$pid" --blob /mnt/mmc/lut_ram_blob.bin --root "$ROOT" --fixture > "$OUT/apply.json" 2> "$OUT/apply.stderr"
@@ -135,8 +144,14 @@ if [ -x /mnt/mmc/bin/ram_ready.arm ]; then
     [ "$binding_result" -eq 3 ]
     cp "$OUT/ram-marker.original" /var/run/nx300m-lut-ram-hook
 fi
+# The installed binding must not depend on mutable per-shot telemetry.
+rm -f /var/run/nx300m-lut-status.json
+/mnt/mmc/bin/ram_ready.arm "$pid" "$ROOT" > "$OUT/binding-no-telemetry.json"
 # Same parameters as the pre-install cached call must now reach the adapter.
 rpc 1 0 installed-same-params
+/mnt/mmc/bin/ram_ready.arm "$pid" "$ROOT" > "$OUT/binding-after-shot.json"
+printf '{"stage":"stock"}\n' > /var/run/nx300m-lut-status.json
+/mnt/mmc/bin/ram_ready.arm "$pid" "$ROOT" > "$OUT/binding-replaced-telemetry.json"
 for strength in 0 50 100; do
     select_strength "$strength"
     rpc 1 0 "composed-$strength"
@@ -187,6 +202,28 @@ if [ -x /mnt/mmc/bin/ram_ready.arm ]; then
     set -e
     [ "$binding_result" -eq 3 ]
 fi
+# Recreate a verified previous build with lost/corrupt runtime state. Recovery
+# must reject a different image, then drain and restore only the exact image.
+rm -f "/var/run/nx300m-lut-live-$pid.state"
+/mnt/mmc/bin/legacy_loader.arm apply --pid "$pid" --blob /mnt/mmc/legacy_blob.bin --root "$ROOT" --fixture > "$OUT/legacy-apply.json" 2> "$OUT/legacy-apply.stderr"
+loader_status legacy-before
+printf 'broken state\n' > "/var/run/nx300m-lut-live-$pid.state"
+set +e
+"$LOADER" apply --pid "$pid" --blob /mnt/mmc/lut_ram_blob.bin --root "$ROOT" --fixture > "$OUT/legacy-refused.json" 2> "$OUT/legacy-refused.stderr"
+refused=$?
+"$LOADER" restore-known --pid "$pid" --blob /mnt/mmc/lut_ram_blob.bin --root "$ROOT" --fixture > "$OUT/legacy-wrong-image.json" 2> "$OUT/legacy-wrong-image.stderr"
+wrong=$?
+set -e
+[ "$refused" -eq 3 ] && [ "$wrong" -eq 3 ]
+loader_status legacy-after-refusal
+"$LOADER" restore-known --pid "$pid" --blob /mnt/mmc/legacy_blob.bin --root "$ROOT" --fixture > "$OUT/legacy-restored.json" 2> "$OUT/legacy-restored.stderr"
+loader_status legacy-restored
+rpc 1 1 legacy-restored-composed
+select_strength 100
+"$LOADER" apply --pid "$pid" --blob /mnt/mmc/lut_ram_blob.bin --root "$ROOT" --fixture > "$OUT/recovered-apply.json" 2> "$OUT/recovered-apply.stderr"
+rpc 1 0 recovered-composed
+/mnt/mmc/bin/ram_ready.arm "$pid" "$ROOT" > "$OUT/binding-recovered.json"
+restore_loader recovered-restore
 cat /proc/$pid/stat > "$OUT/after.stat"
 cat /proc/$pid/status > "$OUT/after.status"
 ls /proc/$pid/task > "$OUT/after.tasks"
@@ -231,9 +268,18 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
 
 
 def compile_binding_helper():
-    source = PROJECT / 'outputs/metol/lut-strength-api-probe/ram_ready.c'
-    if not source.is_file():
-        return None
+    source = OUT / 'ram_ready.c'
+    source.write_text('''/* Explicit fixture: validate binding without camera-name impersonation. */
+#define _GNU_SOURCE
+#include "mod/metol/lut_engine_shared.h"
+int main(int argc,char **argv) {
+    unsigned int pid;
+    if (argc!=3 || !nx_lut_uint(argv[1],&pid) || !pid || pid>INT_MAX || !nx_mod_root_valid(argv[2])) return 2;
+    int ready=nx_lut_ram_hook_ready((int)pid,(int)pid,argv[2]);
+    printf("{\\\"binding_ready\\\":%s,\\\"camera_identity_verified\\\":false}\\n",ready?"true":"false");
+    return ready?0:3;
+}
+''', encoding='utf-8', newline='\n')
     target = OUT / 'ram_ready.arm'
     script = f'''set -eu
 tc=/opt/nx300m-toolchain/usr
@@ -271,6 +317,12 @@ def prepare():
     }
     if binding:
         inputs['bin/ram_ready.arm'] = binding
+    compat = PROJECT / 'outputs/deployment/lut-live-loader/compat'
+    legacy_images = sorted(compat.glob('blob-*.bin'))
+    if not legacy_images:
+        raise ValueError('A saved known previous image is required for migration regression checks')
+    inputs['bin/legacy_loader.arm'] = compat / 'fixture-loader-before.arm'
+    inputs['legacy_blob.bin'] = legacy_images[0]
     stage = OUT / 'source-files'
     if stage.exists():
         if stage.is_symlink() or stage.resolve().parent != OUT.resolve():
@@ -396,6 +448,17 @@ def verify(guest):
         raise ValueError('Second restore did not retain and disable the mapping')
     statuses = {label: json.loads((guest / f'status-{label}.json').read_text())
                 for label in ('before', 'installed', 'restored', 'reapplied', 'rerestored')}
+    lazy = json.loads((guest / 'status-lazy-before.json').read_text())
+    original = json.loads((PROJECT / 'outputs/deployment/lut-live-loader/build-report.json').read_text())
+    if lazy['slot_lut'] != lazy['iq_bias'] + original['stock']['iq']['lut_resolver'] or not lazy['rw_slots_original']:
+        raise ValueError('Startup fixture did not retain and recognize the original unresolved LUT JUMP_SLOT')
+    if not json.loads((guest / 'lazy-apply.json').read_text()).get('hooks_installed'):
+        raise ValueError('Loading before the first original writer call failed')
+    if words(guest / 'lazy-composed.bin') != candidate['composed']:
+        raise ValueError('First writer call after lazy-state installation did not apply the selected LUT')
+    check_trace('lazy-composed', 'composed', 100)
+    if not json.loads((guest / 'status-lazy-restored.json').read_text()).get('rw_slots_original'):
+        raise ValueError('Startup installation did not restore the original writer')
     for label, hooked in (('installed', True), ('restored', False), ('reapplied', True), ('rerestored', False)):
         status = statuses[label]
         if status.get('ram_hooks_installed') is not hooked or status.get('rw_slots_original') is not (not hooked):
@@ -407,11 +470,29 @@ def verify(guest):
             raise ValueError(f'{label}: a target thread remained traced')
     binding_checked = (guest / 'binding-installed.json').is_file()
     if binding_checked:
-        for label, expected in (('installed', True), ('stale-start', False), ('restored', False),
+        for label, expected in (('installed', True), ('no-telemetry', True), ('after-shot', True),
+                                ('replaced-telemetry', True), ('stale-start', False), ('restored', False),
                                 ('reapplied', True), ('rerestored', False)):
             if json.loads((guest / f'binding-{label}.json').read_text()).get('binding_ready') is not expected:
                 raise ValueError(f'Unexpected shared RAM binding result: {label}')
+    legacy_before = json.loads((guest / 'status-legacy-before.json').read_text())
+    legacy_after = json.loads((guest / 'status-legacy-after-refusal.json').read_text())
+    for field in ('slot_update', 'slot_lut'):
+        if legacy_before[field] != legacy_after[field]:
+            raise ValueError('Rejected compatibility image changed a live call slot')
+    if not json.loads((guest / 'legacy-restored.json').read_text()).get('restored'):
+        raise ValueError('Known-image recovery did not restore the original slots')
+    if not json.loads((guest / 'status-legacy-restored.json').read_text()).get('rw_slots_original'):
+        raise ValueError('Known-image recovery left non-stock call slots')
+    if words(guest / 'legacy-restored-composed.bin') != baseline['composed']:
+        raise ValueError('Known-image recovery changed the original output table')
+    if words(guest / 'recovered-composed.bin') != candidate['composed']:
+        raise ValueError('Fresh installation after known-image recovery failed to apply the selected table')
+    if not json.loads((guest / 'binding-recovered.json').read_text()).get('binding_ready'):
+        raise ValueError('Fresh installation after recovery is not ready')
     return {'passed': True, 'native_arm_kernel': True, 'real_ptrace': True,
+            'lazy_writer_admission_checked': True, 'first_call_after_lazy_install_checked': True,
+            'known_image_recovery_checked': True, 'unknown_image_refused_without_slot_writes': True,
             'target_identity_preserved': True, 'original_cached_parameters_reloaded': True,
             'checks': checks, 'stock_selection_restored': True, 'original_slots_restored': True,
             'trace_checks': trace_checks, 'zero_strength_original_pointers_preserved': True,
@@ -420,6 +501,7 @@ def verify(guest):
             'restore_refresh_method': 'change genuine parameter index' if 'direct' in modes else 'explicit original node Reset in fixture',
             'fixture_threads_preserved': 2, 'synthetic_mmio': True, 'image_verified': False,
             'shared_ram_binding_checked': binding_checked,
+            'readiness_independent_of_shot_telemetry': binding_checked,
             'physical_camera_verified': False, 'main_simulator_modified': False, 'sd_card_accessed': False}
 
 

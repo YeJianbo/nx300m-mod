@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import zipfile
 
 from build_sd_bundle import arm_elf, bundle_looks
@@ -24,13 +25,22 @@ def build(include_diagnostics=False):
     # A packaged old binary must not silently lag the current adapter/backend.
     for binary, sources in (
         (module, ('runtime/lut_port.c', 'mod/metol/mod_paths.h')),
-        (engine, ('mod/metol/lut_engine.c', 'mod/metol/lut_engine_shared.h', 'mod/metol/mod_paths.h')),
+        (engine, ('mod/metol/lut_engine.c', 'mod/metol/lut_engine_shared.h', 'runtime/lut_ram_blob.h', 'runtime/lut_ram_blob_build.h', 'mod/metol/mod_paths.h')),
         (ui, ('mod/metol/nxui.c', 'mod/metol/nxui_ximage.h', 'mod/metol/panel_input.h')),
-        (live_loader, ('runtime/lut_live_loader.c', 'runtime/lut_ram_blob.h', 'runtime/live_loader_core.h', 'tools/build_lut_live_loader.py')),
-        (blob, ('runtime/lut_ram_blob.c', 'runtime/lut_ram_blob.h', 'runtime/lut_ram_blob.ld', 'tools/build_lut_ram_blob.py')),
+        (live_loader, ('runtime/lut_live_loader.c', 'runtime/lut_ram_blob.h', 'runtime/lut_ram_blob_build.h', 'runtime/live_loader_core.h', 'tools/build_lut_live_loader.py')),
+        (blob, ('runtime/lut_ram_blob.c', 'runtime/lut_ram_blob.h', 'runtime/lut_ram_blob_build.h', 'runtime/lut_ram_blob.ld', 'tools/build_lut_ram_blob.py')),
+        (remote, ('mod/metol/remote/remote.c', 'mod/metol/lut_engine_shared.h', 'runtime/lut_ram_blob.h', 'runtime/lut_ram_blob_build.h')),
     ):
         if any((PROJECT / source).stat().st_mtime_ns > binary.stat().st_mtime_ns for source in sources):
             raise ValueError(f'Rebuild current sources before packaging: {binary.relative_to(PROJECT)}')
+    tested = PROJECT / 'outputs/deployment/lut-live-loader/arm-vm'
+    result = json.loads((tested / 'report.json').read_text('utf-8'))
+    if not result.get('passed') or not result.get('readiness_independent_of_shot_telemetry') or not result.get('known_image_recovery_checked') or not result.get('lazy_writer_admission_checked'):
+        raise ValueError('Current RAM loader/readiness VM checks must pass before packaging')
+    for binary, staged in ((live_loader, 'bin/lut_live_loader.arm'), (blob, 'lut_ram_blob.bin')):
+        if binary.read_bytes() != (tested / 'source-files' / staged).read_bytes():
+            raise ValueError(f'Build differs from the tested VM candidate: {binary.name}')
+    blob_header = struct.unpack('<16I', blob.read_bytes()[:64])
     output.mkdir(parents=True, exist_ok=True)
     root = output / 'sd/nx300m-mod'
     if root.exists():
@@ -45,9 +55,17 @@ def build(include_diagnostics=False):
     shutil.copyfile(remote, root / 'bin/nx-remote-controller.arm')
     shutil.copyfile(live_loader, root / 'bin/lut_live_loader.arm')
     shutil.copyfile(blob, root / 'lib/lut_ram_blob.bin')
+    compat = PROJECT / 'outputs/deployment/lut-live-loader/compat'
+    compatibility_images = []
+    for saved in sorted(compat.glob('blob-*.bin')):
+        target = root / 'lib/lut-compat' / saved.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(saved, target)
+        compatibility_images.append(target.relative_to(root).as_posix())
     (root / 'fonts').mkdir()
     shutil.copyfile(PROJECT / 'outputs/metol/mfw-font.charset', root / 'fonts/mfw-font.charset')
     for source, name in (('mod/deployment/mfw/lut-load.sh', 'lut-load.sh'),
+                         ('mod/deployment/mfw/lut-cycle.sh', 'lut-cycle.sh'),
                          ('mod/deployment/mfw/lut-panel.sh', 'lut-panel.sh'),
                          ('mod/deployment/mfw/panel.sh', 'mfw-panel.sh'),
                          ('mod/deployment/mfw/fonts.conf.in', 'fonts/fonts.conf.in'),
@@ -57,6 +75,11 @@ def build(include_diagnostics=False):
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text((PROJECT / source).read_text(encoding='utf-8'), encoding='utf-8', newline='\n')
     look_ids = bundle_looks(root)
+    # Keep the diagnostic monochrome first, matching the existing Custom cycle.
+    catalog = root / 'looks.txt'
+    rows = catalog.read_text('utf-8').splitlines(True)
+    rows.sort(key=lambda row: 0 if row.startswith('nx300-hard-mono|') else 1)
+    catalog.write_text(''.join(rows), encoding='utf-8', newline='\n')
     if include_diagnostics:
         from build_lut_diagnostics import build as build_diagnostics
         build_diagnostics()
@@ -89,11 +112,12 @@ def build(include_diagnostics=False):
     for name in baseline:
         if name.startswith('/') or '..' in name.split('/') or not (baseline_root / name).is_file():
             raise ValueError(f'Invalid or missing connected-service asset: {name}')
-    runtime_files = set(baseline) | {'lut-panel.sh', 'lut-load.sh', 'gui_looks.NX300M', 'bin/lut_engine.arm', 'bin/lut_live_loader.arm', 'lib/lut_ram_blob.bin', 'fonts/mfw-font.charset'}
+    runtime_files = set(baseline) | {'lut-panel.sh', 'lut-load.sh', 'lut-cycle.sh', 'gui_looks.NX300M', 'bin/lut_engine.arm', 'bin/lut_live_loader.arm', 'lib/lut_ram_blob.bin', 'fonts/mfw-font.charset'}
+    runtime_files.update(compatibility_images)
     runtime_files.update(path.relative_to(root).as_posix() for path in (root / 'web_root').rglob('*') if path.is_file())
     (root / 'runtime-files.list').write_text(''.join(name + '\n' for name in sorted(runtime_files)), encoding='ascii', newline='\n')
     syntax_checks = []
-    for name in ('lut-load.sh', 'lut-panel.sh', 'mfw-panel.sh'):
+    for name in ('lut-load.sh', 'lut-panel.sh', 'lut-cycle.sh', 'mfw-panel.sh'):
         guest_script = '/mnt/' + root.drive[0].lower() + (root / name).as_posix()[2:]
         syntax = subprocess.run(['wsl.exe', '-d', 'Debian', '-e', '/bin/sh', '-n', guest_script], capture_output=True)
         if syntax.returncode:
@@ -132,6 +156,9 @@ def build(include_diagnostics=False):
                              'retained_files_require_existing_connected_service_kit': True},
         'rootfs_modified': False, 'snapshot_modified': False,
         'live_loader_included': True, 'live_loader_automatically_run': False,
+        'ram_build': blob_header[13], 'config_abi_bytes': blob_header[9],
+        'ram_vm_verified': True, 'viewfinder_register_experiment': False,
+        'compatibility_images': compatibility_images,
         'diagnostics_included': include_diagnostics,
         'shell_syntax': syntax_checks, 'files': inventory,
         'validation_scope': 'offline package and shell syntax; no camera start or ISP image verification',
