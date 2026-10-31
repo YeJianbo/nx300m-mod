@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Full bleed; the launcher applies the outer mask. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:angle="270" android:startColor="#FF8291" android:centerColor="#F9657D" android:endColor="#EE4266" />
+</shape>

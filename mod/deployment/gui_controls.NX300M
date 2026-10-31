@@ -1,0 +1,9 @@
+button|锁定物理模式拨盘|set_control.sh mode-lock 1
+button|解除物理模式拨盘|set_control.sh mode-lock 0
+button|原厂拨盘动画|set_control.sh animation 0
+button|拨盘动画瞬切|set_control.sh animation 1
+button|隐藏拨盘动画|set_control.sh animation 2
+button|Custom 打开设置|set_control.sh custom 1
+button|Custom 恢复原厂|set_control.sh custom 0
+button|‹ 返回设置|@gui_ini.NX300M
+button|退出设置|gui_exit.sh

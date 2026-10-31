@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NX 连接</string>
+    <string name="app_subtitle">Samsung NX 相机照片传输与遥控</string>
+
+    <string name="connect_title">连接相机</string>
+    <string name="camera_ip_hint">相机 IP（例如 192.168.43.90）</string>
+    <string name="daemon_port_hint">daemon 端口</string>
+    <string name="cgi_port_hint">CGI 端口</string>
+    <string name="detect">自动探测</string>
+    <string name="connect">连接</string>
+    <string name="disconnect">断开</string>
+    <string name="browse_gallery">相册 / 传照片</string>
+    <string name="remote_control">遥控取景与快门</string>
+    <string name="how_to_title">怎么连上相机</string>
+    <string name="camera_info_title">相机信息</string>
+    <string name="sync_time">同步时间</string>
+    <string name="syncing_time">正在同步相机时间…</string>
+    <string name="status_not_connected">未连接</string>
+
+    <string name="gallery_title">相机相册</string>
+    <string name="viewer_title">查看</string>
+    <string name="remote_title">遥控</string>
+    <string name="download">下载</string>
+    <string name="download_selected">下载所选</string>
+    <string name="select_all">全选</string>
+    <string name="clear_selection">取消</string>
+    <string name="shutter">快门</string>
+    <string name="silent_on">静音快门：开</string>
+    <string name="silent_off">静音快门：关</string>
+    <string name="silent_shutter">静音快门</string>
+    <string name="liveview_start">开始取景</string>
+    <string name="liveview_stop">停止取景</string>
+    <string name="liveview_stopped_hint">取景未启动</string>
+    <string name="remote_hint">按快门会自动完成「半按对焦 → 全按拍摄」（S1 与 S2 必须重叠，这是相机机械快门的硬性要求）。若快门无反应，多半是相机端输入注入组件不可用，请用相机实体按键；相册与传输不受影响。</string>
+    <string name="quality_hq">高画质</string>
+    <string name="quality_lq">低画质</string>
+    <string name="playback">播放/拍摄</string>
+    <string name="btn_ael">曝光锁定</string>
+    <string name="btn_fn">功能键</string>
+    <string name="btn_ev">曝光补偿</string>
+    <string name="more_keys">更多按键</string>
+    <!-- B 门（长时间曝光）：相机模式拨盘需先转到 B，App 侧只负责"按住快门" -->
+    <string name="bulb_start">B 门：开始曝光</string>
+    <string name="bulb_stop">B 门：结束曝光（已 %1$s）</string>
+    <string name="bulb_prerequisite">B 门需先把相机模式拨盘转到 B。开始后快门保持开启，再点一次结束。</string>
+    <string name="bulb_prerequisite_nx300">原厂遥控不提供 B 门控制。请使用对焦和拍摄按钮。</string>
+    <string name="bulb_running">B 门曝光中 · %1$s</string>
+    <string name="bulb_failed">B 门启动失败：%1$s</string>
+    <string name="bulb_done">B 门结束，曝光时长 %1$s</string>
+    <string name="bulb_lcd_off_on">B 门关相机屏：开</string>
+    <string name="bulb_lcd_off_off">B 门关相机屏：关</string>
+    <!-- A/B/C 组按键分区标题 -->
+    <string name="sec_exposure">曝光参数</string>
+    <string name="sec_mode">拍摄模式 / 驱动</string>
+    <string name="sec_nav">导航与转盘</string>
+    <string name="keys_expand">展开按键面板</string>
+    <string name="keys_collapse">收起按键面板</string>
+    <string name="keys_hint">按键面板默认展开；点「收起按键面板」可释放屏幕空间给取景。</string>
+    <string name="hold_hint">「曝光补偿」与「AE 锁定」是按住生效的键，按住不放再配合转盘调节。</string>
+    <string name="loading">加载中…</string>
+    <string name="no_photos">没有找到照片</string>
+    <string name="no_photos_hint">换一个目录，或先在相机上拍几张</string>
+    <string name="back">返回</string>
+    <string name="image_of">%1$d / %2$d</string>
+</resources>

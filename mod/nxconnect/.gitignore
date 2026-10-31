@@ -1,0 +1,62 @@
+# 构建产物
+*.apk
+*.aab
+*.ap_
+*.dex
+build/
+.gradle/
+local.properties
+.cxx/
+captures/
+
+# ---- 签名材料：绝对不要提交 ----
+# 密钥库 + 口令一起公开 = 公开签名身份，任何人都能签 APK 冒充本应用。
+# 生成方式见 tools/make-keystore.ps1
+*.jks
+*.keystore
+keystore.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 本仓库特有：本地开发环境与过程文件 ----
+# 自包含工具链（约 1 GB），可用 setup_toolchain.py 重建
+_host/
+# 本地整理的过程文件，不属于项目本身
+_本会话整理-*/
+_gpt交付-*/
+交接包-*/
+# 内部交接/索引文档（只对本地协作有意义）
+会话交接.md
+项目索引.md
+# 面向 ChatGPT 的交接包
+交接包-给ChatGPT*.zip
+
+# Python
+__pycache__/
+*.pyc
+
+# 临时产物
+*.log
+_tmp_*
+
+# 第三方产物：本项目不分发相机端组件（见 NOTICE）
+NX-WA-*.zip
+NX-KS*.zip
+*.tar.gz
+
+# 本机路径相关
+local.properties
+# 与本项目无关的本地素材（AI 工具的调研资料等）
+_openviking_research/
+_openviking*/
+# Kotlin incremental build state
+.kotlin/

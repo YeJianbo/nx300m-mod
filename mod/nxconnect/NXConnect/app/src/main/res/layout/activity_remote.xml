@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@drawable/bg_glass_backdrop" android:orientation="vertical">
+    <com.google.android.material.appbar.MaterialToolbar android:id="@+id/toolbar"
+        android:layout_width="match_parent" android:layout_height="?attr/actionBarSize"
+        android:background="@android:color/transparent" app:navigationIcon="@drawable/ic_arrow_back" app:title="@string/remote_title" />
+
+    <!-- The camera frame sets its own aspect ratio; controls use the remaining height. -->
+    <com.nxwa.nxconnect.ui.RemotePreviewFrame android:id="@+id/previewFrame"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginStart="12dp" android:layout_marginEnd="12dp">
+        <com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="match_parent"
+            app:cardBackgroundColor="#000000" app:cardCornerRadius="8dp" app:cardElevation="0dp">
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+                <com.nxwa.nxconnect.ui.LiveViewView android:id="@+id/liveView"
+                    android:layout_width="match_parent" android:layout_height="match_parent" />
+            </FrameLayout>
+        </com.google.android.material.card.MaterialCardView>
+    </com.nxwa.nxconnect.ui.RemotePreviewFrame>
+
+    <LinearLayout android:id="@+id/previewTools" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:gravity="center_vertical" android:minHeight="44dp" android:orientation="horizontal"
+        android:paddingStart="20dp" android:paddingEnd="16dp">
+        <TextView android:id="@+id/liveStatus" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+            android:ellipsize="end" android:maxLines="2" android:text="@string/liveview_stopped_hint"
+            android:textColor="@color/nx_text_dim" android:textSize="11sp" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnLive" style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content" android:layout_height="44dp" android:minWidth="0dp"
+            android:paddingStart="8dp" android:paddingEnd="8dp" android:text="@string/liveview_start" android:textSize="12sp" />
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnQuality" style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content" android:layout_height="44dp" android:minWidth="0dp"
+            android:paddingStart="8dp" android:paddingEnd="8dp" android:text="@string/quality_hq" android:textSize="12sp" />
+    </LinearLayout>
+
+    <androidx.core.widget.NestedScrollView android:id="@+id/controlScroll" android:layout_width="match_parent"
+        android:layout_height="0dp" android:layout_weight="1" android:clipToPadding="false" android:fillViewport="false">
+        <LinearLayout android:id="@+id/controlPanel" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:paddingStart="12dp" android:paddingTop="2dp" android:paddingEnd="12dp" android:paddingBottom="16dp">
+            <LinearLayout android:id="@+id/stockRvfPanel" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:padding="12dp" android:layout_marginBottom="8dp"
+                android:background="@drawable/bg_info_card" android:visibility="gone">
+                <TextView android:id="@+id/stockRvfStatus" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:text="在相机上打开遥控取景器，再连接原厂遥控。首次连接请在相机上确认。"
+                    android:textSize="12sp" android:textColor="@color/nx_on_surface_variant" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                    <com.google.android.material.button.MaterialButton android:id="@+id/btnStockRvf"
+                        style="@style/Widget.Material3.Button.TextButton" android:layout_width="0dp" android:layout_height="48dp"
+                        android:layout_weight="1" android:text="连接原厂遥控" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/btnStockFocus"
+                        style="@style/Widget.Material3.Button.TextButton" android:layout_width="0dp" android:layout_height="48dp"
+                        android:layout_weight="1" android:text="对焦" android:enabled="false" />
+                </LinearLayout>
+            </LinearLayout>
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnShutter" android:layout_width="match_parent"
+                android:layout_height="56dp" android:text="@string/shutter" android:textSize="16sp" app:cornerRadius="18dp"
+                app:icon="@drawable/ic_camera" app:iconGravity="textStart" app:iconPadding="8dp" app:iconSize="22dp" />
+
+            <include layout="@layout/view_remote_keys" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:orientation="horizontal">
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnSilentToggle" style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="@string/silent_off" android:textSize="13sp" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnPlayback" style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="@string/playback" android:textSize="13sp" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnKeysToggle" style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="更多按键" android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout android:id="@+id/advancedControls" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" android:orientation="vertical" android:visibility="gone">
+                <TextView style="@style/NxSectionTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="长曝光" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnBulb" style="@style/NxButton.Outlined"
+                    android:layout_width="match_parent" android:layout_height="52dp" android:text="@string/bulb_start" android:textSize="14sp" />
+                <TextView android:id="@+id/bulbInfo" style="@style/NxNote" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp" android:text="@string/bulb_prerequisite" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/btnBulbLcd" style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content" android:minWidth="0dp"
+                    android:text="@string/bulb_lcd_off_on" android:textSize="12sp" />
+                <TextView android:id="@+id/remoteHint" style="@style/NxNote" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp" android:text="@string/remote_hint" />
+            </LinearLayout>
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+</LinearLayout>

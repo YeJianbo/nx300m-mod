@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ============ 品牌色（蓝青，与图标一致）============ -->
+    <color name="nx_primary">#6B9CFF</color>
+    <color name="nx_on_primary">#001A47</color>
+    <color name="nx_primary_container">#183769</color>
+    <color name="nx_on_primary_container">#DCE7FF</color>
+
+    <color name="nx_secondary">#BDBDC4</color>
+    <color name="nx_on_secondary">#252528</color>
+    <color name="nx_secondary_container">#343437</color>
+    <color name="nx_on_secondary_container">#F1F1F3</color>
+
+    <color name="nx_tertiary">#BDBDC4</color>
+    <color name="nx_on_tertiary">#252528</color>
+
+    <color name="nx_error">#FF6B6B</color>
+    <color name="nx_on_error">#2A0A0A</color>
+    <color name="nx_error_container">#5C1F1F</color>
+    <color name="nx_on_error_container">#FFDAD6</color>
+
+    <!-- ============ 表面层级 ============ -->
+    <color name="nx_background">#000000</color>
+    <color name="nx_on_background">#FCFCFF</color>
+    <color name="nx_surface">#252528</color>
+    <color name="nx_on_surface">#FCFCFF</color>
+    <color name="nx_surface_variant">#343437</color>
+    <color name="nx_on_surface_variant">#B0B0B8</color>
+    <color name="nx_surface_container">#17171A</color>
+    <color name="nx_surface_container_high">#252528</color>
+    <color name="nx_surface_container_highest">#343437</color>
+
+    <color name="nx_outline">#848487</color>
+    <color name="nx_outline_variant">#3A3A3F</color>
+
+    <!-- ============ 语义色 ============ -->
+    <color name="nx_ok">#5BD98A</color>
+    <color name="nx_warn">#F5C061</color>
+    <color name="nx_text_dim">#B0B0B8</color>
+    <!-- 说明性文字：比正文更淡的灰，用于"相机硬件不提供…"这类提示 -->
+    <color name="nx_text_note">#A0A0A8</color>
+
+    <!-- ============ 兼容旧引用 ============ -->
+    <color name="nx_accent">#6B9CFF</color>
+    <color name="nx_on_accent">#001A47</color>
+    <color name="nx_surface_dark">#000000</color>
+    <color name="nx_bg">#000000</color>
+    <color name="nx_card">#17171A</color>
+    <color name="nx_err">#FF6B6B</color>
+    <color name="nx_glass_edge">#00000000</color>
+    <color name="nx_glass_top">#252528</color>
+    <color name="nx_glass_bottom">#252528</color>
+    <color name="nx_backdrop_top">#000000</color>
+    <color name="gallery_sheet_bg">@color/nx_surface</color>
+    <color name="gallery_card_bg">@color/nx_surface_container</color>
+    <color name="gallery_capsule_bg">#343437</color>
+    <color name="gallery_capsule_stroke">#00000000</color>
+    <color name="gallery_badge_blue_bg">#183769</color>
+    <color name="gallery_badge_blue_text">#9DBDFF</color>
+    <color name="nx_text_main">#FCFCFF</color>
+    <color name="gallery_capsule_active">#183769</color>
+    <color name="gallery_ripple">#25FFFFFF</color>
+    <color name="oneui_floating_surface">#ED252528</color>
+    <color name="oneui_floating_selected">#4C4C52</color>
+    <color name="oneui_floating_edge">#12FFFFFF</color>
+    <color name="oneui_viewer_background">#0B0B0D</color>
+</resources>

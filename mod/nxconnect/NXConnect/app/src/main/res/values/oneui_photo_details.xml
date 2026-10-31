@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="NxPhotoDetailText">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">@color/nx_on_surface_variant</item>
+        <item name="android:lineSpacingExtra">2dp</item>
+        <item name="android:breakStrategy">simple</item>
+        <item name="android:hyphenationFrequency">none</item>
+    </style>
+    <style name="NxPhotoFormatBadge">
+        <item name="android:textSize">11sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColor">@color/nx_on_surface</item>
+        <item name="android:background">@drawable/bg_oneui_format_badge</item>
+        <item name="android:minHeight">26dp</item>
+        <item name="android:gravity">center</item>
+        <item name="android:paddingStart">10dp</item>
+        <item name="android:paddingEnd">10dp</item>
+        <item name="android:paddingTop">4dp</item>
+        <item name="android:paddingBottom">4dp</item>
+    </style>
+</resources>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  状态卡片的背景。
+
+  ★ 圆角必须小：这里原来是 100dp。单行时它是个正常胶囊，但状态卡片最多三行
+    （分辨率/画质/帧率 + OSD 三段耗时 + 两路帧率），高度约 48dp。
+    圆角半径超过高度一半时，Android 会把左右两侧挤成尖角并**裁掉文字** ——
+    用户实测"每个界面顶上的字都被挡住了一点"就是这个原因。
+    改成 10dp 后无论几行都只是普通圆角矩形，不再切字。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#B3000000" />
+    <corners android:radius="10dp" />
+</shape>
+

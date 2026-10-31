@@ -1,0 +1,103 @@
+# 署名与第三方声明（NOTICE）
+
+NXConnectForNX500
+Copyright (C) 2026 Katsiy and contributors
+
+本程序是自由软件：你可以依据 **GNU Affero 通用公共许可证第 3 版**（或任何更新版本）
+的条款重新分发和/或修改它。本程序按"有用"的目的分发，但**不提供任何担保**，
+甚至不包含适销性或特定用途适用性的默示担保。详见 [LICENSE](LICENSE)。
+
+---
+
+## 为什么本项目以 AGPL-3.0 发布
+
+本项目的**协议知识**来自下列以 AGPL-3.0 发布的项目。虽然实现代码（Kotlin）
+是本项目独立编写的，但协议契约、接口语义与大量实测结论源自对这些项目的阅读与
+真机验证，因此本项目遵循同一许可证发布。
+
+---
+
+## 上游项目
+
+### 1. nx-remote-controller-mod
+
+- 地址：https://github.com/mewlips/nx-remote-controller-mod
+- 许可证：**AGPL-3.0**
+- 本项目对它的使用：
+  - 相机端 HTTP 接口契约（`/api/v1/*`）的**语义与参数**依据其 C 源码理解
+  - 按键会话（keysym）映射表逐项对照其 `web_input/js/keyinput.js`
+  - 相机端未改动、未重新分发其任何代码或二进制
+- **修改声明**：无。本项目不含该项目的代码。
+
+### 2. NXWA-nx500_modding（NX-WA）
+
+- 地址：https://github.com/WApaperplane/NXWA-nx500_modding
+- 许可证：**AGPL-3.0**
+- 本项目对它的使用：
+  - 参考其 CGI 脚本了解相机端可用命令与文件布局
+  - 参考其装机流程了解相机端 mod 的部署方式
+- **修改声明**：无。本项目不含该项目的代码，也不分发其安装包。
+  使用说明中提到它，仅因为它是相机端可选的前置组件。
+
+### 3. samsung-nx-hacks
+
+- 地址：https://github.com/ge0rg/samsung-nx-hacks
+- 许可证：**未明示**（该仓库未附许可证文件；按默认版权，保留所有权利）
+- 本项目对它的使用：
+  - **仅作知识性参考**（其 wiki 中的逆向文档）
+  - **未复制其任何代码、脚本或文本**
+- **说明**：因其未声明许可证，本项目**刻意不使用其代码**，仅在文档中引用其
+  公开的逆向结论作为交叉验证。若该项目的维护者认为本引用不妥，请联系以便调整。
+
+---
+
+## 不使用、不分发以下内容
+
+本仓库**不包含**：
+
+- 相机固件、固件补丁或任何三星专有二进制
+- 上述上游项目的源代码或安装包
+- 任何用于绕过相机保修/授权机制的破解工具
+
+用户可以自行从上游项目获取相机端组件。本 App 需要在相机端已安装相应组件的
+前提下才能工作，**但这不构成本项目对它们的再分发**。
+
+---
+
+## 第三方库
+
+Android 应用部分使用了下列库，均通过 Gradle 依赖引入，未修改其源码：
+
+| 库 | 许可证 |
+|---|---|
+| AndroidX（core-ktx, appcompat, activity, recyclerview, constraintlayout, swiperefreshlayout, exifinterface, viewpager2） | Apache-2.0 |
+| Material Components for Android | Apache-2.0 |
+| Kotlin / kotlinx.coroutines | Apache-2.0 |
+
+---
+
+## 免责声明
+
+本项目与 **Samsung Electronics** 无任何关联，未获其授权、赞助或认可。
+"Samsung"、"NX500" 等名称是其各自所有者的商标，仅用于说明兼容性。
+
+使用本项目需要给你的相机写入第三方组件，**这可能使保修失效，并存在损坏设备
+（变砖）的风险**。作者不对任何设备损坏、数据丢失或其他损失负责。请自行评估风险。
+## NX300M 本地适配（2026-10-20）
+
+基于 Katsiy/NXConnectForNX500 4597f4483ffb544a444160bfb07930c767bc8f69，
+修改了连接端口验证、能力协商、800×480 OSD 增量布局和独立屏幕镜像；
+增加 NX300M 开发模拟器连接入口。改动源码随本项目保留，沿用 AGPL-3.0-or-later。
+相机端复用 nx300m-mod 统一 ARM 遥控服务。
+后续适配还接入同服务的 ISO 步长、扩展 ISO、Auto ISO 上限与最快快门设置。
+
+
+## One UI 8.5 / 9 UI resources（2026-10-23）
+
+部分返回、搜索、更多矢量图改编自 tribalfs/sesl-androidx，
+分支 sesl-androidx-main，目录 appcompat/appcompat/src/main/res/drawable：
+sesl_ic_ab_back_light.xml、sesl_ic_search_api.xml、sesl_ic_search_more.xml。
+来源：https://github.com/tribalfs/sesl-androidx
+许可证：Apache License 2.0，副本见 licenses/SESL-Apache-2.0.txt。
+修改：替换资源名、尺寸引用和主题 tint；矢量路径保持来源实现。
+其他应用操作图标由本项目绘制。完整 SESL runtime 未作为依赖引入。

@@ -1,0 +1,8 @@
+checkbox|指令拨轮锁|toggle_dial_lock.sh
+button|拨盘与快捷键|@gui_controls.NX300M
+button|ISO 与测光|@gui_exposure.NX300M
+button|自动曝光快门|cycle_shutter_limit.sh
+button|机内切档 (P/A/S/M)|@gui_modes.NX300M
+button|3D LUT 胶片风格|@gui_looks.NX300M
+button|胶片调色配方|@gui_filmlab1b
+button|退出设置|gui_exit.sh

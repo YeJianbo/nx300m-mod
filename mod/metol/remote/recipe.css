@@ -1,0 +1,7 @@
+#nxRecipeSettings .nx-recipe-values{margin:8px 0;color:#555;line-height:1.7;overflow-wrap:anywhere}
+#nxRecipeSettings .nx-recipe-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+#nxRecipeSettings .nx-recipe-current{margin-top:16px;font-weight:600}
+#nxRecipeSettings .nx-recipe-stage{padding:10px 0;border-top:1px solid #eee}
+#nxRecipeSettings .nx-recipe-stage strong{display:block;margin-bottom:5px}
+#nxRecipeSettings .nx-recipe-stage span{display:block;line-height:1.8}
+#nxRecipeSettings [role=status]{margin-top:12px}

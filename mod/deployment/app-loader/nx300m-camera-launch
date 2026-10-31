@@ -1,0 +1,7 @@
+#!/bin/sh
+if [ -f /usr/lib/nx300m-mod/preload.sh ] && [ -r /usr/lib/nx300m-mod/preload.sh ] && [ -s /usr/lib/nx300m-mod/preload.sh ]; then
+    . /usr/lib/nx300m-mod/preload.sh
+    nx300m_launch_persistent_app /usr/bin/di-camera-app "$@"
+else
+    exec /usr/bin/di-camera-app "$@"
+fi

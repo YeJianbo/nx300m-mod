@@ -1,0 +1,14 @@
+.nx-quickshare{clear:both;margin-top:10px;padding-top:10px;border-top:1px solid var(--border,#444);text-align:left}
+.nx-quickshare-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.nx-quickshare-row .btn{margin:0}
+.nx-quickshare-device{max-width:100%;min-height:28px;background:var(--surface,#202428);color:var(--text,#eee);border:1px solid var(--border,#555);border-radius:4px;padding:3px 7px}
+.nx-quickshare-file,.nx-quickshare-status{margin-top:8px;overflow-wrap:anywhere}
+.nx-quickshare-pin{display:block;margin:8px 0;font-size:20px;letter-spacing:3px;color:var(--text,#eee)}
+.nx-quickshare-progress{width:min(360px,100%);margin-right:8px}
+.nx-quickshare details{margin-top:8px;font-size:12px}
+.nx-quickshare-logs{max-height:140px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface,#16191d);color:var(--text,#eee);border-color:var(--border,#444)}
+.nx-quickshare-logs:empty{display:none}
+.nx-gallery-raw{display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--surface2,#262a30);color:var(--text,#eee);padding:18px 8px}
+.nx-gallery-raw strong{font-size:24px;letter-spacing:2px}
+.nx-gallery-raw-name{font-size:12px;margin-top:8px;overflow-wrap:anywhere;max-width:100%}
+.nx-gallery-raw-preview{align-self:center;margin:auto;font-size:24px;color:#ddd}

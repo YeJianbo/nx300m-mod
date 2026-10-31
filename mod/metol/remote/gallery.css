@@ -1,0 +1,8 @@
+.nx-gallery-format{max-width:100%;min-height:30px;margin:0 6px;background:var(--surface,#202428);color:var(--text,#eee);border:1px solid var(--border,#555);border-radius:4px;padding:3px 7px}
+.gallery-item .nx-gallery-format-badge{position:absolute;left:5px;bottom:5px;padding:3px 6px;background:rgba(0,0,0,.76);color:#fff;font-size:11px;line-height:1.3;border-radius:3px;pointer-events:none}
+.nx-gallery-no-preview{position:absolute;inset:0;align-content:center;text-align:center;padding:12px;color:var(--text,#eee);background:var(--surface2,#262a30);font-size:12px}
+.gallery-item .nx-gallery-format-badge{z-index:1}
+.gallery-item:focus-visible,.nx-gallery-format:focus-visible{outline:2px solid var(--accent,#69a8e7);outline-offset:2px}
+.nx-gallery-preview-note{align-self:center;margin:auto;padding:24px;max-width:32em;color:#eee;text-align:center}
+.gallery-lb-toolbar .nx-gallery-format{flex-shrink:1;min-width:0}
+@media(max-width:480px){.gallery-lb-toolbar{flex-wrap:wrap}.gallery-lb-toolbar .gallery-lb-counter{flex-basis:100%;font-size:12px}.gallery-toolbar .nx-gallery-format{margin:4px 3px}}

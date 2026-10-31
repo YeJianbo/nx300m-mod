@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 相机 Wi-Fi 直连属于局域网明文 HTTP，必须显式允许 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- 用于把 App 流量绑定到相机所在 Wi-Fi（相机无外网时避免走蜂窝导致请求失败） -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <!-- 可选：引导用户连接相机热点 -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- ★ 相机发现靠 UDP 广播，而 Android 的 Wi-Fi 固件会过滤广播帧；
+         必须持有 WifiManager.MulticastLock 才能在息屏/省电时稳定收到相机的广播 -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- 读取已保存的 Wi-Fi，用于给出更准确的连接指引（可拒绝，不影响核心功能） -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+        tools:ignore="CoarseFineLocation" />
+    <!-- Android 13+ 连接/查询 Wi-Fi 设备需要；旧版本系统上该权限不存在，自动忽略 -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="33" />
+
+    <!-- NFC 碰一碰一键连接相机支持 -->
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
+
+    <!-- Android 13+ 分媒体权限；API 29-32 用 WRITE_EXTERNAL_STORAGE 落盘 DCIM -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:name=".NxApp"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.NXConnect"
+        android:usesCleartextTraffic="true"
+        tools:targetApi="34">
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- NFC 碰一碰唤醒与配对连接 -->
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.wfa.wsc" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="nxconnect" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".ui.AboutActivity" android:exported="false" android:parentActivityName=".ui.MainActivity" />
+        <activity android:name=".ui.ConnectionHelpActivity" android:exported="false" android:parentActivityName=".ui.MainActivity" />
+        <activity android:name=".ui.CameraSettingsActivity" android:exported="false" android:parentActivityName=".ui.MainActivity" />
+        <activity android:name=".ui.ModManagerActivity" android:exported="false" android:parentActivityName=".ui.MainActivity" />
+        <activity android:name=".ui.LutLibraryActivity" android:exported="false" android:parentActivityName=".ui.MainActivity" />
+
+        <activity
+            android:name=".ui.GalleryActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.MainActivity" />
+
+        <activity
+            android:name=".ui.ViewerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.NXConnect.Viewer" />
+
+        <activity
+            android:name=".ui.RemoteActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:parentActivityName=".ui.MainActivity" />
+
+        <service
+            android:name=".transfer.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

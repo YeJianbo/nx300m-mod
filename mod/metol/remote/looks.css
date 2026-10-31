@@ -1,0 +1,4 @@
+#nxLooksSettings .modal-body p,#nxLooksSettings .modal-footer span{color:var(--text-dim,#98a0aa)}
+#nxLooksSettings .btn-default{color:var(--text,#e8eaed);background-color:var(--surface3,#262b34);border-color:var(--border,#2c313a)}
+#nxLooksSettings .nx-look-strength output{display:inline;float:right;color:var(--text,#e8eaed);font-variant-numeric:tabular-nums}
+#nxLooksSettings .nx-look-strength input{width:100%;min-height:36px;accent-color:var(--accent,#fa8b63)}

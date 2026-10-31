@@ -1,0 +1,6 @@
+button|ISO 6400 并防回弹|set_control.sh iso-lock 6400
+button|解除 ISO 上限锁定|set_control.sh iso-lock 0
+button|Auto ISO 上限 6400|toggle_auto_iso.sh
+button|Auto ISO 上限 3200|off_toggle_auto_iso.sh
+button|‹ 返回设置|@gui_ini.NX300M
+button|退出设置|gui_exit.sh

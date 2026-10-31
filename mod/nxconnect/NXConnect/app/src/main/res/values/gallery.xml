@@ -1,0 +1,1 @@
+<resources><color name="gallery_page">#FCFBFE</color><color name="gallery_glass">#FFFFFF</color><color name="gallery_edge">#00000000</color><color name="gallery_selected">@color/nx_primary_container</color></resources>

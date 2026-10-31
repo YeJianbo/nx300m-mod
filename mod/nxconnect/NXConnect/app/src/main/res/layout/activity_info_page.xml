@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/nx_background">
+    <com.google.android.material.appbar.AppBarLayout android:id="@+id/pageAppBar" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:background="@color/nx_background" app:elevation="0dp" app:liftOnScroll="false" app:layout_behavior="com.nxwa.nxconnect.ui.OneUiAppBarBehavior">
+        <FrameLayout android:id="@+id/pageHeader" android:layout_width="match_parent" android:layout_height="260dp" app:layout_scrollFlags="scroll|snap">
+            <TextView android:id="@+id/pageTitle" android:layout_width="match_parent" android:layout_height="match_parent" android:gravity="center"
+                android:paddingStart="24dp" android:paddingEnd="24dp" android:textSize="32sp" android:fontFamily="sans-serif-medium" android:textColor="@color/nx_on_surface" />
+        </FrameLayout>
+        <com.google.android.material.appbar.MaterialToolbar android:id="@+id/pageToolbar" android:layout_width="match_parent" android:layout_height="56dp"
+            android:background="@color/nx_background" app:navigationIcon="@drawable/ic_oneui_back" app:navigationContentDescription="返回"
+            app:titleTextColor="@color/nx_on_surface" app:contentInsetStartWithNavigation="8dp" />
+    </com.google.android.material.appbar.AppBarLayout>
+    <androidx.core.widget.NestedScrollView android:id="@+id/pageScroll" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:fillViewport="true" android:clipToPadding="false" app:layout_behavior="@string/appbar_scrolling_view_behavior">
+        <LinearLayout android:id="@+id/pageContent" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"
+            android:paddingStart="8dp" android:paddingEnd="8dp" android:paddingBottom="24dp" />
+    </androidx.core.widget.NestedScrollView>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

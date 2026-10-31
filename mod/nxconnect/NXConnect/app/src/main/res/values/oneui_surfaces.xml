@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="oneui_panel_corner">26dp</dimen>
+    <dimen name="oneui_card_corner">24dp</dimen>
+    <dimen name="oneui_panel_inset">12dp</dimen>
+    <dimen name="oneui_content_inset">24dp</dimen>
+    <dimen name="oneui_row_height">56dp</dimen>
+</resources>

@@ -1,0 +1,64 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+# 只读权限即可 —— 这个工作流只做构建与测试
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: NXConnect
+
+jobs:
+  test:
+    name: 单元测试与构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 配置 Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # ★ 这个输入是**空格**分隔，不是逗号。
+          #   写 'platforms;android-35,build-tools;35.0.0' 会被当成一个包名传给
+          #   sdkmanager，直接 exit code 1。
+          packages: 'platforms;android-35 build-tools;35.0.0'
+
+      - name: 配置 Gradle 缓存
+        # 注意：这个 action 的命名空间是 gradle/actions，不是 actions/
+        # 写成 actions/setup-gradle 会得到 "Unable to resolve action ... repository not found"
+        uses: gradle/actions/setup-gradle@v4
+
+      # ★ 这里刻意用 assembleDebug 而不是 assembleRelease：
+      #   仓库中不含签名密钥（见 NOTICE 与 tools/make-keystore.ps1），
+      #   release 构建会回退到 debug 签名。用 debug 变体更明确地表达"这是 CI 构建"。
+      - name: 跑单元测试
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --console=plain
+
+      - name: 构建 APK
+        run: ./gradlew :app:assembleDebug --no-daemon --console=plain
+
+      - name: 上传测试报告（失败时才有用）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: NXConnect/app/build/reports/tests/
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NXConnectForNX500-debug
+          path: NXConnect/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

@@ -1,0 +1,7 @@
+{
+  "rootfs": "work/stock-1.15/rootfs",
+  "sdk": "work/vendor-source/TIZEN/project/NX300M/imagedev",
+  "firmware_url": "https://org.downloadcenter.samsung.com/content/FM/201412/20141215163358663/NX300M_FW_v1.15.zip",
+  "reference_repository": "https://github.com/WApaperplane/metol",
+  "reference_revision": "ddbe8b119e046798e557add13837834f5e8d90ac"
+}

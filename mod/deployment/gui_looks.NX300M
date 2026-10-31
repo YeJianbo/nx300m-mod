@@ -1,0 +1,14 @@
+button|GR Pos|apply_look.sh ricoh-positive-exact
+button|GR Neg|apply_look.sh ricoh-negative-exact
+button|富士 CC|apply_look.sh nx300-fuji-classic-chrome
+button|富士 Astia|apply_look.sh nx300-fuji-astia
+button|富士 Eterna|apply_look.sh nx300-fuji-eterna
+button|富士 NC|apply_look.sh nx300-fuji-classic-negative
+button|富士 NN|apply_look.sh nx300-fuji-nostalgic-neg
+button|柯达 Portra 400|apply_look.sh metol-portra400
+button|富士 Superia 400|apply_look.sh metol-superia400
+button|富士 Velvia 50|apply_look.sh metol-velvia50
+button|柯达 Ektachrome|apply_look.sh metol-ektachrome
+button|柯达 Tri-X 400|apply_look.sh metol-trix400
+button|原厂色彩复位|apply_look.sh reset
+button|‹ 返回系统设置|@gui_ini.NX300M

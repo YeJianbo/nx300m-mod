@@ -1,0 +1,22 @@
+{
+  "id": "nx300-hard-mono",
+  "label": "Hard Mono",
+  "source_kind": "cube",
+  "source_path": ".\\scratch\\hard-mono.cube",
+  "input_space": "unspecified",
+  "output_space": "unspecified",
+  "description": "Pure Rec.709 luma monochrome for unambiguous effect verification",
+  "master": "source.cube",
+  "native_table": "table.d4lut",
+  "native_format": {
+    "grid": 9,
+    "channels": 3,
+    "bits": 10,
+    "bytes": 4380
+  },
+  "calibration": {
+    "camera": "NX300M",
+    "status": "unmeasured"
+  },
+  "runtime_status": "compiled-not-loaded"
+}

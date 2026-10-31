@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 相机端组件的问题
+    url: https://github.com/mewlips/nx-remote-controller-mod
+    about: 本 App 依赖相机端的第三方组件。如果相机端服务起不来，请到那个项目提问。
+  - name: 使用问题与讨论
+    url: https://github.com/Katsiy/NXConnectForNX500/discussions
+    about: 装不上、连不上、不确定怎么用 —— 先在这里问，不必开 issue。

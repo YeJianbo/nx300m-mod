@@ -1,0 +1,9 @@
+button|P 档 (程序自动)|switch_mode.sh P
+button|A 档 (光圈优先)|switch_mode.sh A
+button|S 档 (快门优先)|switch_mode.sh S
+button|M 档 (全手动)|switch_mode.sh M
+button|Smart 智能自动|switch_mode.sh SMART
+button|i-Function 镜头|switch_mode.sh IFN
+button|Wi-Fi 互联模式|switch_mode.sh WIFI
+button|‹ 返回系统设置|@gui_ini.NX300M
+button|退出设置|gui_exit.sh

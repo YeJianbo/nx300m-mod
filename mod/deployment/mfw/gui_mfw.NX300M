@@ -1,0 +1,8 @@
+button|刷新服务状态|status
+button|手机连接信息|network-info
+button|LUT 滤镜|lut
+button|原厂菜单|menu
+button|原厂相册|gallery
+button|停用下次自动启动|disable-autostart
+button|恢复下次自动启动|enable-autostart
+button|退出面板|close

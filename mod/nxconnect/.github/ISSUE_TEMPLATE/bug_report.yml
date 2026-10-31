@@ -1,0 +1,104 @@
+name: Bug 报告
+description: App 连不上相机、取景异常、按键无效等问题
+title: "[Bug] "
+labels: [ bug ]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这个项目**必须在真机上才能复现问题**，所以下面的信息缺一不可。
+        没有相机型号和固件版本，基本无法定位问题。
+
+  - type: input
+    id: app-version
+    attributes:
+      label: App 版本
+      description: |
+        App 工具栏标题右侧会显示版本号与构建时间，例如 `遥控 v0.15.1`。
+        启动页也有。请照抄。
+      placeholder: "例如：v0.15.1"
+    validations:
+      required: true
+
+  - type: input
+    id: camera
+    attributes:
+      label: 相机型号与固件版本
+      description: 在相机菜单的"设备信息"里能看到固件版本
+      placeholder: "例如：NX500 / 固件 1.12"
+    validations:
+      required: true
+
+  - type: input
+    id: camera-mod
+    attributes:
+      label: 相机端装的组件
+      description: |
+        本 App 需要相机端已安装相应组件才能工作。请说明装的是哪个、什么版本。
+        如果相机上按 MOBILE 键会启动 Web 遥控服务，说明装好了。
+      placeholder: "例如：nx-remote-controller-mod 0.9 / NX-KS2 / NX-WA"
+    validations:
+      required: true
+
+  - type: input
+    id: phone
+    attributes:
+      label: 手机型号与 Android 版本
+      placeholder: "例如：Xiaomi 13 / Android 15"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象
+      description: 你做了什么、期望什么、实际什么
+      placeholder: |
+        1. 打开 App，点"连接"
+        2. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题出在哪个功能
+      multiple: true
+      options:
+        - 连接 / 发现相机
+        - 相册浏览
+        - 下载照片
+        - 实时取景
+        - 快门 / B 门
+        - 相机屏幕镜像（OSD）
+        - 遥控按键
+        - 界面显示
+        - 其它
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断输出（强烈建议）
+      description: |
+        仓库 `tools/` 下有相机诊断脚本，可以直接跑：
+
+        ```
+        python tools/probe_camera_basic.py <相机IP>
+        ```
+
+        输出贴在这里。另外 App 启动时如果检测到上次崩溃，会弹窗显示崩溃日志 —— 请一并贴出。
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 我已经在相机上装好了所需的相机端组件
+          required: true
+        - label: 我搜索过现有 issue，没有重复
+          required: true

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  机型对应的方向键、机身按键与模式拨盘由 RemoteActivity.buildKeyPanel 生成。
+  NX300M 使用原厂 Xmodmap 与 UI_Event_Convert，不复用 NX500 专用键。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/keyPanel"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical">
+
+    <TextView
+        android:id="@+id/keyNavTitle"
+        style="@style/NxSectionTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textColor="@color/nx_text_dim"
+        android:textSize="13sp"
+        android:fontFamily="sans-serif"
+        android:text="@string/sec_nav" />
+
+    <LinearLayout
+        android:id="@+id/gridNav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:orientation="vertical" />
+
+    <TextView
+        android:id="@+id/keyBodyTitle"
+        style="@style/NxSectionTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:text="@string/sec_exposure" />
+
+    <LinearLayout
+        android:id="@+id/gridExposure"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:orientation="vertical" />
+
+    <TextView
+        android:id="@+id/keyModeTitle"
+        style="@style/NxSectionTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:text="@string/sec_mode" />
+
+    <LinearLayout
+        android:id="@+id/gridMode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:orientation="vertical" />
+
+    <TextView
+        android:id="@+id/keyHoldHint"
+        style="@style/NxNote"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:text="@string/hold_hint" />
+</LinearLayout>

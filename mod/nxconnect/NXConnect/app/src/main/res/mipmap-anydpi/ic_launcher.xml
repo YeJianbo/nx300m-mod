@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 7.x fallback; newer launchers use the adaptive layers. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:left="3dp" android:top="3dp" android:right="3dp" android:bottom="3dp">
+        <shape android:shape="rectangle">
+            <corners android:radius="22dp" />
+            <gradient android:angle="270" android:startColor="#FF8291" android:centerColor="#F9657D" android:endColor="#EE4266" />
+        </shape>
+    </item>
+    <item android:drawable="@drawable/ic_launcher_foreground" />
+</layer-list>

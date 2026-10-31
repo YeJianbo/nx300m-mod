@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.nxwa.nxconnect.ui.OneUiGalleryTile xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="wrap_content" android:padding="1px">
+    <FrameLayout android:id="@+id/mediaFrame" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/nx_surface_container_high">
+        <ImageView android:id="@+id/thumb" android:layout_width="match_parent" android:layout_height="match_parent" android:contentDescription="@null" android:scaleType="centerCrop" />
+        <LinearLayout android:id="@+id/placeholder" android:layout_width="match_parent" android:layout_height="match_parent" android:gravity="center" android:orientation="vertical" android:padding="6dp" android:visibility="gone">
+            <TextView android:id="@+id/kindLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/nx_on_surface_variant" android:textSize="16sp" android:fontFamily="sans-serif-medium" />
+            <TextView android:id="@+id/sizeLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:gravity="center" android:maxLines="2" android:textColor="@color/nx_on_surface_variant" android:textSize="10sp" />
+        </LinearLayout>
+        <View android:id="@+id/selectionShade" android:layout_width="match_parent" android:layout_height="match_parent" android:background="#22000000" android:visibility="gone" />
+        <TextView android:id="@+id/name" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom" android:visibility="gone" />
+        <TextView android:id="@+id/formatBadge" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="bottom|start" android:layout_margin="5dp" android:background="@drawable/bg_badge_raw_pill" android:paddingStart="5dp" android:paddingEnd="5dp" android:paddingTop="2dp" android:paddingBottom="2dp" android:textColor="#FFFFFF" android:textSize="9sp" android:textStyle="bold" android:visibility="gone" />
+        <ImageView android:id="@+id/videoBadge" android:layout_width="18dp" android:layout_height="18dp" android:layout_gravity="bottom|end" android:layout_margin="5dp" android:src="@drawable/ic_oneui_play" android:tint="#FFFFFF" android:contentDescription="@null" android:importantForAccessibility="no" android:visibility="gone" />
+        <ImageView android:id="@+id/check" android:layout_width="24dp" android:layout_height="24dp" android:layout_gravity="top|start" android:layout_margin="7dp" android:background="@drawable/bg_gallery_tile_check" android:contentDescription="@null" android:padding="4dp" android:src="@drawable/ic_check" android:tint="@color/nx_surface" android:visibility="gone" />
+    </FrameLayout>
+</com.nxwa.nxconnect.ui.OneUiGalleryTile>
