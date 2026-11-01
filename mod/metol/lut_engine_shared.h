@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "mod_paths.h"
 #include "../../runtime/lut_ram_blob.h"
@@ -18,6 +19,7 @@
 #define NX_LUT_SELECTION "/var/run/nx300m-lut-selection"
 #define NX_LUT_BACKUP "/var/run/nx300m-lut-panel-backup"
 #define NX_LUT_COUNTER "/var/run/nx300m-lut-generation"
+#define NX_LUT_SESSION "/var/run/nx300m-lut-selection-session"
 #define NX_LUT_MAX_LOOKS 256
 #define NX_LUT_RAM_MARKER "/var/run/nx300m-lut-ram-hook"
 struct nx_lut_look { char id[64],label[192];int table_valid,composed_available; };
@@ -302,6 +304,82 @@ static inline int nx_lut_read_selection_with_strength(const char *file,unsigned 
 static inline int nx_lut_read_selection(const char *file,unsigned int *generation,char *path) {
     return nx_lut_read_selection_with_strength(file,generation,path,NULL);
 }
+static inline int nx_lut_saved_path(char *path) {
+    char root[PATH_MAX];
+    if (!nx_lut_root(root)) return 0;
+    return snprintf(path,PATH_MAX,"%s/.state/lut-selection",root)<PATH_MAX;
+}
+static inline int nx_lut_saved_stock(const char *file) {
+    FILE *in=fopen(file,"r");if (!in) return 0;
+    int valid=fgetc(in)=='0' && fgetc(in)=='\n' && fgetc(in)==EOF && !ferror(in);
+    fclose(in);return valid;
+}
+/* A stock choice has no RAM selection file. Remember that it was deliberate,
+ * including when the SD write failed, so reopening cannot revive an old look. */
+static inline int nx_lut_mark_session(void) {
+    const char *root=nx_lut_data_root();if (!root) return 0;
+    FILE *out=fopen(NX_LUT_SESSION,"w");if (!out) return 0;
+    int ok=fprintf(out,"%s\n",root)>=0;
+    if (fclose(out)) ok=0;
+    return ok;
+}
+static inline int nx_lut_selection_persisted(void) {
+    char saved[PATH_MAX],current_path[256],saved_path[256];unsigned int gen,strength,saved_gen,saved_strength;
+    if (!nx_lut_saved_path(saved)) return 0;
+    if (access(NX_LUT_SELECTION,F_OK)) return errno==ENOENT && nx_lut_saved_stock(saved);
+    return nx_lut_read_selection_with_strength(NX_LUT_SELECTION,&gen,current_path,&strength) &&
+        nx_lut_read_selection_with_strength(saved,&saved_gen,saved_path,&saved_strength) &&
+        !strcmp(current_path,saved_path) && strength==saved_strength;
+}
+/* The caller holds the shared engine lock. Sync one small file, then publish
+ * it atomically; a failed card write does not undo a successful RAM selection. */
+static inline int nx_lut_persist_selection(void) {
+    if (nx_lut_selection_persisted()) return 1;
+    char saved[PATH_MAX],directory[PATH_MAX],pending[PATH_MAX],path[256];unsigned int gen,strength;
+    if (!nx_lut_saved_path(saved)) return 0;
+    int n=snprintf(directory,sizeof directory,"%s/.state",nx_lut_data_root());
+    if (n<0 || n>=(int)sizeof directory) return 0;
+    struct stat state;
+    if (mkdir(directory,0700) && errno!=EEXIST) return 0;
+    if (lstat(directory,&state) || !S_ISDIR(state.st_mode)) return 0;
+    n=snprintf(pending,sizeof pending,"%s.tmp",saved);
+    if (n<0 || n>=(int)sizeof pending) return 0;
+    int selected=access(NX_LUT_SELECTION,F_OK)==0;
+    if (selected && !nx_lut_read_selection_with_strength(NX_LUT_SELECTION,&gen,path,&strength)) return 0;
+    int fd=open(pending,O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0600);if (fd<0) return 0;
+    FILE *out=fdopen(fd,"w");if (!out) {close(fd);unlink(pending);return 0;}
+    int ok=(selected?fprintf(out,"%u %s %u\n",gen,path,strength):fprintf(out,"0\n"))>=0;
+    if (fflush(out) || fsync(fd)) ok=0;
+    if (fclose(out)) ok=0;
+    if (!ok || rename(pending,saved)) {unlink(pending);return 0;}
+    fd=open(directory,O_RDONLY|O_DIRECTORY);
+    if (fd<0) return 0;
+    ok=!fsync(fd);close(fd);if (!ok) return 0;
+    return nx_lut_selection_persisted();
+}
+/* A control event only. The frame hook never launches a process or reads SD. */
+static inline void nx_lut_sync_preview(void) {
+    const char *skip=getenv("NX300M_LUT_SKIP_PREVIEW_SYNC");
+    if (skip && !strcmp(skip,"1")) return;
+    FILE *flag=fopen("/var/run/nx300m-preview-backend","r");
+    if (!flag) return;
+    char backend[32]="";int read=fgets(backend,sizeof backend,flag)!=NULL;fclose(flag);
+    if (!read || strcmp(backend,"smartfilter\n")) return;
+    const char *root=nx_lut_data_root();char script[PATH_MAX];
+    if (!root || snprintf(script,sizeof script,"%s/smartfilter-preview.sh",root)>=(int)sizeof script || access(script,R_OK)) {
+        fputs("PREVIEW-WARNING SmartFilter sync script unavailable; still selection retained\n",stderr);return;
+    }
+    pid_t child=fork();
+    if (!child) {
+        char *const args[]={"sh",script,"sync",NULL};
+        extern char **environ;
+        execve("/bin/sh",args,environ);_exit(127);
+    }
+    int status=0;pid_t done=-1;
+    if (child>0) do {done=waitpid(child,&status,0);} while (done<0&&errno==EINTR);
+    if (child<0 || done!=child || !WIFEXITED(status) || WEXITSTATUS(status))
+        fputs("PREVIEW-WARNING SmartFilter sync failed; still selection retained\n",stderr);
+}
 static inline int nx_lut_stage_with_strength(const char *path,unsigned int strength,unsigned int *staged_generation) {
     if (!nx_lut_selection_path(path) || strength>100) return 2;
     char old[256];unsigned int generation=0;
@@ -317,14 +395,46 @@ static inline int nx_lut_stage_with_strength(const char *path,unsigned int stren
     written=fprintf(out,"%u %s %u\n",generation,path,strength)>=0;
     if (fclose(out)) written=0;
     if (!written || rename(NX_LUT_SELECTION ".tmp",NX_LUT_SELECTION)) return 4;
+    if (!nx_lut_mark_session()) return 4;
+    if (!nx_lut_persist_selection()) fputs("PERSIST-WARNING selection staged but not saved to card\n",stderr);
     if (staged_generation) *staged_generation=generation;
+    nx_lut_sync_preview();
     return 0;
 }
 static inline int nx_lut_stage(const char *path,unsigned int *staged_generation) {
     return nx_lut_stage_with_strength(path,100,staged_generation);
 }
 /* Explicit stock is separate from NXUI off, which restores its entry backup. */
-static inline int nx_lut_stock(void) { return unlink(NX_LUT_SELECTION) && errno!=ENOENT?4:0; }
+static inline int nx_lut_stock(void) {
+    if (!nx_lut_mark_session()) return 4;
+    if (unlink(NX_LUT_SELECTION) && errno!=ENOENT) return 4;
+    if (!nx_lut_persist_selection()) fputs("PERSIST-WARNING stock selected but not saved to card\n",stderr);
+    nx_lut_sync_preview();
+    return 0;
+}
+static inline int nx_lut_restore_selection(void) {
+    if (!access(NX_LUT_SELECTION,F_OK)) return 0;
+    if (errno!=ENOENT) return 4;
+    char session[PATH_MAX]="",saved[PATH_MAX],path[256];unsigned int gen,strength;
+    FILE *in=fopen(NX_LUT_SESSION,"r");
+    if (in) {
+        int read=fgets(session,sizeof session,in)!=NULL;fclose(in);
+        session[strcspn(session,"\r\n")]=0;
+        if (read && !strcmp(session,nx_lut_data_root())) return 0;
+    }
+    if (!nx_lut_saved_path(saved)) return 4;
+    if (access(saved,F_OK)) return errno==ENOENT?0:4;
+    if (nx_lut_saved_stock(saved)) return nx_lut_mark_session()?0:4;
+    if (!nx_lut_read_selection_with_strength(saved,&gen,path,&strength)) return 5;
+    struct nx_lut_look looks[NX_LUT_MAX_LOOKS];int count=0;
+    int result=nx_lut_catalog(looks,&count);if (result) return result;
+    for (int i=0;i<count;i++) {
+        char actual[256];int composed;
+        if (looks[i].table_valid && nx_lut_validate_look(looks[i].id,actual,&composed) && !strcmp(path,actual))
+            return nx_lut_stage_with_strength(actual,strength,NULL);
+    }
+    return 5;
+}
 static inline int nx_lut_lock(int nonblocking,int exclusive) {
     int fd=open("/var/run/nx300m-lut-engine.lock",O_RDONLY|O_CREAT,0600);if (fd<0) return -1;
     if (flock(fd,(exclusive?LOCK_EX:LOCK_SH)|(nonblocking?LOCK_NB:0))) { int error=errno;close(fd);errno=error;return -1; }

@@ -3,7 +3,10 @@
 set -eu
 set -f
 [ "$#" -eq 1 ] || exit 64
-case $1 in status|network-info|disable-autostart|enable-autostart) action=$1 ;; *) exit 64 ;; esac
+case $1 in
+    status|network-info|disable-autostart|enable-autostart|preview-enable|preview-identity|preview-monochrome|preview-sync|preview-restore|preview-status) action=$1 ;;
+    *) exit 64 ;;
+esac
 . "${NX300M_MOD_ROOT:-/mnt/mmc/nx300m-mod}/common.sh"
 if [ "$action" = network-info ]; then
     # Network inspection touches neither the source card nor media. Keep it
@@ -54,6 +57,52 @@ if [ "$action" != status ]; then
     [ ! -L "$SOURCE_ROOT/DISABLED" ] || fail 'source DISABLED is a symbolic link'
     [ ! -L "$ROOT/DISABLED" ] || fail 'runtime DISABLED is a symbolic link'
 fi
+case $action in
+    preview-*)
+        script=$SOURCE_ROOT/smartfilter-preview.sh
+        [ -r "$script" ] && [ ! -L "$script" ] || fail 'preview script unavailable'
+        case $action in
+            preview-enable) operation=enable-stock ;;
+            preview-identity) operation=test-identity ;;
+            preview-monochrome) operation=test-monochrome ;;
+            preview-sync) operation=sync ;;
+            preview-restore) operation=restore ;;
+            preview-status) operation=status ;;
+        esac
+        case $operation in
+            test-*|sync)
+                selected_backend=
+                [ ! -r /var/run/nx300m-preview-backend ] || read -r selected_backend < /var/run/nx300m-preview-backend || :
+                [ "$selected_backend" = smartfilter ] || fail '请先选择“启用预览 · 原样”'
+                ;;
+        esac
+        if [ "$operation" = status ]; then
+            data=$(/bin/sh "$script" status)
+            if [ -n "${NX_FN_KEY_LOG:-}" ]; then printf 'SmartFilter status=%s\n' "$data" >> "$NX_FN_KEY_LOG" 2>/dev/null || :; fi
+            printf '%s\n' "$data" | awk '
+                /"installed"/ {
+                    gsub(/[{}"]/, ""); n=split($0, fields, ",")
+                    for (i=1;i<=n;i++) { split(fields[i], pair, ":"); value[pair[1]]=pair[2] }
+                    print "预览模块：" (value["installed"]=="true" ? "已启用" : "未启用")
+                    print "风格：" value["look_id"] " · 强度 " value["strength"] "%"
+                    print "已请求：" value["requested_generation"] " · 已处理：" value["applied_generation"]
+                    print "处理帧：" value["rendered"] " · 原样帧：" value["passthrough"]
+                    print "最近错误：" value["last_error"]
+                }
+            '
+            exit 0
+        fi
+        /bin/sh "$script" "$operation"
+        case $operation in
+            enable-stock) printf '预览已启用。请在原厂智能滤镜中选择 Miniature。\n' ;;
+            test-identity) printf '单位表已提交。请观察取景是否保持原样。\n' ;;
+            test-monochrome) printf '黑白表已提交。请观察取景是否变为黑白。\n' ;;
+            sync) printf '已提交当前 LUT，请观察取景。\n' ;;
+            restore) printf '已恢复原厂调用。请关闭原厂智能滤镜。\n' ;;
+        esac
+        exit 0
+        ;;
+esac
 case $action in
     disable-autostart)
         if [ ! -e "$SOURCE_ROOT/DISABLED" ]; then : > "$SOURCE_ROOT/DISABLED"; fi

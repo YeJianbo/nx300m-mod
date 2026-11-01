@@ -1,6 +1,7 @@
 button|刷新服务状态|status
 button|手机连接信息|network-info
 button|LUT 滤镜|lut
+button|取景预览|preview
 button|原厂菜单|menu
 button|原厂相册|gallery
 button|停用下次自动启动|disable-autostart

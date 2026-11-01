@@ -25,8 +25,13 @@ import com.nxwa.nxconnect.net.ExposureControls
 import com.nxwa.nxconnect.net.NxCamera
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Local masters stay usable offline; camera selections always use the existing native API. */
 class LutLibraryActivity : OneUiInfoActivity() {
@@ -43,6 +48,8 @@ class LutLibraryActivity : OneUiInfoActivity() {
     private var importMenu: MenuItem? = null
     private var refreshMenu: MenuItem? = null
     private var sortMenu: MenuItem? = null
+    private var statusRefreshJob: Job? = null
+    private var statusRevision = 0
 
     private val importer = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) work {
@@ -110,6 +117,8 @@ class LutLibraryActivity : OneUiInfoActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 NxApp.connection.collect {
+                    stopStatusRefresh()
+                    message = ""
                     state = null
                     loadedCamera = null
                     render()
@@ -124,6 +133,17 @@ class LutLibraryActivity : OneUiInfoActivity() {
         outState.putBoolean("cameraTab", cameraTab)
         outState.putString("exportId", exportId)
         super.onSaveInstanceState(outState)
+    }
+
+    override fun onStop() {
+        stopStatusRefresh()
+        super.onStop()
+    }
+
+    private fun stopStatusRefresh() {
+        statusRevision++
+        statusRefreshJob?.cancel()
+        statusRefreshJob = null
     }
 
     private fun render() {
@@ -142,6 +162,7 @@ class LutLibraryActivity : OneUiInfoActivity() {
             addTab(newTab().setText("手机"), !cameraTab)
             addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
                 override fun onTabSelected(tab: TabLayout.Tab) {
+                    stopStatusRefresh()
                     cameraTab = tab.position == 0
                     message = ""
                     render()
@@ -209,6 +230,8 @@ class LutLibraryActivity : OneUiInfoActivity() {
         val status = page.card("当前色彩")
         status.addView(page.text(if (snapshot.stock) "原厂色彩" else snapshot.looks.firstOrNull { it.id == snapshot.selectedId }?.label ?: "当前选择无效", 19f))
         status.addView(page.text(stageText(snapshot), 13f, true))
+        if (snapshot.persistenceSupported) status.addView(page.text(
+            if (snapshot.persistent) "已保存到相机卡" else "未保存到卡，仅本次有效", 13f, true))
         button(status, "恢复原厂色彩", snapshot.writable && !snapshot.stock) { applyLook(current, null, null) }
         if (!snapshot.writable) status.addView(page.text("相机 LUT 模块尚未就绪，当前只能查看列表。", 13f, true))
         snapshot.looks.forEach { look ->
@@ -245,6 +268,7 @@ class LutLibraryActivity : OneUiInfoActivity() {
             check(NxApp.camera === camera) { "相机连接已变化，请刷新" }
             loadedCamera = camera
             state = result
+            watchStatus(camera, result)
         }
     }
 
@@ -321,6 +345,51 @@ class LutLibraryActivity : OneUiInfoActivity() {
         loadedCamera = camera
         state = result
         message = stageText(result)
+        watchStatus(camera, result)
+    }
+
+    private fun pending(snapshot: ExposureControls.LooksState) = snapshot.writable &&
+        snapshot.selectionValid && !snapshot.forwarded && snapshot.stage != "stock"
+
+    /** Follow only this selection, while visible, for at most twelve seconds. */
+    private fun watchStatus(camera: NxCamera, selected: ExposureControls.LooksState) {
+        stopStatusRefresh()
+        if (!cameraTab || !pending(selected) || !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+        val revision = statusRevision
+        statusRefreshJob = lifecycleScope.launch {
+            try {
+                val completed = withTimeoutOrNull(12_000L) {
+                    while (true) {
+                        delay(750)
+                        if (NxApp.camera !== camera || revision != statusRevision || !cameraTab) return@withTimeoutOrNull true
+                        val next = camera.readLooks()
+                        currentCoroutineContext().ensureActive()
+                        if (NxApp.camera !== camera || revision != statusRevision) return@withTimeoutOrNull true
+                        val changedSelection = next.stock != selected.stock || next.selectedId != selected.selectedId ||
+                            next.strength != selected.strength || next.generation != selected.generation
+                        val nextMessage = if (changedSelection) "相机上的 LUT 选择已变化" else stageText(next)
+                        val changed = state != next || message != nextMessage
+                        loadedCamera = camera
+                        state = next
+                        message = nextMessage
+                        if (changed) render()
+                        if (changedSelection || !pending(next)) return@withTimeoutOrNull true
+                    }
+                    @Suppress("UNREACHABLE_CODE")
+                    false
+                }
+                if (completed == null && NxApp.camera === camera && revision == statusRevision) {
+                    message = "选择已暂存，尚未收到原厂写表确认。可半按快门后刷新。"
+                    render()
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (NxApp.camera === camera && revision == statusRevision) {
+                    message = "自动读取状态失败：${e.message ?: "请刷新重试"}"
+                    render()
+                }
+            }
+        }
     }
 
     private fun stageText(snapshot: ExposureControls.LooksState): String = when {
@@ -340,6 +409,7 @@ class LutLibraryActivity : OneUiInfoActivity() {
 
     private fun work(action: suspend () -> Unit) {
         if (busy) return
+        stopStatusRefresh()
         busy = true
         render()
         lifecycleScope.launch {

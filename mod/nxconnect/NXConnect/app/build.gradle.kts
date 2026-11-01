@@ -24,8 +24,8 @@ android {
         targetSdk = 35
         testInstrumentationRunner = "com.nxwa.nxconnect.GalleryInteractionProbe"
         // 版本规则：<主>.<次>.<修订>；每加一次功能或修一批 bug 就把 versionCode +1
-        versionCode = 77
-        versionName = "0.20.29"
+        versionCode = 78
+        versionName = "0.20.30"
 
         buildConfigField("String", "BUILD_STAMP", "\"$buildStamp\"")
         resValue("string", "build_stamp", "\"$buildStamp\"")

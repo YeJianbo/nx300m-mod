@@ -59,13 +59,15 @@ def build(custom_shortcut=False, pending_wifi=None, menu_shortcut=False, fn_shor
         if increment['nx300m-mod/' + name] != (PROJECT / source).read_bytes():
             raise RuntimeError('Rebuild current LUT increment: ' + name)
     package.update(increment)
-    for name in ('mfw-ram-stage.sh', 'gui_mfw.NX300M'):
-        source = 'ram-stage.sh' if name == 'mfw-ram-stage.sh' else name
+    for name in ('mfw-ram-stage.sh', 'gui_mfw.NX300M', 'gui_preview.NX300M', 'mfw-panel-actions.sh'):
+        source = {'mfw-ram-stage.sh': 'ram-stage.sh', 'mfw-panel-actions.sh': 'panel-actions.sh'}.get(name, name)
         package['nx300m-mod/' + name] = (PROJECT/'mod/deployment/mfw'/source).read_bytes().replace(b'\r\n',b'\n')
     # Check the full merged RAM manifest, including unchanged base service files.
     manifest = package['nx300m-mod/runtime-files.list'].decode('ascii').splitlines()
     if len(manifest) != len(set(manifest)):
         raise RuntimeError('Duplicate RAM runtime entries')
+    manifest = sorted(set(manifest) | {'gui_preview.NX300M'})
+    package['nx300m-mod/runtime-files.list'] = ('\n'.join(manifest) + '\n').encode('ascii')
     for name in manifest:
         if name.startswith('/') or '..' in name.split('/') or 'nx300m-mod/' + name not in package:
             raise RuntimeError('Incomplete merged RAM runtime: ' + name)
@@ -105,9 +107,10 @@ def build(custom_shortcut=False, pending_wifi=None, menu_shortcut=False, fn_shor
             raise RuntimeError('Original Fn panel differs from its first deployment record')
         package['nx300m-mod/fn-panel/bin/nxui.arm'] = binary
         package['nx300m-mod/fn-panel/gui_mfw.NX300M'] = (PROJECT / 'mod/deployment/mfw/fn-gui_mfw.NX300M').read_bytes().replace(b'\r\n', b'\n')
+        package['nx300m-mod/fn-panel/gui_preview.NX300M'] = (PROJECT / 'mod/deployment/mfw/gui_preview.NX300M').read_bytes().replace(b'\r\n', b'\n')
         package['nx300m-mod/fn-panel/mfw-panel-actions.sh'] = (PROJECT / 'mod/deployment/mfw/fn-panel-actions.sh').read_bytes()
         package['nx300m-mod/mfw-panel.sh'] = (PROJECT / 'mod/deployment/mfw/fn-panel.sh').read_bytes()
-        extra = ('fn-panel/bin/nxui.arm', 'fn-panel/gui_mfw.NX300M', 'fn-panel/mfw-panel-actions.sh')
+        extra = ('fn-panel/bin/nxui.arm', 'fn-panel/gui_mfw.NX300M', 'fn-panel/gui_preview.NX300M', 'fn-panel/mfw-panel-actions.sh')
         package['nx300m-mod/runtime-files.list'] = ('\n'.join(sorted(set(manifest).union(extra))) + '\n').encode('ascii')
         manifest = package['nx300m-mod/runtime-files.list'].decode('ascii').splitlines()
         package.pop('nx300m-mod/NO_PANEL_SHORTCUT', None)
@@ -174,19 +177,24 @@ def flushed(path, data):
         raise RuntimeError('Readback differs: ' + str(path))
 
 
-def deploy(package, stamp, serial, custom_shortcut=False, menu_shortcut=False, fn_shortcut=False):
+def deploy(package, stamp, serial, custom_shortcut=False, menu_shortcut=False, fn_shortcut=False,
+           *, preserve_autoexec=False):
     root = Path('H:/')
     identity = volume(root, serial)
     current = (root / 'autoexec.sh').read_bytes()
-    known = [(PROJECT / 'mod/deployment/mfw' / name).read_bytes().replace(b'\r\n', b'\n')
-             for name in ('autoexec-lens-wifi-mem.sh', 'autoexec-connected.sh', 'autoexec-services.sh')]
-    known.append(known[1].replace(b'NX_REMOTE_CUSTOM_KEY=0', b'NX_REMOTE_CUSTOM_KEY=1'))
-    known.append(known[1].replace(b'export NX_REMOTE_CUSTOM_KEY=0 NX_REMOTE_PANEL_SHORTCUT=0',
-        b'export NX_REMOTE_CUSTOM_KEY=0 NX_REMOTE_PANEL_SHORTCUT=0\nexport NX_REMOTE_MENU_KEY=1'))
-    known.append(known[1].replace(b'export NX_REMOTE_CUSTOM_KEY=0 NX_REMOTE_PANEL_SHORTCUT=0',
-        b'export NX_REMOTE_CUSTOM_KEY=0 NX_REMOTE_PANEL_SHORTCUT=1\nexport NX_REMOTE_MENU_KEY=0'))
-    if current not in known:
-        raise RuntimeError('Unknown current startup entry; not replacing it')
+    if preserve_autoexec:
+        if any((root / name).resolve() == (root / 'autoexec.sh').resolve() for name in package):
+            raise RuntimeError('Preserved startup entry is included in the update')
+    else:
+        known = [(PROJECT / 'mod/deployment/mfw' / name).read_bytes().replace(b'\r\n', b'\n')
+                 for name in ('autoexec-lens-wifi-mem.sh', 'autoexec-connected.sh', 'autoexec-services.sh')]
+        known.append(known[1].replace(b'NX_REMOTE_CUSTOM_KEY=0', b'NX_REMOTE_CUSTOM_KEY=1'))
+        known.append(known[1].replace(b'export NX_REMOTE_CUSTOM_KEY=0 NX_REMOTE_PANEL_SHORTCUT=0',
+            b'export NX_REMOTE_CUSTOM_KEY=0 NX_REMOTE_PANEL_SHORTCUT=0\nexport NX_REMOTE_MENU_KEY=1'))
+        known.append(known[1].replace(b'export NX_REMOTE_CUSTOM_KEY=0 NX_REMOTE_PANEL_SHORTCUT=0',
+            b'export NX_REMOTE_CUSTOM_KEY=0 NX_REMOTE_PANEL_SHORTCUT=1\nexport NX_REMOTE_MENU_KEY=0'))
+        if current not in known:
+            raise RuntimeError('Unknown current startup entry; not replacing it')
     output = OUT / 'reader' / ('card-' + serial) / stamp
     output.mkdir(parents=True, exist_ok=False)
     report = {'status': 'preparing', 'volume': identity, 'files': [],
@@ -235,6 +243,8 @@ def deploy(package, stamp, serial, custom_shortcut=False, menu_shortcut=False, f
         for name, data in package.items():
             if (root / name).read_bytes() != data:
                 raise RuntimeError('Final card readback differs: ' + name)
+        if preserve_autoexec and (root / 'autoexec.sh').read_bytes() != current:
+            raise RuntimeError('Preserved startup entry changed during deployment')
         unchanged_before = [item for item in before if item['path'] not in package and item['path'] not in retired]
         unchanged_after = [item for item in inventory(root) if item['path'] not in package]
         if unchanged_before != unchanged_after:
@@ -242,6 +252,7 @@ def deploy(package, stamp, serial, custom_shortcut=False, menu_shortcut=False, f
         volume(root, serial)
         report.update(status='deployed_not_executed', readback_verified=len(package),
                       changed_files=len(staged), unrelated_files=len(unchanged_before),
+                      autoexec_preserved=preserve_autoexec,
                       retired_markers=retired,
                       unrelated_file_metadata_unchanged=True, backup_directory=str(output / 'before'))
     except BaseException as error:
@@ -282,21 +293,22 @@ if __name__ == '__main__':
             names = ('autoexec.sh', 'nx300m-mod/bin/nxui.arm', 'nx300m-mod/bin/nx-remote-controller.arm',
                 'nx300m-mod/fonts/mfw-font.charset', 'nx300m-mod/mfw-panel.sh',
                 'nx300m-mod/mfw-ram-stage.sh', 'nx300m-mod/gui_mfw.NX300M',
+                'nx300m-mod/gui_preview.NX300M', 'nx300m-mod/mfw-panel-actions.sh', 'nx300m-mod/runtime-files.list',
                 'nx300m-mod/lut-panel.sh', 'nx300m-mod/RESTART_SERVICE', 'nx300m-mod/LUT-TEST-START.txt')
-            # No runtime asset is added by this entry; reject a partial update
-            # if the current full staged service lacks a declared resource.
+            # Keep the current runtime complete while adding the menu assets.
             manifest = package['nx300m-mod/runtime-files.list']
             current_manifest = Path('H:/nx300m-mod/runtime-files.list').read_bytes()
             original_entries = set(current_manifest.decode('ascii').splitlines())
             new_entries = set(manifest.decode('ascii').splitlines())
-            allowed_extra = {'fn-panel/bin/nxui.arm', 'fn-panel/gui_mfw.NX300M', 'fn-panel/mfw-panel-actions.sh'} if args.fn_shortcut else set()
+            allowed_extra = {'gui_preview.NX300M'}
+            if args.fn_shortcut:
+                allowed_extra.update({'fn-panel/bin/nxui.arm', 'fn-panel/gui_mfw.NX300M', 'fn-panel/gui_preview.NX300M', 'fn-panel/mfw-panel-actions.sh'})
             if (original_entries - new_entries or new_entries - original_entries - allowed_extra or
                     any(not (Path('H:/nx300m-mod')/line).is_file() for line in original_entries)):
                 raise RuntimeError('Panel-only update requires the complete matching runtime manifest')
             if args.fn_shortcut:
-                # Restore only the Fn box, leaving the existing independent LUT
-                # renderer/menu and its metadata untouched on this card.
-                names = ('autoexec.sh', 'nx300m-mod/bin/nx-remote-controller.arm',
+                names = ('autoexec.sh', 'nx300m-mod/bin/nx-remote-controller.arm', 'nx300m-mod/bin/nxui.arm',
+                    'nx300m-mod/mfw-panel-actions.sh',
                     'nx300m-mod/mfw-panel.sh', 'nx300m-mod/mfw-ram-stage.sh',
                     'nx300m-mod/runtime-files.list', 'nx300m-mod/RESTART_SERVICE',
                     'nx300m-mod/LUT-TEST-START.txt',

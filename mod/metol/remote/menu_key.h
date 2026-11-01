@@ -146,7 +146,7 @@ static void menu_key_child(int channel, pid_t parent) {
                 } else if(tap && mode=='c') {
                     message.type='D';message.triggered_at=released;
                     if(send(channel,&message,sizeof message,MSG_DONTWAIT|MSG_NOSIGNAL)==(ssize_t)sizeof message)
-                        fn_log("custom tap dispatched cycle held_ms=%lld",duration);
+                        fn_log("custom tap dispatched lut panel held_ms=%lld",duration);
                     else goto closed;
                 } else if(mode!='c')
                     fn_log("key release held_ms=%lld cancelled=%d suppressed=%d in_window=%d",
@@ -247,7 +247,13 @@ static void menu_key_poll(void) {
                     if(panel_shortcut.pid)menu_key_service.triggers++;
                 } else fn_log("trigger received while panel pid=%ld alive",(long)panel_shortcut.pid);
             } else if(message.type=='D') {
-                if(!menu_key_service.cycle_pid) {
+                if(menu_key_service.mode=='c') {
+                    if(!panel_shortcut.pid) {
+                        fn_log("custom tap opening lut panel");
+                        custom_key_launch_lut_panel(message.triggered_at);
+                        if(panel_shortcut.pid)menu_key_service.triggers++;
+                    } else fn_log("custom tap ignored: panel pid=%ld alive",(long)panel_shortcut.pid);
+                } else if(!menu_key_service.cycle_pid) {
                     lut_cycle_launch();
                 } else fn_log("double tap ignored: cycle pid=%ld running",(long)menu_key_service.cycle_pid);
             } else if(message.type=='F'){menu_key_shutdown();break;}
@@ -271,7 +277,7 @@ static void hold_key_status(char *json,size_t size,int want_menu) {
         (want_menu ? menu_key_service.mode=='m' : menu_key_service.mode!='m');
     const char *state=!enabled?"disabled":!menu_key_allowed()?"paused":
         menu_key_service.terminating?"terminating":!menu_key_service.pid?"unavailable":menu_key_service.code?"ready":"starting";
-    const char *entry=menu_key_service.mode=='c'?"tap-custom-cycle-or-hold-panel":
+    const char *entry=menu_key_service.mode=='c'?"tap-custom-lut-or-hold-panel":
                      want_menu?"hold-menu-release":"hold-fn-release";
     snprintf(json,size,"{\"enabled\":%s,\"state\":\"%s\",\"entry\":\"%s\",\"hold_ms\":1200,\"linux_keycode\":%u,\"helper_pid\":%ld,\"triggers\":%u,\"failures\":%u,\"reason\":%u}",
         enabled?"true":"false",state,entry,enabled?menu_key_service.code:0,

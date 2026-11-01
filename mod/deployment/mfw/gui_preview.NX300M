@@ -1,0 +1,8 @@
+button|启用预览 · 原样|preview-enable
+button|单位表测试|preview-identity
+button|黑白测试|preview-monochrome
+button|跟随当前 LUT|preview-sync
+button|关闭预览并恢复|preview-restore
+button|预览状态|preview-status
+button|返回|back
+button|关闭面板|close

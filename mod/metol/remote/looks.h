@@ -95,7 +95,7 @@ static void lk_response(struct mg_connection *c,int code,struct nx_lut_look *loo
     const char *stage=!ready?"hook-unavailable":!selection_valid?"invalid-selection":!exists?(matches && !strcmp(observed.stage,"stock")?"stock":"stock-restore-awaiting-stock-call"):matches?observed.stage:"staged-awaiting-stock-call";
     int forwarded=selection_valid && exists && matches && observed.active && observed.mask==7 && !strcmp(observed.stage,"forwarded-to-stock-api");
     mg_printf(c,"HTTP/1.1 %d %s\r\nContent-Type: application/json; charset=utf-8\r\nTransfer-Encoding: chunked\r\nCache-Control: no-store\r\n\r\n",code,code==202?"Accepted":"OK");
-    mg_printf_http_chunk(c,"{\"native_service\":true,\"strength_supported\":%s,\"persistent\":false,\"image_verified\":false,\"operation\":",ready && lk_strength_ready(pid)?"true":"false");json_string(c,operation);
+    mg_printf_http_chunk(c,"{\"native_service\":true,\"strength_supported\":%s,\"persistence_supported\":true,\"persistent\":%s,\"image_verified\":false,\"operation\":",ready && lk_strength_ready(pid)?"true":"false",nx_lut_selection_persisted()?"true":"false");json_string(c,operation);
     mg_printf_http_chunk(c,",\"root\":");json_string(c,configured);
     mg_printf_http_chunk(c,",\"hook\":{\"ready\":%s,\"root_matches\":%s,\"camera_pid\":",ready?"true":"false",root_matches?"true":"false");
     if (pid) mg_printf_http_chunk(c,"%d",pid);else mg_printf_http_chunk(c,"null");
@@ -150,12 +150,17 @@ static void lk_request(struct mg_connection *c,struct http_message *h,int action
     char id[64]="";unsigned int strength=100;
     if ((action==1 && !lk_select_id(h,id,&strength)) || (action==2 && !lk_empty_body(h))) { reply(c,400,"{\"error\":\"provide a valid id and optional integer strength from 0 to 100, or use the separate stock action\"}");return; }
     char root[PATH_MAX];if (!nx_lut_root(root)) { reply(c,503,"{\"error\":\"configured LUT root is invalid or unavailable\"}");return; }
-    int lock=nx_lut_lock(1,action!=0);
+    /* The first read after startup may restore a saved selection. */
+    int lock=nx_lut_lock(1,1);
     if (lock<0) { reply(c,errno==EWOULDBLOCK || errno==EAGAIN?409:500,"{\"error\":\"LUT engine lock unavailable\"}");return; }
     struct nx_lut_look looks[NX_LUT_MAX_LOOKS];int count=0,result=nx_lut_catalog(looks,&count);
     if (result) { close(lock);reply(c,503,"{\"error\":\"deployed looks.txt is missing or invalid\"}");return; }
     int request_pid=0,root_matches=0;
     if (action && !lk_hook(&request_pid,&root_matches)) { close(lock);reply(c,503,"{\"error\":\"current camera has no matching LUT hook and root\"}");return; }
+    if (!action && lk_ready()) {
+        int restored=nx_lut_restore_selection();
+        if (restored) fprintf(stderr,"LUT saved selection not restored: %d\n",restored);
+    }
     if (action==1) {
         if (!lk_strength_allowed(request_pid,strength)) { close(lock);reply(c,409,"{\"error\":\"current camera LUT hook does not support adjustable strength\"}");return; }
         int index=-1;for (int i=0;i<count;i++) if (!strcmp(id,looks[i].id)) { index=i;break; }

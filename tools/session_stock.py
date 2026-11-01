@@ -334,6 +334,7 @@ def _inspect_local_session():
                         'programmed_width': resolution>>16, 'programmed_height': resolution&0xffff,
                         'frame_generated': False, 'image_verified': False}
         return {'namespace_pid': pid, 'camera_pids': camera, 'metol_pids': metol, 'remote_pids': remote, 'running': bool(camera), 'dial_locked': locked,
+                'firmware': state.get('firmware'),
                 'backend_available': True, 'backend_error': None, 'camera_state': 'running' if camera else 'stopped',
                 'exposure_controls_ready': exposure_ready,
                 'capture_status_ready': scalar_ready['capture-status'],

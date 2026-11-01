@@ -38,7 +38,7 @@ static int count, item_count, selected, menu, page, live, dirty = 1, quit;
 /* LUT mode stages a table for the NX300M firmware's next LUT call. MENU
  * restores the entry selection; OK, retain and half-press keep it staged. */
 static int lut_mode = 0;
-static int mfw_services, mfw_selected, mfw_readonly, mfw_open_lut;
+static int mfw_services, mfw_selected, mfw_readonly, mfw_open_lut, mfw_preview;
 static const char *mfw_stock_key;
 static char mfw_status[1024] = "正在读取机身服务状态…";
 static int lut_keep = 0;
@@ -49,7 +49,7 @@ static struct nx_panel_input panel_input = {.ev_fd = -1};
 static int busy_kind, child_fd = -1, output_len, child_timed_out;
 static pid_t child;
 static pid_t mfw_retired_child;
-static int mfw_child_readonly;
+static int mfw_child_readonly, mfw_child_preview;
 static long long mfw_cancel_started;
 static long long child_started, lifetime;
 static long long service_due;
@@ -93,31 +93,59 @@ static void panel_drain_visibility(void) {
     XEvent event;
     while (XCheckTypedWindowEvent(display, window, VisibilityNotify, &event)) panel_visibility_event(&event);
 }
+static int panel_is_stock_parent(Window candidate) {
+    XClassHint hint; XWindowAttributes attributes;
+    memset(&hint, 0, sizeof hint);
+    int match = 0;
+    if (XGetClassHint(display, candidate, &hint)) {
+        match = (hint.res_name && (!strcmp(hint.res_name, "di-camera-app") || !strcmp(hint.res_name, "di-camera-app-nx300"))) ||
+            (hint.res_class && (!strcmp(hint.res_class, "di-camera-app") || !strcmp(hint.res_class, "di-camera-app-nx300")));
+        if (hint.res_name) XFree(hint.res_name);
+        if (hint.res_class) XFree(hint.res_class);
+    }
+    if (!match || !XGetWindowAttributes(display, candidate, &attributes) || attributes.map_state != IsViewable ||
+            attributes.class != InputOutput || attributes.depth != DefaultDepth(display, screen) ||
+            attributes.width < height || attributes.height < width) return 0;
+    panel_parent_height = attributes.height;
+    return 1;
+}
+static Window panel_stock_in_stack(Window parent, unsigned depth) {
+    Window tree_root, returned_parent, *children = NULL, found = None; unsigned count = 0;
+    if (depth >= 4 || !XQueryTree(display, parent, &tree_root, &returned_parent, &children, &count)) return None;
+    /* XQueryTree orders siblings bottom to top. Prefer the currently raised
+     * stock window when a dismissed transient left X focus at PointerRoot. */
+    for (unsigned i = count; i > 0 && found == None; i--) {
+        XWindowAttributes attributes;
+        Window candidate = children[i-1];
+        if (!XGetWindowAttributes(display, candidate, &attributes) || attributes.map_state != IsViewable) continue;
+        if (panel_is_stock_parent(candidate)) found = candidate;
+        else found = panel_stock_in_stack(candidate, depth+1);
+    }
+    if (children) XFree(children);
+    return found;
+}
 static Window panel_stock_parent(void) {
-    Window candidate; int revert;
-    XGetInputFocus(display, &candidate, &revert);
+    Window candidate, focus; int revert;
+    XGetInputFocus(display, &focus, &revert);
+    candidate = focus;
     XErrorHandler old = XSetErrorHandler(nx_panel_input_ignore_error);
     Window found = None;
+    const char *source = "focus";
     for (unsigned depth = 0; depth < 16 && candidate != None && candidate != PointerRoot &&
             candidate != RootWindow(display, screen); depth++) {
-        XClassHint hint; XWindowAttributes attributes;
-        memset(&hint, 0, sizeof hint);
-        int match = 0;
-        if (XGetClassHint(display, candidate, &hint)) {
-            match = (hint.res_name && (!strcmp(hint.res_name, "di-camera-app") || !strcmp(hint.res_name, "di-camera-app-nx300"))) ||
-                (hint.res_class && (!strcmp(hint.res_class, "di-camera-app") || !strcmp(hint.res_class, "di-camera-app-nx300")));
-            if (hint.res_name) XFree(hint.res_name);
-            if (hint.res_class) XFree(hint.res_class);
-        }
-        if (match && XGetWindowAttributes(display, candidate, &attributes) && attributes.map_state == IsViewable &&
-                attributes.depth == DefaultDepth(display, screen) && attributes.width >= height && attributes.height >= width) {
-            found = candidate; panel_parent_height = attributes.height; break;
-        }
+        if (panel_is_stock_parent(candidate)) { found = candidate; break; }
         Window tree_root, parent, *children = NULL; unsigned count;
         if (!XQueryTree(display, candidate, &tree_root, &parent, &children, &count)) break;
         if (children) XFree(children);
         candidate = parent;
     }
+    /* An actual focused foreign dialog still owns the display. Only recover
+     * through the stock window tree when X has no concrete focused client. */
+    if (found == None && (focus == None || focus == PointerRoot || focus == RootWindow(display, screen))) {
+        source = "stock-stack";
+        found = panel_stock_in_stack(RootWindow(display, screen), 0);
+    }
+    fprintf(stderr, "PANEL_PARENT_LOOKUP source=%s focus=0x%lx stock=0x%lx\n", source, focus, found);
     XSync(display, False); XSetErrorHandler(old);
     return found;
 }
@@ -396,7 +424,8 @@ static int start_child(int kind, int index, const char *command) {
     return 1;
 }
 static int mfw_action_allowed(const char *action) {
-    const char *allowed[] = {"status", "network-info", "lut", "menu", "gallery", "disable-autostart", "enable-autostart", "close"};
+    const char *allowed[] = {"status", "network-info", "lut", "menu", "gallery", "disable-autostart", "enable-autostart", "close",
+        "preview", "back", "preview-enable", "preview-identity", "preview-monochrome", "preview-sync", "preview-restore", "preview-status"};
     for (unsigned int i = 0; i < sizeof allowed / sizeof *allowed; i++)
         if (!strcmp(action, allowed[i])) return 1;
     return 0;
@@ -432,10 +461,12 @@ static int start_mfw_action(const char *action) {
     }
     setpgid(pid, pid); close(pipefd[1]); fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
     child_fd = pipefd[0]; child = pid; busy_kind = 5;
-    mfw_child_readonly = !strcmp(action, "status") || !strcmp(action, "network-info");
+    mfw_child_preview = !strncmp(action, "preview-", 8);
+    mfw_child_readonly = !strcmp(action, "status") || !strcmp(action, "network-info") || !strcmp(action, "preview-status");
     mfw_cancel_started = 0;
     pipe_eof = child_timed_out = output_len = 0; output[0] = 0; child_started = now_ms();
-    if (mfw_child_readonly)
+    if (mfw_child_preview) mfw_status_message(mfw_child_readonly ? "正在读取预览状态…" : "正在更新预览，完成后返回取景…");
+    else if (mfw_child_readonly)
         mfw_status_message(!strcmp(action, "status") ? "正在读取机身服务状态…" : "正在读取网络连接信息…");
     return 1;
 }
@@ -445,7 +476,17 @@ static void activate_mfw_item(int index) {
     if (!mfw_action_allowed(action)) { message("此操作不可用"); return; }
     if (!strcmp(action, "close")) { queue.close_requested = 1; return; }
     if (child) return;
-    if (mfw_readonly && strcmp(action, "status") && strcmp(action, "network-info")) { message("截图模式不执行操作"); return; }
+    if (!strcmp(action, "preview") || !strcmp(action, "back")) {
+        int next_preview = !strcmp(action, "preview");
+        if (load_menu(next_preview ? "gui_preview.NX300M" : "gui_mfw.NX300M")) {
+            mfw_preview = next_preview; mfw_selected = 0;
+            mfw_status_message(next_preview
+                ? "先选启用预览，再在原厂智能滤镜中选 Miniature。\n单位表应保持原样，黑白表应去掉颜色。\n操作成功后自动返回取景。"
+                : "请选择机身服务或 LUT 滤镜。");
+        }
+        return;
+    }
+    if (mfw_readonly && strcmp(action, "status") && strcmp(action, "network-info") && strcmp(action, "preview-status")) { message("截图模式不执行操作"); return; }
     if (!strcmp(action, "lut")) {
         mfw_open_lut = 1; queue.close_requested = 1; return;
     }
@@ -494,11 +535,14 @@ static void poll_child(void) {
             }
             return;
         }
-        if (age > 12000 && !child_timed_out) {
+        /* The preview loader has its own 15 s recovery supervisor. Let it
+         * finish before applying the UI task timeout. */
+        long long timeout = busy_kind == 5 && mfw_child_preview ? 20000 : 12000;
+        if (age > timeout && !child_timed_out) {
             child_timed_out = 1; kill(-child, SIGTERM);
             message("后端超时 · 正在停止，请检查相机状态");
         }
-        if (age > 13000) kill(-child, SIGKILL);
+        if (age > timeout + 1000) kill(-child, SIGKILL);
         return;
     }
     if (result < 0 && errno == EINTR) return;
@@ -512,21 +556,30 @@ static void poll_child(void) {
         if (success) {
             snprintf(mfw_status, sizeof mfw_status, "%.*s", (int)sizeof(mfw_status)-1, output);
             message("");
+            if (mfw_child_preview && !mfw_child_readonly) queue.close_requested = 1;
         } else if (mfw_child_readonly) {
             mfw_status_message(mfw_cancel_started
                 ? (queue.close_requested ? "读取已取消" : "读取超时 · 请重试")
                 : "服务信息读取失败 · 请重试");
+        } else if (mfw_child_preview) {
+            snprintf(mfw_status, sizeof mfw_status, "%.*s", (int)sizeof(mfw_status)-1, output);
+            message("预览操作失败 · 详情见上方及面板日志");
         } else message("服务操作失败 · 请查看面板日志");
     } else if (busy_kind == 1) {
         was_commit = queue.committing;
         nx_queue_done(&queue, success);
         if (queue.desired >= 0 && queue.desired != busy_recipe) preview_status();
         else if (success) {
-            if (lut_mode) snprintf(status, sizeof status, "已暂存 %s · 强度 %d%% · 等待原厂 LUT 重载", recipes[busy_recipe].label, lut_strength);
+            if (lut_mode && strstr(output, "PERSIST-WARNING")) snprintf(status, sizeof status, "已暂存 %s · 未保存到卡，仅本次有效", recipes[busy_recipe].label);
+            else if (lut_mode) snprintf(status, sizeof status, "已暂存 %s · 强度 %d%% · 等待原厂 LUT 重载", recipes[busy_recipe].label, lut_strength);
             else snprintf(status, sizeof status, "预览已应用：%s", recipes[busy_recipe].label);
             dirty = 1;
         } else message("应用失败 · 可重新选择以重试");
-        if (was_commit && success) quit = 1;
+        if (was_commit && success && !(lut_mode && strstr(output, "PERSIST-WARNING"))) quit = 1;
+        if (was_commit && success && lut_mode && strstr(output, "PERSIST-WARNING") && !panel_yielded) {
+            queue.close_requested = 0; queue.commit_requested = 0;
+            if (panel_input.unmapped && !panel_show()) request_s1_close();
+        }
         if (!success && !panel_yielded) {
             lut_keep = 0;
             queue.close_requested = 0; queue.commit_requested = 0;
@@ -630,7 +683,7 @@ static void draw(void) {
     if (mfw_services) {
         if (nk_begin(ctx, "NXWA", nk_rect(0, 0, (float)width, (float)height), NK_WINDOW_NO_SCROLLBAR)) {
             nk_layout_row_dynamic(ctx, 26, 1);
-            nk_label_colored(ctx, "NX300M  /  机身服务", NK_TEXT_LEFT, accent);
+            nk_label_colored(ctx, mfw_preview ? "LUT  /  取景预览" : "NX300M  /  机身服务", NK_TEXT_LEFT, accent);
             nk_layout_row_dynamic(ctx, 154, 1);
             if (nk_group_begin(ctx, "mfw-status", 0)) {
                 const char *begin = mfw_status;
@@ -645,13 +698,13 @@ static void draw(void) {
                 }
                 nk_group_end(ctx);
             }
-            nk_layout_row_dynamic(ctx, 48, 2);
+            nk_layout_row_dynamic(ctx, item_count > 8 ? 40 : 48, 2);
             for (i = 0; i < item_count; i++) {
                 snprintf(line, sizeof line, "%s%s", i == mfw_selected ? "› " : "", items[i].label);
                 if (nk_button_label(ctx, line)) { mfw_selected = i; activate_mfw_item(i); }
             }
             nk_layout_row_dynamic(ctx, 23, 1);
-            nk_label_colored(ctx, child ? "正在读取…" : status, NK_TEXT_LEFT, nk_rgb(171, 182, 190));
+            nk_label_colored(ctx, child ? (mfw_child_readonly ? "正在读取…" : "正在执行…") : status, NK_TEXT_LEFT, nk_rgb(171, 182, 190));
         }
         nk_end(ctx); nk_xlib_render(window, nk_rgb(24, 29, 33)); XFlush(display);
         return;
@@ -894,6 +947,10 @@ int main(int argc, char **argv) {
             fclose(selection);
         }
     }
+    if (lut_mode) {
+        const char *notice = getenv("NXUI_LUT_NOTICE");
+        if (notice && *notice) snprintf(status, sizeof status, "%s", notice);
+    }
     recipes_ready = now_ms();
     display = XOpenDisplay(NULL);
     if (!display) { fprintf(stderr, "XOpenDisplay failed\n"); return 4; }
@@ -961,6 +1018,7 @@ int main(int argc, char **argv) {
     }
     menu_ready = now_ms();
     nx_panel_input_init(&panel_input, display, window);
+    if (panel_focus_revert == RevertToParent) nx_panel_input_set_stock_parent(&panel_input, panel_parent);
     focus_ready = now_ms();
     /* Prepare glyphs and the retained image while the stock view is still
      * visible. Mapping an empty black window before this work obscures it. */

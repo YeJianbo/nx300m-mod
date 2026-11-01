@@ -4,7 +4,7 @@
 #include <sys/prctl.h>
 #include "fn_log.h"
 static struct {
-    char launcher[PATH_MAX],disabled[PATH_MAX],no_shortcut[PATH_MAX];
+    char launcher[PATH_MAX],lut_launcher[PATH_MAX],disabled[PATH_MAX],no_shortcut[PATH_MAX];
     pid_t pid;
     int enabled;
 } panel_shortcut;
@@ -16,6 +16,7 @@ static void panel_shortcut_init(void) {
     fn_log("panel shortcut init root=%s opt_in=%s", root?root:"(unset)", opt_in?opt_in:"(unset)");
     if (!nx_mod_root_valid(root)) { fn_log("panel shortcut disabled: invalid mod root"); return; }
     snprintf(panel_shortcut.launcher,sizeof panel_shortcut.launcher,"%s/mfw-panel.sh",root);
+    snprintf(panel_shortcut.lut_launcher,sizeof panel_shortcut.lut_launcher,"%s/lut-panel.sh",root);
     snprintf(panel_shortcut.disabled,sizeof panel_shortcut.disabled,"%s/DISABLED",root);
     snprintf(panel_shortcut.no_shortcut,sizeof panel_shortcut.no_shortcut,"%s/NO_PANEL_SHORTCUT",root);
     if (stat(panel_shortcut.launcher,&state) || !S_ISREG(state.st_mode) || access(panel_shortcut.launcher,R_OK)) {
@@ -34,7 +35,13 @@ static int panel_shortcut_allowed(void) {
     return panel_shortcut.enabled && !media_paused && !stopping &&
         access(panel_shortcut.disabled,F_OK) && access(panel_shortcut.no_shortcut,F_OK);
 }
-static void custom_key_launch_panel(long long triggered_at) {
+static void panel_launch_script(long long triggered_at,const char *script,int lut);
+static void custom_key_launch_panel(long long triggered_at) { panel_launch_script(triggered_at,panel_shortcut.launcher,0); }
+static void custom_key_launch_lut_panel(long long triggered_at) {
+    if (access(panel_shortcut.lut_launcher,R_OK)) { fn_log("lut panel skipped: launcher missing path=%s",panel_shortcut.lut_launcher); return; }
+    panel_launch_script(triggered_at,panel_shortcut.lut_launcher,1);
+}
+static void panel_launch_script(long long triggered_at,const char *script,int lut) {
     if (media_paused || stopping) { fn_log("panel launch skipped: media_paused=%d stopping=%d",media_paused,stopping); return; }
     if (panel_shortcut.pid) { fn_log("panel launch skipped: previous panel pid=%ld still running",(long)panel_shortcut.pid); return; }
     if (!panel_shortcut.launcher[0] || !access(panel_shortcut.disabled,F_OK) || !access(panel_shortcut.no_shortcut,F_OK)) {
@@ -58,13 +65,30 @@ static void custom_key_launch_panel(long long triggered_at) {
         snprintf(fork_value,sizeof fork_value,"%lld",fork_started);
         if (setenv("NX_PANEL_TRIGGER_MS",trigger_value,1) || setenv("NX_PANEL_FORK_MS",fork_value,1))
             fprintf(stderr,"NX_PANEL_TIMING_ENV failed errno=%d\n",errno);
+        if (lut) {
+            /* mfw-panel.sh redirects itself; lut-panel.sh does not, and its
+             * stderr is the only on-card evidence when the camera hangs. */
+            const char *log=getenv("NX_FN_KEY_LOG");
+            if (log && *log) {
+                int fd=open(log,O_WRONLY|O_APPEND|O_CREAT|O_CLOEXEC,0600);
+                if (fd>=0) { dup2(fd,1); dup2(fd,2); if (fd>2) close(fd); }
+            }
+            /* FAT gives the card a new inode identity after every card-reader
+             * round trip; lut-panel.sh rejects a stale inherited identity. */
+            const char *source=getenv("NX300M_MOD_SOURCE_ROOT");
+            struct stat st; char id[64];
+            if (source && *source && !stat(source,&st)) {
+                snprintf(id,sizeof id,"%lu:%lu",(unsigned long)st.st_dev,(unsigned long)st.st_ino);
+                setenv("NX300M_MOD_SOURCE_ID",id,1);
+            } else { unsetenv("NX300M_MOD_SOURCE_ROOT"); unsetenv("NX300M_MOD_SOURCE_ID"); }
+        }
         long long exec_at=now_ms();
         fprintf(stderr,"NX_PANEL_EXEC pid=%ld trigger_ms=%lld fork_ms=%lld exec_ms=%lld elapsed_ms=%lld script=%s\n",
-                (long)getpid(),triggered_at,fork_started,exec_at,exec_at-triggered_at,panel_shortcut.launcher);
-        fn_log("panel exec pid=%ld elapsed_ms=%lld script=%s",(long)getpid(),exec_at-triggered_at,panel_shortcut.launcher);
-        execl("/bin/sh","sh",panel_shortcut.launcher,(char *)NULL);
+                (long)getpid(),triggered_at,fork_started,exec_at,exec_at-triggered_at,script);
+        fn_log("panel exec pid=%ld elapsed_ms=%lld script=%s",(long)getpid(),exec_at-triggered_at,script);
+        execl("/bin/sh","sh",script,(char *)NULL);
         fprintf(stderr,"NX_PANEL_EXEC failed errno=%d\n",errno);
-        fn_log("panel exec failed errno=%d script=%s",errno,panel_shortcut.launcher);
+        fn_log("panel exec failed errno=%d script=%s",errno,script);
         _exit(127);
     }
     panel_shortcut.pid=pid;

@@ -79,20 +79,23 @@ def private_values() -> list[str]:
     return sorted({v for v in values if len(v) >= 6}, key=len, reverse=True)
 
 
-def sanitize(text: str, identifiers: list[str]) -> str:
+def sanitize(text: str, identifiers: list[str], *, preserve_patterns: bool = False) -> str:
     # Keep project-relative examples and remove the developer's directory tree.
     for root in {str(ROOT), ROOT.as_posix(), str(ROOT).replace('\\', '\\\\')}:
         text = text.replace(root, '.')
-    text = re.sub(r'(?i)&\s*[\"\']?[A-Z]:[/\\]+conda[/\\]+envs[/\\]+nx300m-mod[/\\]+python\.exe[\"\']?',
-                  'python', text)
-    text = re.sub(r'(?i)[A-Z]:[/\\]+Adobe[/\\]+LR[/\\]+Adobe Lightroom Classic',
-                  './local/lightroom', text)
-    text = re.sub(r'(?i)[A-Z]:[/\\]+User[/\\]+[^\r\n`\"\']+',
-                  './local/private-reference', text)
-    text = re.sub(r'(?i)[A-Z]:[/\\]+codex[/\\]+project[/\\]+[0-9-]+[/\\]+[^\s`\"\']+',
-                  './local/reference-project', text)
-    text = re.sub(r'(?i)(?:[A-Z]:[/\\]+Users[/\\]+|./local/developer/\\]|\b))[^/\\\s\"\'`]+',
-                  './local/developer', text)
+    # This exporter contains the matching expressions themselves. Keep those
+    # expressions intact when exporting it; redact only actual identifiers.
+    if not preserve_patterns:
+        text = re.sub(r'(?i)&\s*[\"\']?[A-Z]:[/\\]+conda[/\\]+envs[/\\]+nx300m-mod[/\\]+python\.exe[\"\']?',
+                      'python', text)
+        text = re.sub(r'(?i)[A-Z]:[/\\]+Adobe[/\\]+LR[/\\]+Adobe Lightroom Classic',
+                      './local/lightroom', text)
+        text = re.sub(r'(?i)[A-Z]:[/\\]+User[/\\]+[^\r\n`\"\']+',
+                      './local/private-reference', text)
+        text = re.sub(r'(?i)[A-Z]:[/\\]+codex[/\\]+project[/\\]+[0-9-]+[/\\]+[^\s`\"\']+',
+                      './local/reference-project', text)
+        text = re.sub(r'(?i)(?:[A-Z]:[/\\]+Users[/\\]+|/home/)(?!root(?:[/\\]|\b))[^/\\\s\"\'`]+',
+                      './local/developer', text)
     for value in identifiers:
         for variant in {value, value.replace('\\', '/'), value.replace('\\', '\\\\')}:
             text = re.sub(re.escape(variant), lambda _: 'LOCAL_REDACTED', text, flags=re.I)
@@ -106,9 +109,10 @@ def sanitize(text: str, identifiers: list[str]) -> str:
     for value, replacement in mapping.items():
         text = re.sub(re.escape(value), replacement, text, flags=re.I)
     # Uploaded phone screenshots and captures do not belong in the source snapshot.
-    text = re.sub(r']*>', '', text, flags=re.I)
-    text = re.sub(r'!\[[^\]]*\]\([^\n)]*\)', '', text)
-    text = re.sub(r'https://github\.com/user-attachments/[^\s)\"<>]+', '[image omitted]', text)
+    if not preserve_patterns:
+        text = re.sub(r'<img\b[^>]*>', '', text, flags=re.I)
+        text = re.sub(r'!\[[^\]]*\]\([^\n)]*\)', '', text)
+        text = re.sub(r'https://github\.com/user-attachments/[^\s)\"<>]+', '[image omitted]', text)
     return text
 
 
@@ -202,7 +206,9 @@ def main() -> int:
             elif rel.as_posix() in BINARY_ASSETS:
                 output.write_bytes(data)
             else:
-                output.write_text(sanitize(data.decode('utf-8-sig'), identifiers), encoding='utf-8', newline='\n')
+                text = sanitize(data.decode('utf-8-sig'), identifiers,
+                                preserve_patterns=rel.as_posix() == 'tools/export_github_source.py')
+                output.write_text(text, encoding='utf-8', newline='\n')
         for source, destination in {
             'docs/repository/README.md': 'README.md',
             'docs/repository/THIRD_PARTY.md': 'THIRD_PARTY.md',

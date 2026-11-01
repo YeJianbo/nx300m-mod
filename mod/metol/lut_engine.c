@@ -75,12 +75,19 @@ static int action(int argc,char **argv) {
         return ready?0:3;
     }
     if (!strcmp(argv[1],"begin")) {
+        int restored=nx_lut_restore_selection();
+        if (restored) fprintf(stderr,"RESTORE-WARNING saved selection unavailable (%d); keep current selection\n",restored);
         unsigned int generation=0,strength=100;char path[256]="";
         int selected=nx_lut_read_selection_with_strength(NX_LUT_SELECTION,&generation,path,&strength);
         FILE *out=fopen(NX_LUT_BACKUP,"w");if (!out) return 4;
         int written=(selected?fprintf(out,"%u %s %u\n",generation,path,strength):fprintf(out,"0\n"))>=0;
         if (fclose(out)) written=0;
         return written?0:4;
+    }
+    if (!strcmp(argv[1],"restore-selection")) return argc==2?nx_lut_restore_selection():2;
+    if (!strcmp(argv[1],"persist-status")) {
+        if (argc!=2) return 2;
+        puts(nx_lut_selection_persisted()?"PERSISTED":"NOT_SAVED");return 0;
     }
     if (!strcmp(argv[1],"off") || !strcmp(argv[1],"stock")) {
         unsigned int generation,strength;char path[256];

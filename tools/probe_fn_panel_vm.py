@@ -61,9 +61,6 @@ until wget -T 2 -Y off -q -O /perf/fn-entry.json http://127.0.0.1:8781/api/v1/pa
 done
 code=$(sed -n 's/.*"linux_keycode":\([0-9][0-9]*\).*/\1/p' /perf/fn-entry.json)
 [ -n "$code" ]
-/perf/fn.arm "$code" 150
-sleep 1
-! grep -q '^FIRST_FRAME ' /perf/remote.log
 for pass in first second; do
     /perf/fn.arm "$code" 1900
     expected=1; [ "$pass" != second ] || expected=2
@@ -79,22 +76,32 @@ for pass in first second; do
     done
     sleep 1
 done
-# Custom-button gestures: a short tap dispatches the zero-UI look cycle;
-# the long press must still open the panel; the Fn key is never touched.
+# Custom-button gestures: a short tap opens the LUT panel (no zero-UI cycle);
+# the long press must still open the main panel.
 /perf/fn.arm "$code" 150
-sleep 1
-grep -q 'custom tap dispatched' /perf/mod/logs/fn-key.log
-grep -q 'lut cycle: stock ->' /perf/mod/logs/fn-key.log
-grep -q 'lut cycle flash:' /perf/mod/logs/fn-key.log
-/perf/fn.arm "$code" 1900
 attempt=0
-until [ "$(grep -c '^FIRST_FRAME ' /perf/mod/logs/fn-key.log || :)" -eq 3 ]; do
+until grep -q 'lut panel: adapter' /perf/mod/logs/fn-key.log || grep -q 'panel_runtime=' /perf/mod/logs/fn-key.log; do
+    attempt=$((attempt+1)); [ "$attempt" -lt 15 ]; sleep 1
+done
+grep -q 'custom tap opening lut panel' /perf/mod/logs/fn-key.log
+grep -q 'script=/perf/mod/lut-panel.sh' /perf/mod/logs/fn-key.log
+! grep -q 'lut cycle' /perf/mod/logs/fn-key.log
+attempt=0
+until grep -q 'recipes=2 panel=720x272' /perf/mod/logs/fn-key.log; do
+    attempt=$((attempt+1)); [ "$attempt" -lt 15 ]; sleep 1
+done
+sleep 2
+/perf/close.arm /perf/lut-tap.ppm || :
+attempt=0
+until [ "$(grep -c 'panel exited pid=' /perf/mod/logs/fn-key.log || :)" -ge 3 ]; do
     attempt=$((attempt+1)); [ "$attempt" -lt 15 ]; sleep 1
 done
 sleep 1
-/perf/fn.arm "$code" 150
-sleep 1
-grep -q 'lut cycle: stock -> ' /perf/mod/logs/fn-key.log
+/perf/fn.arm "$code" 1900
+attempt=0
+until [ "$(grep -c 'fn panel launcher start' /perf/mod/logs/fn-key.log || :)" -eq 3 ]; do
+    attempt=$((attempt+1)); [ "$attempt" -lt 15 ]; sleep 1
+done
 wget -T 2 -Y off -q -O /perf/health.json http://127.0.0.1:8781/api/v1/health
 grep -q 'READY backend=nuklear-cpu-ximage' /perf/mod/logs/fn-key.log
 grep -q 'NX_CUSTOM_KEY_READY' /perf/remote.log
@@ -104,7 +111,7 @@ for marker in 'daemon start' 'menu key init' 'helper spawned' 'helper ready' 'ke
     grep -q "$marker" /perf/mod/logs/fn-key.log
 done
 [ "$(grep -c 'helper spawned' /perf/mod/logs/fn-key.log)" -eq 1 ]
-printf '{"short_fn_no_launch":true,"long_fn_opens_original_box":true,"menu_close_and_fn_reopen":true,"http_alive":true}\n' > /perf/results.json
+printf '{"short_custom_opens_lut_panel":true,"no_zero_ui_cycle":true,"long_fn_opens_original_box":true,"menu_close_and_fn_reopen":true,"http_alive":true}\n' > /perf/results.json
 kill "$remote"; wait "$remote"
 kill "$stock"
 trap - EXIT
@@ -181,6 +188,9 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
     # The zip's binaries lag the source tree; the lock-tag work only exists in
     # the current build, so the maintained UI must be staged from outputs.
     entries['perf/mod/bin/nxui.arm'] = (0o100755,(PROJECT/'outputs/metol/nxui.arm').read_bytes())
+    # The Custom tap opens lut-panel.sh, which requires these SD assets.
+    entries['perf/mod/bin/lut_engine.arm'] = (0o100755,(PROJECT/'outputs/deployment/smartfilter-preview/sd/nx300m-mod/bin/lut_engine.arm').read_bytes())
+    entries['perf/mod/fonts/mfw-font.charset'] = (0o100644,(PROJECT/'outputs/deployment/lut-mod/sd/nx300m-mod/fonts/mfw-font.charset').read_bytes())
     # Launcher scripts move with the source tree; the deployment zip can lag.
     entries['perf/mod/mfw-panel.sh'] = (0o100755,(PROJECT/'mod/deployment/mfw/fn-panel.sh').read_bytes().replace(b'\r\n',b'\n'))
     entries['perf/mod/fn-panel/mfw-panel-actions.sh'] = (0o100755,(PROJECT/'mod/deployment/mfw/fn-panel-actions.sh').read_bytes().replace(b'\r\n',b'\n'))
@@ -243,7 +253,7 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
             raise RuntimeError('Fn exercise exit '+str(execution['exit_code']))
         collect(out,'results.json')
         collect(out,'fn-entry.json')
-        for name in ('first','second'):
+        for name in ('first','second','lut-tap'):
             packed = vm.call('exec','gzip -c /perf/'+name+'.ppm > /perf/'+name+'.ppm.gz')
             if packed['exit_code']:
                 raise RuntimeError('Screenshot compression failed')

@@ -66,6 +66,8 @@ object ExposureControls {
         val selectedId: String?, val writable: Boolean, val stage: String,
         val forwarded: Boolean, val forwardedMask: Int?,
         val strength: Int = 100, val strengthSupported: Boolean = false,
+        val persistent: Boolean = false, val persistenceSupported: Boolean = false,
+        val generation: Long? = null,
     )
     val PICTURE_WIZARD_FIELDS = listOf("saturation", "sharpness", "contrast", "color_tone")
     val RGB_FIELDS = listOf("red", "green", "blue")
@@ -197,7 +199,9 @@ object ExposureControls {
             hook["ready"] as? Boolean ?: throw NxException("LUT 桥就绪状态无效"),
             MiniJson.str(status, "stage") ?: throw NxException("缺少 LUT 阶段"),
             status["forwarded"] as? Boolean ?: throw NxException("缺少 LUT 转发状态"),
-            integer(status["forwarded_mask"]), strength, strengthSupported)
+            integer(status["forwarded_mask"]), strength, strengthSupported,
+            data["persistent"] == true, data["persistence_supported"] == true,
+            (selection["generation"] as? Number)?.toLong()?.takeIf { it in 1..0xffffffffL })
     }
 
     private fun integer(value: Any?): Int? = when (value) {

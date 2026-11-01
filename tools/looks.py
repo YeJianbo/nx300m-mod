@@ -34,6 +34,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('list')
+    rename = commands.add_parser('rename', help='修改显示名称，保留风格 ID 和颜色表')
+    rename.add_argument('id'); rename.add_argument('label')
     commands.add_parser('sync', help='同步到运行中的模拟器，保留当前选择')
     add = commands.add_parser('add')
     add.add_argument('cube', type=Path); add.add_argument('id'); add.add_argument('--label'); add.add_argument('--input-space', default='unspecified')
@@ -64,6 +66,7 @@ def main():
     commands.add_parser('inventory')
     args = parser.parse_args(); library = LookLibrary()
     if args.command == 'list': result = library.list()
+    elif args.command == 'rename': result = library.rename(args.id, args.label)
     elif args.command == 'sync':
         from metol_stock import sync_looks
         result = sync_looks()

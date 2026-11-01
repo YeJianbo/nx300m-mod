@@ -24,6 +24,7 @@ def main():
         "nx300m-mod/mfw-panel.sh": ROOT / "mod/deployment/mfw/panel.sh",
         "nx300m-mod/mfw-panel-actions.sh": ROOT / "mod/deployment/mfw/panel-actions.sh",
         "nx300m-mod/gui_mfw.NX300M": ROOT / "mod/deployment/mfw/gui_mfw.NX300M",
+        "nx300m-mod/gui_preview.NX300M": ROOT / "mod/deployment/mfw/gui_preview.NX300M",
         "nx300m-mod/fonts/fonts.conf.in": ROOT / "mod/deployment/mfw/fonts.conf.in",
         "nx300m-mod/fonts/mfw-font.charset": ROOT / "outputs/metol/mfw-font.charset",
         "README.md": ROOT / "docs/MFW_SERVICES.md",

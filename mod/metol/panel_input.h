@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
@@ -13,7 +14,7 @@
 struct nx_panel_input_event { long tv_sec, tv_usec; unsigned short type, code; int value; };
 struct nx_panel_input {
     Display *display;
-    Window window, previous_focus;
+    Window window, previous_focus, fallback_focus;
     int previous_revert, focus_saved, focus_restored, unmapped, ev_fd;
 };
 static int nx_panel_input_ignore_error(Display *display, XErrorEvent *event) {
@@ -21,11 +22,33 @@ static int nx_panel_input_ignore_error(Display *display, XErrorEvent *event) {
 }
 static void nx_panel_input_init(struct nx_panel_input *input, Display *display, Window window) {
     input->display = display; input->window = window; input->ev_fd = -1;
+    input->fallback_focus = None;
     input->previous_revert = RevertToPointerRoot;
     XErrorHandler old = XSetErrorHandler(nx_panel_input_ignore_error);
     XGetInputFocus(display, &input->previous_focus, &input->previous_revert);
     XSetErrorHandler(old);
     input->focus_saved = 1; input->focus_restored = input->unmapped = 0;
+}
+static inline void nx_panel_input_set_stock_parent(struct nx_panel_input *input, Window parent) {
+    input->fallback_focus = parent;
+    Window previous = input->previous_focus;
+    int transient = 0;
+    if (previous != None && previous != PointerRoot && previous != DefaultRootWindow(input->display)) {
+        char *name = NULL;
+        XErrorHandler old = XSetErrorHandler(nx_panel_input_ignore_error);
+        XFetchName(input->display, previous, &name);
+        transient = name && !strcmp(name, "Metol-NX300M");
+        if (name) XFree(name);
+        XSync(input->display, False); XSetErrorHandler(old);
+    }
+    /* The 1.5 s LUT notice may disappear while the interactive menu is open.
+     * Restore the native camera, rather than that other MOD window's XID. */
+    if (transient || previous == None || previous == PointerRoot || previous == DefaultRootWindow(input->display)) {
+        input->previous_focus = parent;
+        input->previous_revert = RevertToParent;
+    }
+    fprintf(stderr, "PANEL_FOCUS_SNAPSHOT captured=0x%lx restore=0x%lx fallback=0x%lx transient=%d\n",
+        previous, input->previous_focus, parent, transient);
 }
 static void nx_panel_input_restore_focus(struct nx_panel_input *input) {
     if (!input->display || !input->focus_saved || input->focus_restored) return;
@@ -37,10 +60,17 @@ static void nx_panel_input_restore_focus(struct nx_panel_input *input) {
      * must not move it back to an older stock window in that case. */
     if (current == input->window) {
         Window target = input->previous_focus;
+        int target_revert = input->previous_revert;
         if (target == None || (target != PointerRoot &&
-            (!XGetWindowAttributes(input->display, target, &attributes) || attributes.map_state != IsViewable)))
+            (!XGetWindowAttributes(input->display, target, &attributes) || attributes.map_state != IsViewable))) {
             target = PointerRoot;
-        XSetInputFocus(input->display, target, input->previous_revert, CurrentTime);
+            if (input->fallback_focus != None && XGetWindowAttributes(input->display, input->fallback_focus, &attributes) &&
+                    attributes.map_state == IsViewable) {
+                target = input->fallback_focus;
+                target_revert = RevertToParent;
+            }
+        }
+        XSetInputFocus(input->display, target, target_revert, CurrentTime);
         fprintf(stderr, "PANEL_FOCUS_RETURN from=0x%lx to=0x%lx\n", current, target);
     } else fprintf(stderr, "PANEL_FOCUS_RETURN retained=0x%lx\n", current);
     XSync(input->display, False);

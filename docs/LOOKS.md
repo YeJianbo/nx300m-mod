@@ -14,11 +14,16 @@ python tools/looks.py add "D:/LUT/example.cube" my-look --label "自定义风格
 python tools/looks.py add-metol-slot "D:/LUT/slot.bin" my-metol-look --input-space srgb
 python tools/looks.py add-dcp-look "D:/Profiles/profile.dcp" my-dcp-look --label "DCP 风格"
 python tools/looks.py list
+python tools/looks.py rename my-look "新的显示名称"
 python tools/looks.py build my-look
 python tools/looks.py sync
 ```
 
 `source.cube` 是可编辑源表；`table.d4lut` 是三路 9³、10 bit 的直接表；`table-stock3d.d4lut` 用于原厂 3D LUT 与风格组合的路径。修改源表后重新运行 `build`，再同步到目标环境。
+
+`rename` 只修改显示名称，保留风格 ID、源表、已编译颜色表和当前选择的对应关系。改名后用 `sync` 更新模拟器，或重新打包更新 SD 卡目录。
+
+列表优先显示 Hard Mono、GR Neg、GR Pos、富士 CC、Astia、Eterna、NC、NN，其余风格接在后面；诊断版的五款测试表列在末尾。
 
 `input_space` 标明来源的颜色约定。NX300M ISP LUT 所处的颜色空间及前后变换仍需实机确认，标准 sRGB LUT 的视觉结果需要校色。
 

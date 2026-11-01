@@ -75,11 +75,6 @@ def build(include_diagnostics=False):
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text((PROJECT / source).read_text(encoding='utf-8'), encoding='utf-8', newline='\n')
     look_ids = bundle_looks(root)
-    # Keep the diagnostic monochrome first, matching the existing Custom cycle.
-    catalog = root / 'looks.txt'
-    rows = catalog.read_text('utf-8').splitlines(True)
-    rows.sort(key=lambda row: 0 if row.startswith('nx300-hard-mono|') else 1)
-    catalog.write_text(''.join(rows), encoding='utf-8', newline='\n')
     if include_diagnostics:
         from build_lut_diagnostics import build as build_diagnostics
         build_diagnostics()

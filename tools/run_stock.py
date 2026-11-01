@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path, PurePosixPath
+from mfw_runtime import firmware_profile, overlay_setup, LIBRARY as MFW_LIBRARY
 
 PROJECT = Path(__file__).resolve().parents[1]
 GUEST = "/opt/nx300m-lab/stock-1.15"
@@ -93,6 +94,8 @@ done
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument('--firmware', choices=('stock', 'mfw'), default='stock',
+                        help='mfw: privately overlay the verified camera-exported script-entry library')
     parser.add_argument('--qemu', help='Bind this alternate host QEMU only inside the private camera mount namespace')
     parser.add_argument("--program", choices=("all", "busybox", "st", "prefman", "prefman-info", "st-cap", "camera"), default="all")
     parser.add_argument("--display", action="store_true", help="Provide a private Xvfb display for the original application")
@@ -150,6 +153,9 @@ def main():
     parser.add_argument("--tag", default='', help="Short label to preserve a distinct configuration/run")
     parser.add_argument('--output-dir', type=Path, default=PROJECT / 'outputs/firmware-runtime', help='Separate session/log/framebuffer directory for parallel development')
     args = parser.parse_args()
+    if args.firmware == 'mfw' and args.program != 'camera':
+        parser.error('--firmware mfw requires --program camera')
+    firmware = firmware_profile(args.firmware, prepare=True)
     if args.firmware_entry_diagnostics and not args.firmware_mod:
         parser.error('--firmware-entry-diagnostics requires --firmware-mod')
     if args.manual_lens_wifi and not args.firmware_mod:
@@ -258,6 +264,7 @@ def main():
     qemu_metadata = json.loads(qemu_source_file.read_text(encoding='utf-8')) if qemu_source_file.is_file() else {}
     qemu_source = qemu_override or qemu_metadata.get('package_url') or qemu_metadata.get('asset') or str(PROJECT / 'work/qemu/qemu-arm-static')
     summary = {"model":"NX300M", "version":"1.15", "binary_sha256":provenance["local_binary_sha256"],
+               "firmware":firmware,
                "qemu_source":qemu_source, "execution":"unmodified stock ARM executables, user-mode QEMU, private chroot, unprivileged UID, isolated network", "runs":{}}
     for name, argv in commands.items():
         if args.program not in ("all", name): continue
@@ -417,6 +424,8 @@ set +e
             elif args.keep_awake:
                 raise ValueError('--keep-awake requires --preferences')
             override_setup = ''
+            if args.firmware == 'mfw':
+                override_setup += overlay_setup(GUEST, wsl_path(MFW_LIBRARY))
             if args.mmap_script_fix:
                 relative = '/usr/lib/sys-mmap-script/sysmmap-script-NX300M'
                 original_script = (core_root / relative.lstrip('/')).read_bytes()
@@ -428,7 +437,7 @@ set +e
                 # Copy onto ext4 first: old 32-bit stock stat() overflows on
                 # the 64-bit inode numbers exported by the Windows mount.
                 guest_override = GUEST + '/tmp/sysmmap-script-override'
-                override_setup = f'cp {shlex.quote(wsl_path(override))} {shlex.quote(guest_override)} && chmod 644 {shlex.quote(guest_override)} && mount --bind {shlex.quote(guest_override)} {shlex.quote(GUEST + relative)} || exit 5; echo MMAP_PRIVATE_SCRIPT_FIX=1 >&2;\n'
+                override_setup += f'cp {shlex.quote(wsl_path(override))} {shlex.quote(guest_override)} && chmod 644 {shlex.quote(guest_override)} && mount --bind {shlex.quote(guest_override)} {shlex.quote(GUEST + relative)} || exit 5; echo MMAP_PRIVATE_SCRIPT_FIX=1 >&2;\n'
             proc_setup = f'mkdir -p {shlex.quote(GUEST + "/proc")}; mount -t proc -o nosuid,nodev,noexec proc {shlex.quote(GUEST + "/proc")} || exit 6;\n'
             card_setup = ''
             if args.sdcard:
@@ -439,6 +448,7 @@ set +e
                     card_setup += f'python3 {shlex.quote(wsl_path(PROJECT/"tools/stock_gallery_runtime.py"))} --bootstrap {shlex.quote(GUEST)}{photo_option} || exit 9;\n'
             state_path = output / 'session.json'
             session_format = json.dumps({'namespace_pid': -1, 'raw_screen': args.screen,
+                                         'firmware':firmware,
                                          'stdout_log': stdout_path.name, 'stderr_log': stderr_path.name,
                                          'cpu_jpeg_decode':args.cpu_jpeg_decode,'cpu_playback':args.cpu_playback,
                                          'jpeg_task_trace':args.jpeg_task_trace,

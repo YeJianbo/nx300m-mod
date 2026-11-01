@@ -12,6 +12,12 @@ from stock_lut import factory_3d_lut
 PROJECT = Path(__file__).resolve().parents[1]
 LOOKS = PROJECT / 'looks'
 COLOR_SPACES = ('srgb', 'linear-srgb', 'linear-prophoto-d50', 'nx300m-ipcs', 'unspecified')
+# Keep the same everyday order in the CLI, simulator and SD catalogues.
+PREFERRED_LOOKS = (
+    'nx300-hard-mono', 'ricoh-negative-exact', 'ricoh-positive-exact',
+    'nx300-fuji-classic-chrome', 'nx300-fuji-astia', 'nx300-fuji-eterna',
+    'nx300-fuji-classic-negative', 'nx300-fuji-nostalgic-neg',
+)
 
 class LookLibrary:
     def __init__(self, root=LOOKS): self.root = Path(root)
@@ -27,10 +33,19 @@ class LookLibrary:
         return self.root / key
 
     def list(self):
-        return [self.get(p.parent.name) for p in sorted(self.root.glob('*/look.json'))]
+        priority = {key: index for index, key in enumerate(PREFERRED_LOOKS)}
+        paths = sorted(self.root.glob('*/look.json'),
+                       key=lambda p: (priority.get(p.parent.name, len(priority)), p.parent.name))
+        return [self.get(p.parent.name) for p in paths]
 
     def get(self, key):
         return json.loads((self.directory(key)/'look.json').read_text(encoding='utf-8'))
+
+    def rename(self, key, label):
+        metadata = self.get(key)
+        metadata['label'] = self.label(label)
+        self._save(key, metadata)
+        return metadata
 
     def _compile_tables(self, directory, metadata, cube=None):
         cube = cube or load_cube(directory/'source.cube')

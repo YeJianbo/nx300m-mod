@@ -17,8 +17,8 @@
 
 源码从全新 Git 历史开始归档。文档中的个人路径及已识别设备标识已脱敏，产品图片已清理元数据。
 
-## 公开准备
+## 来源与许可
 
-当前仓库为私有。公开前需确定项目原创部分的许可证，核实 Metol 历史血缘和产品图片授权，并检查最终提交的数据范围；来源记录见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+第三方组件沿用各目录中的许可证和署名。项目原创部分的许可证、Metol 历史来源及产品图片授权的当前记录见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
 开发工作区使用 `tools/export_github_source.py` 生成独立源码快照，审计报告保存在本地 `outputs/github-source/`。

@@ -37,11 +37,11 @@ case $kind in tmpfs|ramfs) ;; *) fail 'temporary directory is not RAM backed' ;;
 cleanup() {
     rm -f "$runtime"/compat/*.bin
     rmdir "$runtime/compat" 2>/dev/null || :
-    rm -f "$runtime/lut_live_loader.arm" "$runtime/lut_ram_blob.bin"
+    rm -f "$runtime/lut_live_loader.arm" "$runtime/lut_ram_blob.bin" "$runtime/lut_engine.arm"
     rmdir "$runtime" 2>/dev/null || :
 }
 trap cleanup EXIT
-for name in bin/lut_live_loader.arm lib/lut_ram_blob.bin; do
+for name in bin/lut_live_loader.arm lib/lut_ram_blob.bin bin/lut_engine.arm; do
     [ -f "$CODE_ROOT/$name" ] && [ ! -L "$CODE_ROOT/$name" ] || fail "missing regular resource: $name"
     destination=$runtime/${name##*/}
     cp "$CODE_ROOT/$name" "$destination" || fail "copy failed: $name"
@@ -53,7 +53,7 @@ for saved in "$CODE_ROOT"/lib/lut-compat/*.bin; do
     target=$runtime/compat/${saved##*/}
     cp "$saved" "$target" && cmp -s "$saved" "$target" || fail 'compatibility image copy differs'
 done
-chmod 700 "$runtime/lut_live_loader.arm"
+chmod 700 "$runtime/lut_live_loader.arm" "$runtime/lut_engine.arm"
 printf 'loader_runtime=%s\nlut_data_root=%s\n' "$runtime" "$ROOT"
 run_loader() {
     case $operation in
@@ -94,6 +94,12 @@ if [ "$operation" = apply ] && { [ "$loader_exit" -eq 3 ] || [ "$loader_exit" -e
         printf 'Resident hooks did not match saved code; read-only status follows.\n' >&2
         "$runtime/lut_live_loader.arm" status --pid "$camera_pid" || :
     fi
+fi
+if [ "$operation" = apply ] && [ "$loader_exit" -eq 0 ]; then
+    # Restore selection through the same validated backend used by App/panel.
+    # An invalid saved look must not turn a successful hook load into a retry.
+    "$runtime/lut_engine.arm" restore-selection || \
+        printf 'RESTORE-WARNING saved LUT could not be restored; select a look again.\n' >&2
 fi
 # Result evidence must survive power-off for the physical camera loop.
 [ -n "${NX_FN_KEY_LOG:-}" ] && \

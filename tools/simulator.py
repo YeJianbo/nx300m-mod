@@ -16,6 +16,7 @@ from render_runtime_frame import read_frame
 from session_stock import inspect_session, BackendUnavailable
 from metol_stock import open_panel, engine_action, sync_looks
 from look_library import LookLibrary
+from mfw_runtime import firmware_profile
 from remote_stock import start as start_remote, stop_proxy, read_osd_frame
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -47,6 +48,9 @@ let old,frameError='';async function refresh(){let statusKnown=false;
 try{const response=await fetch('/status'),s=await response.json();
 if(s.backend_available===false){state.textContent='WSL 后端不可用 · 相机状态未知';screen.removeAttribute('src');document.querySelector('#start-button').disabled=true;document.querySelector('#stop-button').disabled=true;throw Error(s.backend_error||'后端暂不可用，请等待恢复。');}
 if(!response.ok)throw Error(s.error||'会话状态读取失败');statusKnown=true;
+const firmware=s.firmware?.name||s.requested_firmware;
+const title=firmware==='mfw'?'NX300M MFW 调试':'NX300M 原厂程序';
+document.title=title;document.querySelector('h1').textContent=title;
 document.querySelector('#start-button').disabled=s.running||s.starting;document.querySelector('#stop-button').disabled=!s.running&&!s.starting;
 const labReplay=!!s.ipcm_replay||s.lcd_video?.source==='laboratory-lcd-backend';
 state.textContent=s.running?(s.ipcm_replay?.stage==='failed'?'运行中 · 实验室回放中断':s.ipcm_replay?.stage==='submitted'?'运行中 · 实验室回放已结束':labReplay&&s.lcd_video?.frames?'运行中 · 实验室照片回放':'运行中'):s.starting?'正在启动':'原厂程序已停止';
@@ -77,6 +81,7 @@ class Session:
         self.firmware_mod = False
         self.qemu = None
         self.shutter_step_us = 10000
+        self.firmware = 'mfw'
 
     def namespace(self):
         return self.require_backend(inspect_session())['namespace_pid']
@@ -90,6 +95,7 @@ class Session:
     def status(self):
         state = inspect_session()
         state['viewer_pid'] = os.getpid()
+        state['requested_firmware'] = self.firmware
         state['starting'] = None if state.get('backend_available') is False else (not state['running'] and self.process is not None
                             and self.process.poll() in (None, 0) and 0 < self.started_at
                             and time.monotonic() - self.started_at < 35)
@@ -98,7 +104,12 @@ class Session:
     def start(self):
         with self.lock:
             state = self.require_backend(self.status())
-            if state['running'] or state['starting']: return
+            if state['running']:
+                active_firmware = (state.get('firmware') or {}).get('name', 'stock')
+                if active_firmware != self.firmware:
+                    raise RuntimeError('当前运行的是 ' + active_firmware + '，请先停止再启动 ' + self.firmware + '。')
+                return
+            if state['starting']: return
             if state['namespace_pid']:
                 self._stop_namespace(state['namespace_pid'])
             if self.process is not None and self.process.poll() is None:
@@ -106,6 +117,7 @@ class Session:
             log = (OUTPUT / 'viewer-launch.log').open('wb')
             try:
                 command = [sys.executable, '-u', str(PROJECT / 'tools/run_stock.py'), '--program', 'camera', '--display', '--preferences', '--gpio-preview', '--device-preview', '--shutter-preview', '--shutter-park', '10', '--isp-preview', '--cpu-ycc-resize', '--spi-mmio', '--sensor-registers', '--d4c-registers', '--capture-boot', '--mmap-script-fix', '--ui-mod', '--lut-port', '--keep-awake', '--no-strace', '--seconds', '0', '--tag', 'viewer']
+                command.extend(('--firmware', self.firmware))
                 if self.replay_packet: command.extend(('--replay-packet', str(self.replay_packet)))
                 if self.qemu: command.extend(('--qemu', self.qemu))
                 if self.replay_continuous: command.append('--replay-continuous')
@@ -260,7 +272,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(state, 503 if state.get('backend_available') is False else 200)
             elif self.path == '/looks': self.reply({'looks': LookLibrary().list()})
             elif self.path.split('?')[0] == '/simulator/info':
-                self.reply({'simulator': True, 'capabilities': {'look_library_sync': True}})
+                state = SESSION.status()
+                self.reply({'simulator': True, 'requested_firmware': SESSION.firmware,
+                            'firmware': state.get('firmware'),
+                            'capabilities': {'look_library_sync': True}})
             elif self.path == '/picture-wizard':
                 self.native_control('color/picture-wizard')
             elif self.path == '/exposure-controls':
@@ -374,6 +389,8 @@ def main():
     parser.add_argument('--profile', choices=('minimal', 'development'), default='minimal',
                         help='development: enable SD, exposure/shutter/RGB, capture observation, native gallery software playback and continuous laboratory photo replay; remote uses its development supervisor')
     parser.add_argument('--no-start', action='store_true')
+    parser.add_argument('--firmware', choices=('stock', 'mfw'), default='mfw',
+                        help='Select stock user space or the camera-exported MFW script library (default)')
     parser.add_argument('--qemu', help='WSL absolute path to a QEMU runner, privately mounted for new camera sessions')
     parser.add_argument('--replay-packet', type=Path, help='Replay a prepared JSON/YUV input when starting the stock camera')
     parser.add_argument('--sdcard', action='store_true', help='Attach the persistent lab FAT32 card when starting the stock camera')
@@ -390,6 +407,8 @@ def main():
     parser.add_argument('--software-playback',action='store_true',help='Enable software JPEG/playback tasks and the original gallery Quick Share entry on the lab SD card')
     parser.add_argument('--shutter-step-us', type=int, default=10000)
     args = parser.parse_args()
+    firmware_profile(args.firmware, prepare=True)
+    SESSION.firmware = args.firmware
     if args.profile == 'development':
         args.sdcard = True
         args.exposure_controls = True

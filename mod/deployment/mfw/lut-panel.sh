@@ -82,11 +82,7 @@ elif [ "$force_dry" -eq 0 ]; then
     fi
 fi
 if [ "$live" -eq 1 ]; then
-    # A reboot wipes the RAM selection; bring back the persisted look before
-    # the backup snapshot, so the panel reopens on the previous film.
-    if [ ! -r /var/run/nx300m-lut-selection ] && [ -r "$ROOT/.state/lut-selection" ]; then
-        cp "$ROOT/.state/lut-selection" /var/run/nx300m-lut-selection 2>/dev/null || :
-    fi
+    # begin restores and validates the saved selection before taking a backup.
     "$runtime/lut_engine.arm" begin || fail 'cannot back up the entry selection'
     set -- --live
 else

@@ -21,7 +21,7 @@
         var firmware = $('<p></p>');
         var status = $('<p role="status" aria-live="polite"></p>');
         body.append($('<div class="form-group"></div>').append($('<label for="nxLookChoice">已部署风格</label>'), choice), strengthGroup, apply, stock, selected, firmware,
-            $('<p>暂存后等待原厂下一次 LUT 调用。实拍效果未验证；录制画面回放不显示 ISP 风格效果。</p>'), status, refresh, sync);
+            $('<p>选择后半按快门，等待原厂 LUT 重载。</p>'), status, refresh, sync);
         modal.append(content).appendTo(document.body);
         var entry = $('<a href="#">LUT 风格…</a>');
         $('#settingsMenu').append($('<li></li>').append(entry));
@@ -38,6 +38,8 @@
         }
         function render(result) {
             snapshot = result;
+            content.find('.modal-footer .pull-left').text(result.persistence_supported === true ?
+                (result.persistent === true ? '已保存到相机卡' : '未保存到卡，仅本次有效') : '仅当前相机会话');
             var looks = Array.isArray(result.looks) ? result.looks : [], selection = result.selection || {}, hook = result.hook || {}, state = result.status || {};
             var supportsStrength = result.strength_supported === true;
             var selectedStrength = typeof selection.strength === 'number' && selection.strength % 1 === 0 && selection.strength >= 0 && selection.strength <= 100 ? selection.strength : 100;
