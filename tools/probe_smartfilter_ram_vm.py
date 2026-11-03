@@ -145,7 +145,9 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
         path=stage/relative; path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(source.read_bytes())
     candidate=json.loads((OUT/'candidate.json').read_text())
     candidate.update(ram_build=report,fixture_overrides=['UDD entry points and pixel operation',
-        'cache callback at CLiveviewBuffer', 'B2Y semaphore-provider construction', 'IQ colour-node Update bodies'],
+        'cache callback at CLiveviewBuffer', 'B2Y semaphore-provider construction', 'IQ colour-node Update bodies',
+        'Common singleton and UserData storage (original mode getter executes)',
+        'path-prefix exit callbacks (not full hardware path construction)'],
         stock_execution=['SmartFilter worker and ADE YCC/init', 'IQ Processor, List and Reset',
                          'B2Y Prepare/Finish without physical UDD', 'GetEffectMode'],
         actual_ram_loader=True,actual_plt_hooks=5)

@@ -1,5 +1,25 @@
 # NX300M MOD 启动与菜单性能审计
 
+2026-11-03：修复 LUT 面板按确定后隐藏窗口、等待后台期间的 CPU 空转。窗口已经隐藏且不再绘制，但原先仍把未清除的 dirty 状态和过期帧期限计入 select，导致等待期限持续为零。现在隐藏状态只等待输入或后台任务，退出已提交时也不再进入等待。
+
+同一 ARM/Xvfb VM、相同两秒后台夹具：修改前后总等待为 2210／2196 ms，唤醒 4055／23 次，首帧之后的本进程 CPU 为 2107.934／58.134 ms。后台任务本身没有加速；此修改消除等待期间抢占 CPU 的空转。演示模式确定后 171 ms 正常退出，没有新增长等待。实际机身响应仍需上机观察。
+
+当前检查：`tools/probe_panel_idle_vm.py` 退出 0，`outputs/performance/menu-event-loop/report.json` 为 passed，私有 VM 已关闭。该夹具使用实际 ARM nxui、原厂字体、X11 和两秒 Shell 后台任务，不模拟相机 ISP 或 SD 保存速度。
+
+2026-11-02：已优化服务、LUT、FilmLab 共用的 CPU 绘制后端。字符宽度按字体缓存；纯色矩形逐行写入；透明像素直接跳过；图像旋转改用分块转置。开屏不再自动查询服务状态，重绘间隔从 100 ms 改为 33 ms，空闲仍等待输入。
+
+本轮真机日志中，第一次首屏后自动服务查询占用 1742 ms；后续绘制出现 1289–3488 ms 及显示超时。记录在 `outputs/deployment/smartfilter-preview/camera-ui-slow-20261102T113236Z/fn-key.log`。
+
+临时预览测试面板为 560×240，默认选中“关闭预览并保存采样”；另有黑白短采样、完整菜单和退出。启用 `PREVIEW_QUICK_PANEL` 时，预览运行后再次长按 Custom 在独立后台任务中请求 restore，同时照常打开菜单。软停不再占用面板 PID；同一次预览只自动提交一次，失败后的再次请求由菜单第一项显式触发。底层监督、排空、回滚及采样保存机制不变。
+
+ARM 用户态 QEMU 中，12 次同一工作负载的平均 CPU 绘制及旋转为 47.174 → 15.166 ms；像素、字体宽度和旋转输出一致。此数值不含 X11 上传和实体 LCD 等待。独立 ARM Xvfb VM 的 21 项菜单与入口检查通过，含无 X11、无 nxui 可执行文件时的软停分流；硬件软停本体沿用上一版验证过的模块。
+
+本轮报告：`outputs/performance/menu-common-20261102/raster-report.json`、`outputs/performance/menu-common-20261102/controls-vm/report.json`。本轮只用 `build_metol.py --menu-only` 编译界面，JPEG LUT 引擎及 SmartFilter RAM 模块保持原字节。
+
+实机跟进：小面板首开 trigger_elapsed_ms=380、重开=237。之后两个 restore 返回 rc=5，约数十秒内长按均记录为 `panel pid alive`；最后一次 restore 成功。对应入口修复与“慢任务、失败、重开、显式重试”模拟记录位于 `outputs/performance/menu-common-20261102/softstop-ramlog-vm/`。139 条实机样本已独立备份到 `outputs/deployment/smartfilter-preview/camera-sampled-20261102/`。
+
+## 此前审计记录
+
 最新修订：原版弹框恢复后实机仍未弹出，原厂 Fn 菜单正常。Fn 已移出屏幕抓取的 X11 队列，改为旁听 evdev 按下／松开；一次解析 Fn 映射后不再依赖每 100 ms 的 XQueryKeymap 及 500 ms 连续采样条件。保留既有原版 Xft UI；本轮不会把模拟结果当作实体显示成功。
 
 2026-10-31 最新决定：按用户要求回到最初长按 Fn 弹框，MENU/Custom 监听关闭。`--fn-shortcut` 包使用首次部署的 461588 B Xft 程序与六项菜单，独立于当前 LUT 界面；没有把下面优化版的模拟性能数值用于此历史程序。Fn 启动脚本使用原厂字体和 RAM 缓存，不传递 Shell 启动锁。实机显示与响应尚待本次装卡确认；下方“当前卡使用 MENU”的描述为此前审计状态。

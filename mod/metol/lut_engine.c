@@ -3,10 +3,69 @@
  */
 #define _XOPEN_SOURCE 700
 #include <dirent.h>
+#include <time.h>
+#include <sys/syscall.h>
 #include "lut_engine_shared.h"
 
+static unsigned long long control_ms(void) {
+    struct timespec t={0,0};syscall(SYS_clock_gettime,CLOCK_MONOTONIC,&t);
+    return (unsigned long long)t.tv_sec*1000+(unsigned long long)t.tv_nsec/1000000;
+}
+
+/* Runs only on a user control event. The engine lock stays in this process;
+ * lut-load must not recursively restore selection through a second engine. */
+static int service_control(const char *name,const char *operation,int optional) {
+    unsigned long long started=control_ms();
+    fprintf(stderr,"LUT_CONTROL script=%s operation=%s phase=begin\n",name,operation);
+    const char *data=nx_lut_data_root(),*runtime=nx_mod_root();
+    const char *base=getenv("NX300M_MFW_RAM_BASE");
+    char directory[PATH_MAX],state_dir[PATH_MAX],script[PATH_MAX],canonical[PATH_MAX],identity[64];
+    struct stat source,asset;
+    if(base&&*base) {
+        if(!nx_mod_root_valid(base)||snprintf(directory,sizeof directory,"%s/runtime",base)>=(int)sizeof directory||
+           snprintf(state_dir,sizeof state_dir,"%s/state",base)>=(int)sizeof state_dir) return 4;
+        runtime=directory;
+    }
+    if(!data||!runtime||stat(data,&source)||!S_ISDIR(source.st_mode)||
+       !realpath(runtime,canonical)||strcmp(runtime,canonical)||
+       snprintf(script,sizeof script,"%s/%s",runtime,name)>=(int)sizeof script) return 4;
+    if(lstat(script,&asset)) return optional&&errno==ENOENT?0:4;
+    if(!S_ISREG(asset.st_mode)||asset.st_uid!=geteuid()||access(script,R_OK)) return 4;
+    snprintf(identity,sizeof identity,"%llu:%llu",(unsigned long long)source.st_dev,(unsigned long long)source.st_ino);
+    pid_t child=fork();
+    if(!child) {
+        if(setenv("NX300M_MOD_ROOT",runtime,1)||setenv("NX_MOD_ROOT",runtime,1)||
+           setenv("NX300M_MOD_SOURCE_ROOT",data,1)||setenv("NX300M_MOD_SOURCE_ID",identity,1)||
+           setenv("NX300M_LUT_ENGINE_OWNS_LOCK","1",1)||setenv("NX300M_LUT_SKIP_PREVIEW_SYNC","1",1)||
+           (base&&*base&&setenv("NX_STATE_DIR",state_dir,1))) _exit(126);
+        DIR *fds=opendir("/proc/self/fd");if(!fds) _exit(126);
+        int own=dirfd(fds);struct dirent *entry;
+        while((entry=readdir(fds))) {
+            char *end;long fd=strtol(entry->d_name,&end,10);
+            if(*entry->d_name&&!*end&&fd>2&&fd!=own) close((int)fd);
+        }
+        closedir(fds);
+        execl("/bin/sh","sh",script,operation,(char *)0);_exit(127);
+    }
+    int status=0;pid_t done=-1;
+    if(child>0) do {done=waitpid(child,&status,0);} while(done<0&&errno==EINTR);
+    int result=child>0&&done==child&&WIFEXITED(status)?WEXITSTATUS(status):4;
+    fprintf(stderr,"LUT_CONTROL script=%s operation=%s phase=end rc=%d elapsed_ms=%llu\n",name,operation,result,control_ms()-started);
+    return result;
+}
+static int ensure_adapter(void) {
+    if(nx_lut_hook_ready()) return 0;
+    int result=service_control("lut-load.sh","apply",0);
+    if(result) return result;
+    if(!nx_lut_hook_ready()) { fputs("REJECT native LUT adapter did not become ready\n",stderr);return 3; }
+    return 0;
+}
 static int stage(const char *path,unsigned int strength) {
+    unsigned long long started=control_ms();
+    int ready=ensure_adapter();if(ready) return ready;
+    fprintf(stderr,"LUT_CONTROL phase=adapter-ready elapsed_ms=%llu\n",control_ms()-started);
     unsigned int generation=0;int result=nx_lut_stage_with_strength(path,strength,&generation);
+    fprintf(stderr,"LUT_CONTROL phase=selection-complete rc=%d elapsed_ms=%llu\n",result,control_ms()-started);
     if (!result) printf("STAGED generation=%u strength=%u path=%s; awaiting original firmware LUT callback\n",generation,strength,path);
     return result;
 }
@@ -85,9 +144,38 @@ static int action(int argc,char **argv) {
         return written?0:4;
     }
     if (!strcmp(argv[1],"restore-selection")) return argc==2?nx_lut_restore_selection():2;
+    if (!strcmp(argv[1],"activate")) {
+        if(argc!=2) return 2;
+        /* Preview takes its control lease after this action. Preserve the
+         * engine -> preview lock order and do not recursively sync. */
+        if(setenv("NX300M_LUT_SKIP_PREVIEW_SYNC","1",1)) return 4;
+        int result=nx_lut_restore_selection();if(result) return result;
+        unsigned int generation,strength;char path[256];
+        if(!nx_lut_read_selection_with_strength(NX_LUT_SELECTION,&generation,path,&strength)) {
+            fputs("LUT_OFF select a look before enabling its preview\n",stderr);return 3;
+        }
+        if(!nx_lut_table_valid(path)) return 5;
+        result=ensure_adapter();
+        if(!result) printf("LUT_ACTIVATED generation=%u strength=%u path=%s\n",generation,strength,path);
+        return result;
+    }
     if (!strcmp(argv[1],"persist-status")) {
         if (argc!=2) return 2;
         puts(nx_lut_selection_persisted()?"PERSISTED":"NOT_SAVED");return 0;
+    }
+    if (!strcmp(argv[1],"disable")) {
+        if(argc!=2) return 2;
+        /* Save Off first, so an interrupted stop cannot revive an old look.
+         * Stock here must not start another stock-only preview session. */
+        if(setenv("NX300M_LUT_SKIP_PREVIEW_SYNC","1",1)) return 4;
+        int result=nx_lut_stock();if(result) return result;
+        result=service_control("smartfilter-preview.sh","restore",1);
+        if(result) { fputs("LUT_OFF_FAILED preview stop incomplete\n",stderr);return result; }
+        if(!access(NX_LUT_RAM_MARKER,F_OK)||nx_lut_hook_ready()) {
+            result=service_control("lut-load.sh","restore",0);
+            if(result) { fputs("LUT_OFF_FAILED native Still restore incomplete\n",stderr);return result; }
+        }
+        puts("LUT_DISABLED native_still_restored=true preview_processing=false");return 0;
     }
     if (!strcmp(argv[1],"off") || !strcmp(argv[1],"stock")) {
         unsigned int generation,strength;char path[256];
@@ -105,17 +193,17 @@ static int action(int argc,char **argv) {
     unsigned int strength=100;
     if (strcmp(argv[1],"apply") || (argc!=3 && argc!=4) || !nx_lut_id_valid(argv[2]) ||
         (argc==4 && !nx_lut_strength(argv[3],&strength))) return 2;
-    if (!nx_lut_hook_ready()) { puts("REJECT native LUT adapter is unavailable or its live mapping cannot be verified; RAM hooks require readable process memory");return 3; }
     struct nx_lut_look looks[NX_LUT_MAX_LOOKS];int count=0;
-    int result=nx_lut_catalog(looks,&count);if (result) return result;
+    int result=nx_lut_catalog_index(looks,&count);if (result) return result;
     for (int i=0;i<count;i++) if (!strcmp(looks[i].id,argv[2])) {
         char path[256];int composed;
-        if (!looks[i].table_valid || !nx_lut_validate_look(argv[2],path,&composed)) return 5;
+        if (!nx_lut_validate_look(argv[2],path,&composed)) return 5;
         return stage(path,strength);
     }
     return 2;
 }
 int main(int argc,char **argv) {
+    setvbuf(stdout,NULL,_IOLBF,0);
     char root[PATH_MAX];if (!nx_lut_root(root)) { fputs("Invalid or missing NX300M_MOD_ROOT\n",stderr);return 2; }
     if (argc>=2 && !strcmp(argv[1],"ready")) return action(argc,argv);
     if (argc>=2 && !strcmp(argv[1],"stage-state")) return stage_state();

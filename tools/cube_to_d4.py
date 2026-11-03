@@ -39,7 +39,15 @@ def load_cube(path):
     if any(a >= b for a, b in zip(low, high)): raise ValueError('Invalid domain bounds')
     return size, low, high, values
 
-def compile_cube(cube, stock_baseline=None):
+METHODS = ('legacy', 'round', 'fit', 'fit-perceptual', 'fit-integral')
+
+
+def compile_cube(cube, stock_baseline=None, *, method='legacy'):
+    if method not in METHODS:
+        raise ValueError('Unknown compiler method: '+method)
+    if method != 'legacy':
+        from lut_resample import compile_table
+        return compile_table(cube, stock_baseline, method=method)[0]
     size, low, high, values = cube
     if stock_baseline is not None and (len(stock_baseline) != 2190 or any(x < 0 or x > 1023 for x in stock_baseline)):
         raise ValueError('Stock baseline must contain three 730-word 10-bit planes')
@@ -73,10 +81,27 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('cube', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--method', choices=METHODS, default='legacy')
+    parser.add_argument('--report', type=Path, help='Write offline model and fit metadata as JSON')
     args = parser.parse_args()
-    data = convert(args.cube)
+    paths = [args.cube.resolve(), args.output.resolve()]
+    if args.report:
+        paths.append(args.report.resolve())
+    if len(set(paths)) != len(paths):
+        parser.error('Source, output table and JSON report must use different paths')
+    cube = load_cube(args.cube)
+    if args.method == 'legacy':
+        data, detail = compile_cube(cube), {'algorithm': 'legacy'}
+    else:
+        from lut_resample import compile_table
+        data, detail = compile_table(cube, method=args.method)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(data)
-    print(json.dumps({'source': str(args.cube), 'output': str(args.output), 'bytes': len(data), 'planes': 3, 'grid': 9, 'bits': 10, 'hardware_verified': False}))
+    detail.update(source=str(args.cube), output=str(args.output), method=args.method,
+                  bytes=len(data), planes=3, grid=9, bits=10, hardware_verified=False)
+    if args.report:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(detail, indent=2)+'\n', encoding='utf-8')
+    print(json.dumps(detail))
 
 if __name__ == '__main__': main()

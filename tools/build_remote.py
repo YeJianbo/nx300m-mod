@@ -4,6 +4,7 @@ import argparse
 import shlex
 import shutil
 import subprocess
+import lut_build_contract
 
 PROJECT = Path(__file__).resolve().parents[1]
 GUEST = '/opt/nx300m-lab/stock-1.15'
@@ -92,6 +93,7 @@ def main():
     if args.client_only:
         print('Metol web client built')
         return
+    lut_build_contract.identity()
     base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
     script = f'''set -eu
 cd {shlex.quote(base)}
@@ -119,6 +121,8 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
     result = subprocess.run(['wsl.exe', '-u', 'root', '-e', 'sh', '-c', script], capture_output=True, encoding='utf-8', errors='replace')
     (PROJECT/'outputs/metol/remote/build.log').write_text(result.stdout+result.stderr, encoding='utf-8')
     if result.returncode: raise RuntimeError(f'ARM remote build exited {result.returncode}:\n'+result.stderr[-6000:])
+    lut_build_contract.record(PROJECT/'outputs/metol/remote/nx-remote-controller.arm',
+                              PROJECT/'outputs/metol/remote/lut-build-report.json')
     print('NX300M ARM remote backend built' if args.backend_only else 'NX300M ARM remote backend and Metol web client built')
 
 

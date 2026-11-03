@@ -164,6 +164,7 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
         'perf/mod/mfw-panel-actions.sh': (PROJECT / 'mod/deployment/mfw/panel-actions.sh').read_bytes(),
         'perf/mod/common.sh': (PROJECT / 'mod/deployment/common.sh').read_bytes(),
         'perf/mod/gui_mfw.NX300M': (PROJECT / 'mod/deployment/mfw/gui_mfw.NX300M').read_bytes(),
+        'perf/mod/gui_debug.NX300M': (PROJECT / 'mod/deployment/mfw/gui_debug.NX300M').read_bytes(),
         'perf/mod/fonts/fonts.conf.in': (PROJECT / 'mod/deployment/mfw/fonts.conf.in').read_bytes(),
         'perf/mod/fonts/mfw-font.charset': (PROJECT / 'outputs/metol/mfw-font.charset').read_bytes(),
     }
@@ -210,6 +211,10 @@ def linux_worker(action, payload):
             pass
         for path in (arm_vm.SERIAL, arm_vm.QMP):
             Path(path).unlink(missing_ok=True)
+        # A restarted run must wait for this boot's readiness marker. QEMU's
+        # serial logfile otherwise appends an old marker and accepts commands
+        # before the new guest has reached its shell.
+        (OUT / 'serial.log').write_bytes(b'')
         command = [str(arm_vm.WORK / 'host/usr/bin/qemu-system-arm'), '-M', 'virt', '-cpu', 'cortex-a15',
                    '-m', '2048M', '-smp', '2', '-kernel', str(arm_vm.WORK / 'downloads/vmlinuz'),
                    '-initrd', str(OUT / 'initramfs.cpio.gz'), '-append', 'console=ttyAMA0 rdinit=/init panic=-1',

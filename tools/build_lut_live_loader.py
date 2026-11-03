@@ -3,6 +3,7 @@
 The build verifies original ELF identities and links only the stock glibc ABI.
 It neither changes a running camera nor starts/reuses any ARM VM.
 """
+import argparse
 import hashlib
 import io
 import json
@@ -10,6 +11,7 @@ from pathlib import Path
 import shlex
 import struct
 import subprocess
+import lut_build_contract
 
 from elftools.elf.elffile import ELFFile
 
@@ -47,7 +49,12 @@ def bytes_at(elf, address, length):
 
 
 def main():
+    global OUT
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output-dir', type=Path, default=OUT)
+    OUT = parser.parse_args().output_dir.resolve()
     OUT.mkdir(parents=True, exist_ok=True)
+    lut_build_contract.identity()
     config = json.loads((ROOT / 'project.local.json').read_text(encoding='utf-8'))
     stock = ROOT / config['rootfs']
     iq, _, iq_info = elf_record(stock / 'usr/lib/libiq-fw-slpcam.so', {
@@ -140,6 +147,7 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
               'timeout': '15 second supervisor deadline; recovery tracer remains alive until borrowed registers are restored',
               'vm_started': False, 'camera_or_card_accessed': False}
     (OUT / 'build-report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+    lut_build_contract.record(target, OUT/'lut-build-report.json')
     print(json.dumps(report, indent=2))
 
 

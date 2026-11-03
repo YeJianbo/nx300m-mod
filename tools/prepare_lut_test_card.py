@@ -178,7 +178,7 @@ def flushed(path, data):
 
 
 def deploy(package, stamp, serial, custom_shortcut=False, menu_shortcut=False, fn_shortcut=False,
-           *, preserve_autoexec=False):
+           *, preserve_autoexec=False, retire_markers=()):
     root = Path('H:/')
     identity = volume(root, serial)
     current = (root / 'autoexec.sh').read_bytes()
@@ -206,11 +206,17 @@ def deploy(package, stamp, serial, custom_shortcut=False, menu_shortcut=False, f
     staged = []
     retired = []
     try:
-        if (custom_shortcut or menu_shortcut or fn_shortcut) and (root / 'nx300m-mod/NO_PANEL_SHORTCUT').exists():
-            name = 'nx300m-mod/NO_PANEL_SHORTCUT'
+        marker_names = set(retire_markers)
+        if custom_shortcut or menu_shortcut or fn_shortcut:
+            marker_names.add('nx300m-mod/NO_PANEL_SHORTCUT')
+        for name in sorted(marker_names):
+            if name not in {'nx300m-mod/NO_PANEL_SHORTCUT', 'nx300m-mod/PREVIEW_QUICK_PANEL'} or name in package:
+                raise RuntimeError('Unexpected retired marker: '+name)
             target = root / name
+            if not target.exists():
+                continue
             if not target.is_file() or target.is_symlink():
-                raise RuntimeError('Shortcut marker is not a regular file')
+                raise RuntimeError('Retired marker is not a regular file')
             backup = output / 'before' / name
             backup.parent.mkdir(parents=True, exist_ok=True)
             flushed(backup, target.read_bytes())

@@ -82,6 +82,13 @@ class NxCamera(
         return parseInfo(text).also { profile = CameraProfile.fromInfo(text) }
     }
 
+    /** Reports the service's LCD writer, not proof that a complete live frame is available. */
+    suspend fun screenVideoSource(): String? {
+        val raw = NxHttp.getBytesStrict("$baseUrl/api/v1/camera/info", 3_000, binder)
+            .toString(Charsets.UTF_8)
+        return MiniJson.str(MiniJson.parseObject(raw), "video_source")
+    }
+
     suspend fun status(): CameraStatus {
         val text = NxHttp.getText("$baseUrl/api/v1/camera/status", 3_000, binder)
         return parseStatus(text)
@@ -670,15 +677,15 @@ class NxCamera(
 
     /** 注入一次按键（键名见 KeyMap，X11 keysym） */
     suspend fun sendKey(keysym: String) {
-        NxHttp.getText("$baseUrl/api/v1/input/inject?key=" + urlEncode(keysym), 4_000, binder)
+        NxHttp.getBytesStrict("$baseUrl/api/v1/input/inject?key=" + urlEncode(keysym), 4_000, binder)
     }
 
     suspend fun keyDown(keysym: String) {
-        NxHttp.getText("$baseUrl/api/v1/input/inject?keydown=" + urlEncode(keysym), 4_000, binder)
+        NxHttp.getBytesStrict("$baseUrl/api/v1/input/inject?keydown=" + urlEncode(keysym), 4_000, binder)
     }
 
     suspend fun keyUp(keysym: String) {
-        NxHttp.getText("$baseUrl/api/v1/input/inject?keyup=" + urlEncode(keysym), 4_000, binder)
+        NxHttp.getBytesStrict("$baseUrl/api/v1/input/inject?keyup=" + urlEncode(keysym), 4_000, binder)
     }
 
     /** 保活：相机长时间无操作会休眠，遥控期间应定期调用 */
@@ -708,10 +715,22 @@ class NxCamera(
         NxHttp.getText("$baseUrl/api/v1/led/" + if (on) "on" else "off", 4_000, binder)
     }
 
+    suspend fun mouseMove(x: Int, y: Int) {
+        require(x in 0 until profile.geometry.width && y in 0 until profile.geometry.height)
+        NxHttp.getBytesStrict("$baseUrl/api/v1/input/inject?mousemove=$x-$y", 4_000, binder)
+    }
+
+    suspend fun mouseDown() {
+        NxHttp.getBytesStrict("$baseUrl/api/v1/input/inject?mousedown=1", 4_000, binder)
+    }
+
+    suspend fun mouseUp() {
+        NxHttp.getBytesStrict("$baseUrl/api/v1/input/inject?mouseup=1", 4_000, binder)
+    }
+
     suspend fun mouseClick(x: Int, y: Int) {
-        NxHttp.getText("$baseUrl/api/v1/input/inject?mousemove=$x-$y", 4_000, binder)
-        NxHttp.getText("$baseUrl/api/v1/input/inject?mousedown=1", 4_000, binder)
-        NxHttp.getText("$baseUrl/api/v1/input/inject?mouseup=1", 4_000, binder)
+        mouseMove(x, y)
+        try { mouseDown() } finally { withContext(kotlinx.coroutines.NonCancellable) { mouseUp() } }
     }
 
     /**

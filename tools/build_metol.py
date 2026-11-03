@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import shlex
 import subprocess
+import lut_build_contract
 
 PROJECT = Path(__file__).resolve().parents[1]
 GUEST = '/opt/nx300m-lab/stock-1.15'
@@ -11,13 +12,16 @@ GUEST = '/opt/nx300m-lab/stock-1.15'
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ui-only', action='store_true', help='保留已有配方目录，重编界面及后端程序')
+    parser.add_argument('--menu-only', action='store_true', help='只编译 nxui，保留 LUT、配方引擎及字体产物')
     args = parser.parse_args()
+    if not args.menu_only:
+        lut_build_contract.identity()
     reference = PROJECT / 'work/reference/metol'
     source = json.loads((reference / 'scripts/filmlab/recipes.json').read_text(encoding='utf-8'))['recipes']
     output = PROJECT / 'outputs/metol'
     output.mkdir(parents=True, exist_ok=True)
     fields = ('R_COLOR', 'G_COLOR', 'B_COLOR', 'HUE', 'SATURATION', 'SHARPNESS', 'CONTRAST')
-    if not args.ui_only:
+    if not args.ui_only and not args.menu_only:
         (output / 'recipes.txt').write_text(''.join('|'.join([key, recipe['label'], *[str(recipe[f]) for f in fields]])+'\n' for key, recipe in source.items()), encoding='utf-8')
     project = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
     script = f'''set -eu
@@ -39,6 +43,9 @@ ref=work/reference/metol/test_server/nxui
  "$rf/lib/libc-2.13.so" "$rf/lib/librt.so.1" -lgcc -o outputs/metol/nxui.arm
 "$tc/bin/arm-linux-gnueabi-readelf" -V outputs/metol/nxui.arm > outputs/metol/versions.txt
 "$tc/bin/arm-linux-gnueabi-readelf" -d outputs/metol/nxui.arm > outputs/metol/needed.txt
+'''
+    if not args.menu_only:
+        script += f'''
 "$tc/bin/arm-linux-gnueabi-gcc" -B"$tc/lib/gcc-cross/arm-linux-gnueabi/14/" \
  -std=c99 -O2 -Wall -Wextra -Werror -I"$tc/include" -I"$tc/include/freetype2" \
  -U_TIME_BITS -D_TIME_BITS=32 -U_FILE_OFFSET_BITS -D_FILE_OFFSET_BITS=32 \
@@ -72,6 +79,9 @@ work/qemu/qemu-arm-static -L "$rf" outputs/metol/panel-font-metadata.arm \
 "$tc/bin/arm-linux-gnueabi-readelf" -d outputs/metol/recipe_engine.arm > outputs/metol/recipe-engine-needed.txt
 '''
     subprocess.run(['wsl.exe', '-u', 'root', '-e', 'sh', '-c', script], check=True)
-    print(f'Metol NX300M ARM UI, LUT and recipe engines built; {len(source)} upstream recipes')
+    if not args.menu_only:
+        lut_build_contract.record(output/'lut_engine.arm', output/'lut-build-report.json')
+    print('NX300M ARM menu built; engines unchanged' if args.menu_only else
+          f'Metol NX300M ARM UI, LUT and recipe engines built; {len(source)} upstream recipes')
 
 if __name__ == '__main__': main()

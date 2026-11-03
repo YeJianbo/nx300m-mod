@@ -60,7 +60,14 @@ export NX300M_MOD_ROOT="$ROOT" NX300M_MOD_SOURCE_ROOT="$ROOT" NX300M_MOD_SOURCE_
 export NX_STATE_DIR="$runtime"
 unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH
 live=0
-if [ "$force_dry" -eq 0 ] && "$runtime/lut_engine.arm" ready; then
+saved_off=0
+if [ ! -e /var/run/nx300m-lut-selection ] && [ -f "$ROOT/.state/lut-choice" ] &&
+    [ "$(cat "$ROOT/.state/lut-choice")" = 0 ]; then saved_off=1; fi
+if [ "$force_dry" -eq 0 ] && [ "$saved_off" = 1 ] && [ -r "$CODE/lut-load.sh" ]; then
+    # Opening a menu while Off must not reinstall the Still adapter. The engine
+    # loads it lazily only after the user selects a real look.
+    live=1
+elif [ "$force_dry" -eq 0 ] && "$runtime/lut_engine.arm" ready; then
     live=1
 elif [ "$force_dry" -eq 0 ]; then
     # Load once, then verify the installed code before enabling changes.
@@ -82,8 +89,7 @@ elif [ "$force_dry" -eq 0 ]; then
     fi
 fi
 if [ "$live" -eq 1 ]; then
-    # begin restores and validates the saved selection before taking a backup.
-    "$runtime/lut_engine.arm" begin || fail 'cannot back up the entry selection'
+    "$runtime/lut_engine.arm" restore-selection || fail 'cannot restore the saved selection'
     set -- --live
 else
     printf '当前面板为浏览模式；原厂相机尚未加载匹配的 LUT 适配器。\n' >&2

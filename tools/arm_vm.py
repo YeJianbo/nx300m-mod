@@ -390,9 +390,14 @@ def native_exec(command, timeout=30):
             if not data:
                 raise RuntimeError('VM serial connection closed')
             output += data
-            match = re.search(re.escape(end.encode()) + rb':(\d+)\r?\n', output)
+            # A complete printk line can interrupt the status/LF boundary.
+            # Preserve raw bytes in serial.log; normalize only marker parsing.
+            clean = re.sub(rb'\[\s*\d+\.\d+\][^\n]*\n', b'', output)
+            match = re.search(re.escape(end.encode()) + rb':(\d+)\r*\n', clean)
             if match:
-                return {'exit_code': int(match[1]), 'output': output[:match.start()].decode('utf-8', 'replace')}
+                marker = output.find(end.encode())
+                prefix = output[:marker] if marker >= 0 else clean[:match.start()]
+                return {'exit_code': int(match[1]), 'output': prefix.decode('utf-8', 'replace')}
         raise TimeoutError('VM command timeout')
 
 

@@ -66,8 +66,8 @@ attempt=0
 until [ "$(grep -c '^FIRST_FRAME ' /perf/remote.log)" -ge 2 ]; do attempt=$((attempt+1)); [ "$attempt" -lt 20 ]; sleep 1; done
 menu_status > /perf/second.json
 grep -q '"triggers":2' /perf/second.json
-# Status completion enables the existing menu action; then select LUT via Down.
-sleep 3
+# Opening no longer launches a status job; select LUT as soon as it is ready.
+/perf/close.arm ping
 /perf/close.arm lut
 attempt=0
 until grep -q 'LUT 适配器' /perf/remote.log && [ "$(grep -c '^FIRST_FRAME ' /perf/remote.log)" -ge 3 ]; do

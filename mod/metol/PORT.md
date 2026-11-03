@@ -12,7 +12,7 @@ LUT 数据适配：`tools/cube_to_d4.py` 将标准 3D `.cube` 三线性采样为
 
 `tools/metol_slot.py` 已适配上游 17³ RGBX 槽，执行原始上游 `cube2lut.c` ARM 程序生成的轴置换槽并核对转换。该提交未随仓库提供 LUT 素材包。
 
-`lut_engine.c` 是本项目 NX300M 后端，暂存选择并支持进入前备份、关闭恢复与保留退出。UI 在 LUT 模式下调用该 ARM 后端，保留原七维配方浏览模式。当前库有 17 项：11 份本机 Lightroom DCP 风格片段和 6 份伴随 `nx500-filmsim` 颜色配方；后者重排了上游 B-fastest 存储顺序并保留曲线舍入，不含空间颗粒。扩展入口、来源和转换范围见 [LOOKS.md](../../docs/LOOKS.md)。
+`lut_engine.c` 是本项目 NX300M 后端，暂存并保存选择，关闭面板保留当前风格，“关”停止预览并恢复原厂照片 LUT 调用。UI 在 LUT 模式下调用该 ARM 后端，保留原七维配方浏览模式。当前库有 17 项：11 份本机 Lightroom DCP 风格片段和 6 份伴随 `nx500-filmsim` 颜色配方；后者重排了上游 B-fastest 存储顺序并保留曲线舍入，不含空间颗粒。扩展入口、来源和转换范围见 [LOOKS.md](../../docs/LOOKS.md)。
 
 面板、engine 与 LUT 适配器通过 `NX300M_MOD_ROOT` 共享运行根目录，默认 `/mod`，可使用 `/mnt/mmc/nx300m-mod` 等 SD 路径；面板 `--root` 可显式覆盖。自定义根路径已经通过原厂 libudd 三路写表及坏表回退探针，路径约束和报告见 LOOKS.md。
 

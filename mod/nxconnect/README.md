@@ -1,6 +1,6 @@
 # NXConnect NX300M 适配
 
-基于 [Katsiy/NXConnectForNX500](https://github.com/Katsiy/NXConnectForNX500) 改造，当前版本 **0.20.29 / 77**。
+基于 [Katsiy/NXConnectForNX500](https://github.com/Katsiy/NXConnectForNX500) 改造，当前版本 **0.20.31 / 79**。
 
 ## 相比上游的主要改动
 

@@ -1,4 +1,5 @@
 """Check LUT selection persistence on ARM in isolated RAM; no camera needed."""
+import hashlib
 import json
 from pathlib import Path
 import shlex
@@ -51,12 +52,43 @@ int main(void) {
     unlink(NX_LUT_SELECTION);unlink(NX_LUT_SESSION);
     unlink("/tmp/lut-selection/looks/test/table.d4lut");
     check(nx_lut_restore_selection()==5 && access(NX_LUT_SELECTION,F_OK),"missing table is not restored");
+    mkdir("/tmp/lut-sync-runtime",0700);
+    out=fopen("/tmp/lut-sync-runtime/smartfilter-preview.sh","w");
+    check(out && fputs("#!/bin/sh\n[ \"$1\" = sync ] || exit 2\nprintf synced > /tmp/lut-sync-ran\n",out)>=0 && !fclose(out),"prepare RAM sync boundary");
+    struct stat source;char identity[64];
+    check(!stat("/tmp/lut-selection",&source),"source identity available");
+    snprintf(identity,sizeof identity,"%llu:%llu",(unsigned long long)source.st_dev,(unsigned long long)source.st_ino);
+    setenv("NX300M_MOD_SOURCE_ROOT","/tmp/lut-selection",1);
+    setenv("NX300M_MOD_SOURCE_ID",identity,1);
+    setenv("NX300M_MOD_ROOT","/tmp/lut-sync-runtime",1);
+    nx_lut_sync_preview();
+    check(access("/tmp/lut-sync-ran",F_OK),"sync does not enable unselected backend");
+    out=fopen("/var/run/nx300m-preview-backend","w");
+    check(out && fputs("smartfilter\n",out)>=0 && !fclose(out),"select sync test backend");
+    nx_lut_sync_preview();
+    check(!access("/tmp/lut-sync-ran",F_OK),"sync uses verified RAM script");
+    unlink("/tmp/lut-sync-ran");
+    setenv("NX300M_MOD_ROOT","/tmp/lut-selection",1);
+    nx_lut_sync_preview();
+    check(access("/tmp/lut-sync-ran",F_OK),"sync refuses source-card execution");
+    setenv("NX300M_MOD_ROOT","/tmp/lut-sync-runtime",1);
+    setenv("NX300M_MOD_SOURCE_ID","0:0",1);
+    nx_lut_sync_preview();
+    check(access("/tmp/lut-sync-ran",F_OK),"sync refuses changed source identity");
+    setenv("NX300M_MOD_SOURCE_ID",identity,1);
+    rename("/tmp/lut-sync-runtime/smartfilter-preview.sh","/tmp/lut-sync-runtime/saved.sh");
+    symlink("saved.sh","/tmp/lut-sync-runtime/smartfilter-preview.sh");
+    nx_lut_sync_preview();
+    check(access("/tmp/lut-sync-ran",F_OK),"sync refuses linked script");
     return 0;
 }
 '''
 
 
 def main():
+    inputs = ('mod/metol/lut_engine_shared.h', 'mod/metol/lut_engine.c',
+              'mod/metol/mod_paths.h', 'tools/probe_lut_selection.py')
+    sources = {name: hashlib.sha256((PROJECT / name).read_bytes()).hexdigest() for name in inputs}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / 'fixture.c').write_text(SOURCE, encoding='utf-8', newline='\n')
     base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
@@ -83,8 +115,13 @@ exec unshare --mount --fork sh -c '
     result = subprocess.run(['wsl.exe', '-u', 'root', '-e', 'sh', '-c', script],
                             capture_output=True, text=True, encoding='utf-8', errors='replace')
     (OUT / 'result.log').write_text(result.stdout + result.stderr, encoding='utf-8')
-    (OUT / 'report.json').write_text(json.dumps({'passed': result.returncode == 0,
-        'checks': result.stdout.count('PASS '), 'scope': 'ARM selection persistence, no camera or image verification'}, indent=2)+'\n', encoding='utf-8')
+    unchanged = sources == {name: hashlib.sha256((PROJECT / name).read_bytes()).hexdigest() for name in inputs}
+    (OUT / 'report.json').write_text(json.dumps({'passed': result.returncode == 0 and unchanged,
+        'checks': result.stdout.count('PASS '), 'sources': sources,
+        'source_unchanged': unchanged,
+        'scope': 'ARM selection persistence and RAM sync dispatch; no camera or image verification'}, indent=2)+'\n', encoding='utf-8')
+    if not unchanged:
+        raise RuntimeError('Selection/sync probe sources changed during execution')
     print(result.stdout + result.stderr, end='')
     raise SystemExit(result.returncode)
 

@@ -23,7 +23,7 @@ python tools/looks.py sync
 
 `rename` 只修改显示名称，保留风格 ID、源表、已编译颜色表和当前选择的对应关系。改名后用 `sync` 更新模拟器，或重新打包更新 SD 卡目录。
 
-列表优先显示 Hard Mono、GR Neg、GR Pos、富士 CC、Astia、Eterna、NC、NN，其余风格接在后面；诊断版的五款测试表列在末尾。
+列表优先显示 Hard Mono、GR Neg、GR Pos、富士 CC、Astia、Eterna、NC、NN，其余正式风格接在后面。日常列表不包含轴向测试表和 A/B 副本；黑白使用 Hard Mono。
 
 `input_space` 标明来源的颜色约定。NX300M ISP LUT 所处的颜色空间及前后变换仍需实机确认，标准 sRGB LUT 的视觉结果需要校色。
 

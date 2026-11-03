@@ -1,0 +1,8 @@
+button|预览状态|preview-status
+button|同步当前 LUT|preview-sync
+button|保存预览诊断|preview-diag-export
+button|关闭预览并保存诊断|preview-restore
+button|机身服务状态|status
+button|停用下次自动启动|disable-autostart
+button|恢复下次自动启动|enable-autostart
+button|返回主菜单|back

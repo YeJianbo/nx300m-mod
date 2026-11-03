@@ -60,21 +60,11 @@ next=$(awk -v cur="$current" '
     }' "$keys" 2>/dev/null || :)
 rm -f "$keys"
 [ -n "$next" ] || { note 'lut cycle: catalogue is empty'; exit 1; }
-# The adapter only stays resident from a previous panel open or apply. When a
-# tap arrives first, load it here so cycling works without opening the panel.
-if ! NX300M_MOD_ROOT="$ROOT" "$engine" ready >/dev/null 2>&1; then
-    note 'lut cycle: adapter not resident, applying'
-    status_file=$(mktemp /tmp/nx300m-lut-apply.XXXXXX)
-    ( apply_code=0; /bin/sh "$ROOT/lut-load.sh" apply 2>&1 || apply_code=$?; printf '%s\n' "$apply_code" >"$status_file" ) |
-        while IFS= read -r line; do note "lut-load: $line"; done
-    apply_status=$(cat "$status_file" 2>/dev/null || echo 1)
-    rm -f "$status_file"
-    [ "$apply_status" = 0 ] || { note 'lut cycle: adapter apply failed'; feedback '切换失败：LUT 模块未就绪'; exit 1; }
-fi
+# The engine loads a real look on demand. Off must never preload the adapter.
 note "lut cycle: $current -> $next strength=$strength"
 result=0
 if [ "$next" = stock ]; then
-    output=$(NX300M_MOD_ROOT="$ROOT" "$engine" stock 2>&1) || result=$?
+    output=$(NX300M_MOD_ROOT="$ROOT" "$engine" disable 2>&1) || result=$?
 else
     output=$(NX300M_MOD_ROOT="$ROOT" "$engine" apply "$next" "$strength" 2>&1) || result=$?
 fi
@@ -86,10 +76,11 @@ note "lut cycle engine exit=$result next=$next"
 # It highlights the current selection and closes itself; best effort only.
 label=$(awk -F'|' -v k="$next" '$1==k{print $2; exit}' "$ROOT/looks.txt" 2>/dev/null || :)
 [ -n "$label" ] || label=$next
-[ "$next" = stock ] && label='原样'
+[ "$next" = stock ] && label='关'
 note "lut cycle flash: $label"
 case $output in
     *PERSIST-WARNING*) feedback "$label · 未保存到卡，仅本次有效" ;;
+    *LUT_DISABLED*) feedback 'LUT 已关闭 · 原厂拍摄' ;;
     *) feedback "$label · 已保存，等待原厂 LUT 重载" ;;
 esac
 exit "$result"

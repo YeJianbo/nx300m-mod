@@ -20,6 +20,32 @@ struct context {
 __attribute__((visibility("hidden"))) struct context nx_lut_ram_contexts[SLOTS];
 #define contexts nx_lut_ram_contexts
 
+/* Linux ARM EABI stat64, checked against asm/stat.h in the ARM toolchain.
+ * Keep this private: the loader's config and context layouts stay unchanged. */
+struct file_stamp {
+    unsigned long long device;
+    unsigned char pad0[4];
+    u32 old_inode, mode, links, uid, gid;
+    unsigned long long rdev;
+    unsigned char pad3[4];
+    long long size;
+    u32 block_size;
+    unsigned long long blocks;
+    u32 atime, atime_ns, mtime, mtime_ns, ctime, ctime_ns;
+    unsigned long long inode;
+};
+typedef char stamp_size_check[sizeof(struct file_stamp)==104?1:-1];
+typedef char stamp_size_offset_check[__builtin_offsetof(struct file_stamp,size)==48?1:-1];
+typedef char stamp_mtime_offset_check[__builtin_offsetof(struct file_stamp,mtime)==80?1:-1];
+struct table_cache {
+    u32 valid, generation, branch, reads, hit;
+    struct file_stamp stamp;
+    char path[272];
+};
+/* A context slot owns both its table and this cache until Update returns.
+ * Other threads never wait for it or reuse its table while a writer runs. */
+static struct table_cache table_caches[SLOTS];
+
 static int sys3(int n, int a, int b, int c) {
     register int r0 __asm__("r0")=a;
     register int r1 __asm__("r1")=b;
@@ -63,6 +89,23 @@ static int write_file(const char *path,const char *data,unsigned n) {
     return sys3(6,fd,0,0);
 }
 static int tracing(void) { return sys3(33,(int)"/var/run/nx300m-lut-trace-enabled",0,0)==0; }
+static int file_stamp(const char *path,struct file_stamp *stamp) {
+    int rc;
+    do {rc=sys3(195,(int)path,(int)stamp,0);} while(rc==-4);
+    return rc;
+}
+static int same_stamp(const struct file_stamp *a,const struct file_stamp *b) {
+    /* Reads may change atime; it does not change the contents. */
+    return a->device==b->device && a->inode==b->inode && a->mode==b->mode &&
+        a->size==b->size && a->mtime==b->mtime && a->mtime_ns==b->mtime_ns &&
+        a->ctime==b->ctime && a->ctime_ns==b->ctime_ns;
+}
+static void save_stamp(struct file_stamp *dst,const struct file_stamp *src) {
+    /* A whole-struct assignment emits an unavailable libc memcpy on ARM. */
+    dst->device=src->device;dst->inode=src->inode;dst->mode=src->mode;
+    dst->size=src->size;dst->mtime=src->mtime;dst->mtime_ns=src->mtime_ns;
+    dst->ctime=src->ctime;dst->ctime_ns=src->ctime_ns;
+}
 static char *array(char *p,const u32 *values,unsigned count) {
     p=append(p,"[");
     for(unsigned i=0;i<count;i++) {if(i) p=append(p,",");p=number(p,values[i]);}
@@ -82,6 +125,9 @@ static void trace(struct context *s,const char *stage) {
     p=append(p,",\"forwarded_ptrs\":");p=array(p,s->forwarded_ptrs,3);
     p=append(p,",\"generation\":");p=number(p,s->generation);
     p=append(p,",\"strength\":");p=number(p,s->strength);
+    struct table_cache *cache=&table_caches[s-contexts];
+    p=append(p,",\"table_reads\":");p=number(p,cache->reads);
+    p=append(p,",\"table_cache_hit\":");p=append(p,cache->hit?"true":"false");
     p=append(p,",\"selection_path\":\"");p=append(p,s->path);p=append(p,"\"}\n");
     char *q=append(path,"/var/run/nx300m-lut-trace-");q=number(q,s->tid);append(q,".json");
     q=append(temp,path);append(q,".tmp");
@@ -145,20 +191,39 @@ invalid:
     s->path[0]=0;s->generation=0;s->strength=100;
 }
 static int load_table(struct context *s,int stock) {
+    struct table_cache *cache=&table_caches[s-contexts];
+    struct file_stamp before,after;
     char path[272]; append(path,s->path);
     unsigned n=length(path);
+    int rc;
     if(stock && n>=12 && equal(path+n-12,"/table.d4lut")) {
         append(path+n-12,"/table-stock3d.d4lut");
-        int got=read_file(path,s->table,sizeof(s->table));
-        if(got==(int)sizeof(s->table)) s->composed=1;
-        else if(got==-2) {
+        rc=file_stamp(path,&before);
+        if(rc==-2) {
             append(path,s->path);
-            if(read_file(path,s->table,sizeof(s->table))!=(int)sizeof(s->table)) return 0;
-        } else return 0;
-    } else {
-        if(read_file(path,s->table,sizeof(s->table))!=(int)sizeof(s->table)) return 0;
+            rc=file_stamp(path,&before);
+        } else s->composed=1;
+    } else rc=file_stamp(path,&before);
+    if(!rc && cache->valid && cache->generation==s->generation &&
+       cache->branch==s->source_branch && equal(cache->path,path) &&
+       same_stamp(&cache->stamp,&before)) {cache->hit=1;return 1;}
+    cache->valid=0;
+    /* If stat64 is unavailable, retain the uncached reader. Never serve an
+     * old table after a missing, replaced, edited or unreadable file. */
+    if(!rc && before.size!=(long long)sizeof(s->table)) return 0;
+    ++cache->reads;
+    int got=read_file(path,s->table,sizeof(s->table));
+    if(got==-2 && s->composed) {
+        s->composed=0;append(path,s->path);rc=file_stamp(path,&before);
+        ++cache->reads;got=read_file(path,s->table,sizeof(s->table));
     }
+    if(got!=(int)sizeof(s->table)) return 0;
     for(unsigned i=0;i<TOTAL;i++) if(s->table[i]>1023 || (i%WORDS==WORDS-1 && s->table[i])) return 0;
+    if(!rc && !file_stamp(path,&after)) {
+        if(!same_stamp(&before,&after)) return 0;
+        save_stamp(&cache->stamp,&after);append(cache->path,path);
+        cache->generation=s->generation;cache->branch=s->source_branch;cache->valid=1;
+    }
     return 1;
 }
 /* Keep status writes out of libc; only a complete channel triplet is published.
@@ -191,6 +256,7 @@ void nx_lut_ram_update(void *self,void *params) {
     for(unsigned i=0;i<SLOTS;i++) if(__sync_bool_compare_and_swap(&contexts[i].tid,0,tid)) {s=&contexts[i];break;}
     if(!s) {original(self,params);return;}
     selection(s);
+    table_caches[s-contexts].hit=0;
     s->source_branch=0;s->order_count=0;s->trace_enabled=(u32)tracing();
     for(unsigned i=0;i<3;i++) {
         s->channel_order[i]=0;s->writer_tids[i]=0;s->source_ptrs[i]=0;s->forwarded_ptrs[i]=0;
@@ -215,7 +281,10 @@ void nx_lut_ram_ipcs(unsigned channel,const u16 *source) {
     if(channel==0 && s->active && s->strength && !load_table(s,s->source_branch==1)) {
         s->active=0;s->composed=TABLE_ERROR;
     }
-    if(s->active && s->strength) {
+    if(s->active && s->strength==100) {
+        const u16 *table=s->table+channel*WORDS;
+        s->forwarded_ptrs[channel]=(u32)table;original(channel,table);
+    } else if(s->active && s->strength) {
         u16 mixed[WORDS];
         for(unsigned i=0;i<WORDS;i++) mixed[i]=(u16)(((u32)source[i]*(100-s->strength)+(u32)s->table[channel*WORDS+i]*s->strength+50)/100);
         s->forwarded_ptrs[channel]=(u32)mixed;original(channel,mixed);

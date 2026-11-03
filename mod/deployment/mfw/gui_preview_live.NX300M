@@ -1,0 +1,8 @@
+button|连续黑白 · 只改取景|preview-monochrome
+button|连续黑白·短采样|preview-monochrome-timing
+button|连续 S2 · 当前 LUT|preview-s2-enable
+button|同步当前 LUT|preview-sync
+button|预览状态|preview-status
+button|关闭 LUT 预览 · 软停|preview-restore
+button|返回|back
+button|关闭面板|close

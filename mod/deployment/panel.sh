@@ -65,7 +65,7 @@ if [ "$mode" = lut ]; then
     hook=$(cat /var/run/nx300m-lut-hook 2>/dev/null || :)
     set -- $hook
     if [ "$force_dry" -eq 0 ] && [ "$#" -eq 2 ] && camera_pid "$1" && [ "$2" = "$LUT_ROOT" ]; then
-        "$ENGINE" begin || fail 'cannot capture the LUT entry selection'
+        "$ENGINE" restore-selection || fail 'cannot restore the saved LUT selection'
         live=1
     fi
 else

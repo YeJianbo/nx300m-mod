@@ -2,10 +2,11 @@ ENTRY(nx_sfr_preview)
 SECTIONS {
   . = 0;
   .header : {
-    LONG(0x5246534e) LONG(1) LONG(__blob_end) LONG(__data_start)
+    LONG(0x5246534e) LONG(4) LONG(__blob_end) LONG(__data_start)
     LONG(__data_start) LONG(__blob_end - __data_start)
     LONG(nx_sfr_preview) LONG(nx_sfr_effect) LONG(nx_sfr_prepare)
     LONG(nx_sfr_finish) LONG(nx_sfr_still_mode)
+    LONG(nx_sfr_liveview_mode) LONG(nx_sfr_work_address)
     LONG(nx_sfr_config) LONG(SIZEOF(.config))
     LONG(nx_sfr_runtime) LONG(SIZEOF(.runtime)) LONG(nx_sfr_build)
   }
@@ -19,5 +20,6 @@ SECTIONS {
   .bss : { *(.bss .bss.*) *(COMMON) }
   . = ALIGN(4096);
   __blob_end = .;
+  ASSERT(__blob_end <= 0x20000, "SmartFilter diagnostic blob exceeds 128 KiB")
   /DISCARD/ : { *(.ARM.exidx*) *(.ARM.extab*) *(.comment) *(.note*) }
 }

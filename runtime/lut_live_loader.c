@@ -202,7 +202,8 @@ static int mutate(unsigned pid,const char *command,const char *blob_path,const c
     struct stopped *main_thread=NULL;for(unsigned i=0;i<nstops;i++)if(stops[i].tid==pid)main_thread=&stops[i];
     unsigned n=0;unsigned long long start=0;if(threads(pid,after,&n))for(unsigned i=0;i<n;i++)if(after[i].tid==pid)start=after[i].start;
     snprintf(path,sizeof path,"/proc/%u/exe",pid);char exe[512];ssize_t len=readlink(path,exe,sizeof exe-1);if(len<0)goto done;exe[len]=0;
-    if(strcmp(base(exe),fixture?"lut_live_fixture.arm":"di-camera-app-nx300")){fprintf(stderr,"Unexpected target executable.\n");goto done;}
+    if(fixture?(strcmp(base(exe),"lut_live_fixture.arm")&&strcmp(base(exe),"smartfilter_fixture.arm")):
+       strcmp(base(exe),"di-camera-app-nx300")){fprintf(stderr,"Unexpected target executable.\n");goto done;}
     if(!fixture){int appfd=open(path,O_RDONLY|O_CLOEXEC);int exact=appfd>=0&&file_hash(appfd,STOCK_APP_SIZE,STOCK_APP_SHA);
         if(appfd>=0)close(appfd);
         if(!exact){fprintf(stderr,"Camera executable is not the original NX300M 1.15 ELF.\n");goto done;}}

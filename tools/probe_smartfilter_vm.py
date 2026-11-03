@@ -117,16 +117,54 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
 
 
 def collect():
-    result = call('exec', '/rescue/busybox tar -czf /tmp/smartfilter-evidence.tar.gz -C /arm-vm mfw-results; '
-                         '/rescue/busybox base64 /tmp/smartfilter-evidence.tar.gz')
-    if result['exit_code']:
-        raise RuntimeError('Evidence collection failed')
-    raw = base64.b64decode(''.join(line.strip() for line in result['output'].splitlines()
-                                  if re.fullmatch('[A-Za-z0-9+/=]+', line.strip())), validate=True)
+    import hashlib
+
+    archive = '/tmp/smartfilter-evidence.tar.gz'
+    chunk = '/tmp/smartfilter-evidence.chunk'
+    result = call('exec', f'/rescue/busybox tar -czf {archive} -C /arm-vm mfw-results && '
+                         f'/rescue/busybox sha256sum {archive} && '
+                         f"/rescue/busybox stat -c 'ARCHIVE_BYTES=%s' {archive}")
+    checksum = re.search(r'(?m)^([0-9a-f]{64})  '+re.escape(archive)+r'\r?$', result['output'])
+    length = re.search(r'(?m)^ARCHIVE_BYTES=(\d+)\r?$', result['output'])
+    if result['exit_code'] or not checksum or not length:
+        raise RuntimeError('Evidence archive metadata missing')
+    size = int(length.group(1))
+    if not 0 < size <= 16*1024*1024:
+        raise ValueError('Unexpected evidence archive size')
+    # The emulated UART can drop complete lines during a large base64 burst.
+    # Bound each transfer, verify it against the guest, and retry corruption;
+    # never ignore gzip CRC failures or accept partial evidence.
+    pieces, attempts = [], []
+    for offset in range(0, size, 4096):
+        for attempt in range(1, 4):
+            fetched = call('exec', f'/rescue/busybox dd if={archive} of={chunk} bs=4096 '
+                f'skip={offset//4096} count=1 2>/dev/null && '
+                f'/rescue/busybox sha256sum {chunk} && /rescue/busybox base64 {chunk}')
+            digest = re.search(r'(?m)^([0-9a-f]{64})  '+re.escape(chunk)+r'\r?$', fetched['output'])
+            try:
+                data = base64.b64decode(''.join(line.strip() for line in fetched['output'].splitlines()
+                    if re.fullmatch('[A-Za-z0-9+/=]+', line.strip())), validate=True)
+            except ValueError:
+                data = b''
+            if (not fetched['exit_code'] and digest and len(data) == min(4096,size-offset)
+                    and hashlib.sha256(data).hexdigest() == digest.group(1)):
+                pieces.append(data); attempts.append(attempt); break
+        else:
+            raise RuntimeError(f'Evidence chunk integrity failed at {offset}')
+    raw = b''.join(pieces)
+    if len(raw) != size or hashlib.sha256(raw).hexdigest() != checksum.group(1):
+        raise ValueError('Evidence archive differs from guest SHA256')
     (OUT/'guest-evidence.tar.gz').write_bytes(raw)
     unpacked = gzip.decompress(raw)
+    # Never let evidence left by an older run satisfy a missing new result.
+    destination=OUT/'guest'
+    if destination.exists():
+        previous=OUT/('guest-before-'+str(time.time_ns()))
+        destination.rename(previous)
     with tarfile.open(fileobj=io.BytesIO(unpacked)) as package:
-        package.extractall(OUT/'guest', filter='data')
+        package.extractall(destination, filter='data')
+    arm_vm.write_json(OUT/'evidence-transfer.json', dict(bytes=size,sha256=checksum.group(1),
+        guest_sha256_verified=True,chunk_bytes=4096,attempts=attempts))
     return OUT/'guest/mfw-results'
 
 

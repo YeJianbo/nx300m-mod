@@ -1,4 +1,5 @@
 """Build self-contained RAM LUT callbacks; never modifies a target process."""
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -13,6 +14,10 @@ OUT = ROOT / 'outputs/deployment/lut-live-loader'
 
 
 def main():
+    global OUT
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output-dir', type=Path, default=OUT)
+    OUT = parser.parse_args().output_dir.resolve()
     OUT.mkdir(parents=True, exist_ok=True)
     # The immutable header carries a code identity without changing config ABI.
     # A date cannot distinguish multiple incompatible builds made on one day.

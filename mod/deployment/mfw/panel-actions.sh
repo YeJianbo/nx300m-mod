@@ -4,7 +4,7 @@ set -eu
 set -f
 [ "$#" -eq 1 ] || exit 64
 case $1 in
-    status|network-info|disable-autostart|enable-autostart|preview-enable|preview-identity|preview-monochrome|preview-sync|preview-restore|preview-status) action=$1 ;;
+    status|network-info|disable-autostart|enable-autostart|preview-enable|preview-s2-enable|preview-probe-once|preview-identity|preview-monochrome|preview-monochrome-timing|preview-sync|preview-stop|preview-restore|preview-status|preview-diag-export) action=$1 ;;
     *) exit 64 ;;
 esac
 . "${NX300M_MOD_ROOT:-/mnt/mmc/nx300m-mod}/common.sh"
@@ -40,6 +40,29 @@ if [ "$action" = network-info ]; then
     printf 'NXConnect 点“查找相机”；NFC 需手机读取到兼容标签。\n'
     exit 0
 fi
+# The probe UI must not hold a preview/media lease. Only its detached RAM job
+# obtains them after READY/ACK; no wait for apply or export belongs to the UI.
+continuous=0
+case $action in
+    preview-s2-enable|preview-enable|preview-monochrome|preview-monochrome-timing|preview-sync)
+        # Capability belongs to the installed backend, not a visible test button.
+        script=$ROOT/smartfilter-preview.sh
+        if [ -f "$script" ] && [ ! -L "$script" ] &&
+            [ "$(/bin/sh "$script" capabilities 2>/dev/null)" = continuous-s2 ]; then
+            continuous=1
+        fi ;;
+esac
+case $action in
+    preview-enable|preview-monochrome|preview-monochrome-timing|preview-sync)
+        if [ "$action" = preview-enable ] || [ "$continuous" != 1 ]; then
+            printf '探针包拒绝 S1、持续和非零 LUT 入口；请使用独立连续 S2 候选。\n' >&2
+            exit 1
+        fi ;;
+    preview-probe-once|preview-identity)
+        script=$ROOT/smartfilter-preview.sh
+        [ -r "$script" ] && [ ! -L "$script" ] || { printf 'RAM preview wrapper unavailable\n' >&2; exit 1; }
+        exec /bin/sh "$script" probe-once ;;
+esac
 # Coordinate even read-only source status with the remote's media pause. The
 # lock is in RAM for the staged runtime, never on the card being handed off.
 exec 6>"$STATE/media-io.lock" || fail 'cannot open media access lock'
@@ -59,23 +82,41 @@ if [ "$action" != status ]; then
 fi
 case $action in
     preview-*)
-        script=$SOURCE_ROOT/smartfilter-preview.sh
+        script=$ROOT/smartfilter-preview.sh
         [ -r "$script" ] && [ ! -L "$script" ] || fail 'preview script unavailable'
         case $action in
-            preview-enable) operation=enable-stock ;;
-            preview-identity) operation=test-identity ;;
+            preview-s2-enable)
+                operation=enable-s2-stock
+                [ "$continuous" != 1 ] || operation=enable-s2 ;;
             preview-monochrome) operation=test-monochrome ;;
+            preview-monochrome-timing) operation=test-monochrome-timing ;;
             preview-sync) operation=sync ;;
+            preview-stop) operation=stop ;;
             preview-restore) operation=restore ;;
             preview-status) operation=status ;;
+            preview-diag-export) operation=diag-export ;;
         esac
-        case $operation in
-            test-*|sync)
-                selected_backend=
-                [ ! -r /var/run/nx300m-preview-backend ] || read -r selected_backend < /var/run/nx300m-preview-backend || :
-                [ "$selected_backend" = smartfilter ] || fail '请先选择“启用预览 · 原样”'
-                ;;
-        esac
+        if [ "$operation" = diag-export ]; then
+            rc=0
+            data=$(/bin/sh "$script" diag-export) || rc=$?
+            if printf '%s\n' "$data" | awk '/"status"[ \t]*:[ \t]*"no_data"/ { found=1 } END { exit !found }'; then
+                printf '没有驻留诊断数据；未创建 RAM 快照，也没有写卡。\n'
+                exit 0
+            fi
+            if [ "$rc" -ne 0 ]; then
+                [ -z "$data" ] || printf '%s\n' "$data" >&2
+                printf '诊断导出失败；以回执中的快照、写入及错误字段为准，请保留现场。\n' >&2
+                exit 1
+            fi
+            if printf '%s\n' "$data" | awk '/"persisted"[ \t]*:[ \t]*true/ { found=1 } END { exit !found }'; then
+                printf 'S2 诊断已保存；窗口已冻结，可正常关机后读卡。\n'
+            elif printf '%s\n' "$data" | awk '/"snapshot_created"[ \t]*:[ \t]*true/ { found=1 } END { exit !found }'; then
+                printf '已创建 RAM 快照，尚未写卡；这不是持久存证成功。\n'
+            else
+                printf '未确认创建诊断快照，也未确认写卡；请保留现场。\n'
+            fi
+            exit 0
+        fi
         if [ "$operation" = status ]; then
             data=$(/bin/sh "$script" status)
             if [ -n "${NX_FN_KEY_LOG:-}" ]; then printf 'SmartFilter status=%s\n' "$data" >> "$NX_FN_KEY_LOG" 2>/dev/null || :; fi
@@ -88,17 +129,24 @@ case $action in
                     print "已请求：" value["requested_generation"] " · 已处理：" value["applied_generation"]
                     print "处理帧：" value["rendered"] " · 原样帧：" value["passthrough"]
                     print "最近错误：" value["last_error"]
+                    if (value["diag_window"]>0) {
+                        print "诊断窗口：" value["diag_window"] " · 样本 " value["diag_frames"]
+                        print "诊断：" (value["enabled"]!="true" ? "已停止" : value["diag_frozen"]==1 ? "已冻结" : "采集中／容量满即停") " · 丢弃 " value["diag_dropped"]
+                    }
+                    if (value["profile"]==1) {
+                        print "S2：" (value["enabled"]=="true" ? "已武装" : "LUT 已软停") " · 路由驻留"
+                        print "S2 接管帧：" value["s2_frames"] " · 安全直通：" value["s2_fallback"]
+                        print "取景图：" (value["s2_path"]==1 ? "含 LUT 节点" : "原厂") " · 恢复状态 " value["refresh_state"]
+                        if (value["refresh_pending"]==1) print "正在等待原厂取景恢复"
+                    }
                 }
             '
             exit 0
         fi
         /bin/sh "$script" "$operation"
         case $operation in
-            enable-stock) printf '预览已启用。请在原厂智能滤镜中选择 Miniature。\n' ;;
-            test-identity) printf '单位表已提交。请观察取景是否保持原样。\n' ;;
-            test-monochrome) printf '黑白表已提交。请观察取景是否变为黑白。\n' ;;
-            sync) printf '已提交当前 LUT，请观察取景。\n' ;;
-            restore) printf '已恢复原厂调用。请关闭原厂智能滤镜。\n' ;;
+            enable-s2-stock) printf 'S2 原样已请求；保持原厂滤镜关闭。单位表处理仅允许独立单帧探针。\n' ;;
+            restore) printf '预览已关闭。S2 为软停，完全退出需正常关机重启。\n' ;;
         esac
         exit 0
         ;;

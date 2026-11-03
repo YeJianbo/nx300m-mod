@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import statistics
 import struct
 import subprocess
 import tarfile
@@ -22,6 +23,8 @@ import probe_mfw_ram_vm as vm
 
 PROJECT = Path(__file__).resolve().parents[1]
 OUT = PROJECT / 'outputs/deployment/lut-live-loader/arm-vm'
+BUILD = PROJECT / 'outputs/deployment/lut-live-loader'
+BASELINE = None
 SOCKET = '/tmp/nx300m-lut-live-private'
 LOOK = 'ricoh-negative-exact'
 INIT = r'''#!/rescue/busybox sh
@@ -71,9 +74,9 @@ cat /proc/$pid/stat > "$OUT/before.stat"
 cat /proc/$pid/maps > "$OUT/before.maps"
 seq=0
 rpc() {
-    mode=$1; reset=$2; tag=$3
+    mode=$1; reset=$2; tag=$3; repeats=${4:-1}
     seq=$((seq+1))
-    printf '%s %s %s %s\n' "$seq" "$mode" "$reset" "$tag" > /var/run/lut-live-request.tmp
+    printf '%s %s %s %s %s\n' "$seq" "$mode" "$reset" "$tag" "$repeats" > /var/run/lut-live-request.tmp
     mv /var/run/lut-live-request.tmp /var/run/lut-live-request
     attempt=0
     while :; do
@@ -162,6 +165,44 @@ if [ "$NX_LUT_FACTORY_ONLY" -eq 0 ]; then
         rpc 0 0 "direct-$strength"
     done
 fi
+# Mutable private RAM files test cache freshness without touching source LUTs.
+cache="$ROOT/looks/cache-probe"
+/rescue/busybox mount -t tmpfs -o size=1m lut-cache-probe "$cache"
+cp "$ROOT/looks/ricoh-negative-exact/table.d4lut" "$cache/table.d4lut"
+cp "$ROOT/looks/ricoh-negative-exact/table-stock3d.d4lut" "$cache/table-stock3d.d4lut"
+generation=$((generation+1))
+cache_select() {
+    printf '%s %s %s\n' "$generation" "$cache/table.d4lut" "$1" > /var/run/nx300m-lut-selection.tmp
+    mv /var/run/nx300m-lut-selection.tmp /var/run/nx300m-lut-selection
+}
+cache_select 100
+rpc 1 0 cache-first
+rpc 1 0 cache-repeat
+if [ "$NX_LUT_FACTORY_ONLY" -eq 0 ]; then
+    rpc 0 0 cache-direct
+    rpc 1 0 cache-composed
+fi
+cp "$cache/table.d4lut" "$cache/replacement"
+mv "$cache/replacement" "$cache/table-stock3d.d4lut"
+rpc 1 0 cache-replaced
+rpc 1 0 cache-replaced-repeat
+cp "$ROOT/looks/ricoh-negative-exact/table-stock3d.d4lut" "$cache/table-stock3d.d4lut"
+rpc 1 0 cache-edited
+cache_select 50
+rpc 1 0 cache-strength
+generation=$((generation+1));cache_select 100
+rpc 1 0 cache-generation
+rm "$cache/table-stock3d.d4lut"
+rpc 1 0 cache-fallback
+rpc 1 0 cache-fallback-repeat
+cp "$ROOT/looks/ricoh-negative-exact/table-stock3d.d4lut" "$cache/table-stock3d.d4lut"
+rpc 1 0 cache-reappeared
+cp /mnt/mmc/invalid-table.d4lut "$cache/table-stock3d.d4lut"
+rpc 1 0 cache-invalid
+cp "$ROOT/looks/ricoh-negative-exact/table-stock3d.d4lut" "$cache/table-stock3d.d4lut"
+rpc 1 0 cache-repaired
+rm "$cache/table-stock3d.d4lut" "$cache/table.d4lut"
+rpc 1 0 cache-missing
 rm /var/run/nx300m-lut-selection
 if [ "$NX_LUT_FACTORY_ONLY" -eq 0 ]; then rpc 0 0 stock-direct; fi
 rpc 1 0 stock-composed
@@ -201,6 +242,22 @@ if [ -x /mnt/mmc/bin/ram_ready.arm ]; then
     binding_result=$?
     set -e
     [ "$binding_result" -eq 3 ]
+fi
+# Same-VM paired comparison measures adapter + stock RAM writer, with tracing
+# off. It cannot measure the camera ISP, JPEG encoding or SD write latency.
+if [ -x /mnt/mmc/bin/baseline_loader.arm ]; then
+    rm /var/run/nx300m-lut-trace-enabled
+    select_strength 100
+    "$LOADER" apply --pid "$pid" --blob /mnt/mmc/lut_ram_blob.bin --root "$ROOT" --fixture > "$OUT/perf-candidate-apply.json"
+    rpc 1 0 perf-candidate-warm
+    for trial in 1 2 3 4 5; do rpc 1 0 "perf-candidate-$trial" 256; done
+    restore_loader perf-candidate-restore
+    rm -f "/var/run/nx300m-lut-live-$pid.state"
+    /mnt/mmc/bin/baseline_loader.arm apply --pid "$pid" --blob /mnt/mmc/baseline_blob.bin --root "$ROOT" --fixture > "$OUT/perf-baseline-apply.json"
+    rpc 1 0 perf-baseline-warm
+    for trial in 1 2 3 4 5; do rpc 1 0 "perf-baseline-$trial" 256; done
+    /mnt/mmc/bin/baseline_loader.arm restore --pid "$pid" --fixture > "$OUT/perf-baseline-restore.json"
+    : > /var/run/nx300m-lut-trace-enabled
 fi
 # Recreate a verified previous build with lost/corrupt runtime state. Recovery
 # must reject a different image, then drain and restore only the exact image.
@@ -310,13 +367,18 @@ def prepare():
     binding = compile_binding_helper()
     inputs = {
         'bin/lut_live_fixture.arm': fixture,
-        'bin/lut_live_loader.arm': PROJECT / 'outputs/deployment/lut-live-loader/lut_live_loader.arm',
-        'lut_ram_blob.bin': PROJECT / 'outputs/deployment/lut-live-loader/lut_ram_blob.bin',
+        'bin/lut_live_loader.arm': BUILD / 'lut_live_loader.arm',
+        'lut_ram_blob.bin': BUILD / 'lut_ram_blob.bin',
+        'invalid-table.d4lut': PROJECT / f'looks/{LOOK}/table.d4lut',
+        'nx300m-mod/looks/cache-probe/table.d4lut': PROJECT / f'looks/{LOOK}/table.d4lut',
         f'nx300m-mod/looks/{LOOK}/table.d4lut': PROJECT / f'looks/{LOOK}/table.d4lut',
         f'nx300m-mod/looks/{LOOK}/table-stock3d.d4lut': PROJECT / f'looks/{LOOK}/table-stock3d.d4lut',
     }
     if binding:
         inputs['bin/ram_ready.arm'] = binding
+    if BASELINE:
+        inputs['bin/baseline_loader.arm'] = BASELINE / 'lut_live_loader.arm'
+        inputs['baseline_blob.bin'] = BASELINE / 'lut_ram_blob.bin'
     compat = PROJECT / 'outputs/deployment/lut-live-loader/compat'
     legacy_images = sorted(compat.glob('blob-*.bin'))
     if not legacy_images:
@@ -334,6 +396,8 @@ def prepare():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
         inventory[name] = target.stat().st_size
+    invalid = stage / 'invalid-table.d4lut'
+    invalid.write_bytes(b'\xff\xff' + invalid.read_bytes()[2:])
     arm_vm.write_json(OUT / 'candidate.json', {'inventory': inventory, 'look': LOOK,
         'target': 'explicit lut_live_fixture.arm; genuine stock IQ/UDD and synthetic allocated MMIO',
         'shared_cached_initramfs_modified': False})
@@ -342,6 +406,7 @@ def prepare():
 
 def call(action, command=''):
     result = subprocess.run(['wsl.exe', '-d', 'Debian', '-u', 'root', '-e', 'python3', arm_vm.wsl_path(__file__),
+                             '--output-dir', arm_vm.wsl_path(OUT),
                              '--linux', action, base64.b64encode(command.encode()).decode()],
                             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=375)
     if result.returncode:
@@ -396,6 +461,9 @@ def verify(guest):
             raise ValueError(f'{tag}: wrong traced strength')
         if passthrough and source != forwarded:
             raise ValueError(f'{tag}: original source pointers were not passed through unchanged')
+        if strength == 100 and not passthrough and (
+                forwarded[1] - forwarded[0] != 1460 or forwarded[2] - forwarded[1] != 1460):
+            raise ValueError(f'{tag}: full-strength writer did not receive the three cached table planes')
         trace_checks.append({'tag': tag, 'update_tid': tid, 'writer_tids': trace['writer_tids'],
                              'channel_order': trace['channel_order'], 'source_branch': trace['source_branch'],
                              'source_pointers_preserved': source == forwarded})
@@ -415,6 +483,44 @@ def verify(guest):
     if words(guest / 'installed-same-params.bin') != candidate['composed']:
         raise ValueError('First hook call did not invalidate the pre-existing original cache')
     check_trace('installed-same-params', 'composed', 100)
+    cache_cases = [
+        ('cache-first', 'composed', candidate['composed'], 100, False, False),
+        ('cache-repeat', 'composed', candidate['composed'], 100, True, False),
+    ]
+    if 'direct' in modes:
+        cache_cases += [('cache-direct', 'direct', candidate['direct'], 100, False, False),
+                        ('cache-composed', 'composed', candidate['composed'], 100, False, False)]
+    half = tuple((a + b + 1) // 2 for a, b in zip(baseline['composed'], candidate['composed']))
+    cache_cases += [
+        ('cache-replaced', 'composed', candidate['direct'], 100, False, False),
+        ('cache-replaced-repeat', 'composed', candidate['direct'], 100, True, False),
+        ('cache-edited', 'composed', candidate['composed'], 100, False, False),
+        ('cache-strength', 'composed', half, 50, True, False),
+        ('cache-generation', 'composed', candidate['composed'], 100, False, False),
+        ('cache-fallback', 'composed', candidate['direct'], 100, False, False),
+        ('cache-fallback-repeat', 'composed', candidate['direct'], 100, True, False),
+        ('cache-reappeared', 'composed', candidate['composed'], 100, False, False),
+        ('cache-invalid', 'composed', baseline['composed'], 100, False, True),
+        ('cache-repaired', 'composed', candidate['composed'], 100, False, False),
+        ('cache-missing', 'composed', baseline['composed'], 100, False, True),
+    ]
+    cache_checks, previous_reads = [], None
+    for tag, mode, expected, strength, hit, passthrough in cache_cases:
+        if words(guest / f'{tag}.bin') != expected:
+            raise ValueError(f'{tag}: cached writer output differs from the selected snapshot')
+        check_trace(tag, mode, strength, passthrough=passthrough)
+        trace = json.loads((guest / f'{tag}.trace.json').read_text())
+        reads = trace.get('table_reads')
+        if trace.get('table_cache_hit') is not hit or not isinstance(reads, int):
+            raise ValueError(f'{tag}: unexpected cache hit/read observation')
+        if previous_reads is not None and reads != previous_reads + int(not hit):
+            raise ValueError(f'{tag}: cache hit re-read the table or cache miss did not retry it')
+        previous_reads = reads
+        status = json.loads((guest / f'{tag}.status.json').read_text())
+        if status.get('active') != int(not passthrough):
+            raise ValueError(f'{tag}: stale active status after invalid table')
+        cache_checks.append({'tag': tag, 'cache_hit': hit, 'table_read_attempts': reads,
+                             'matched_words': len(expected)})
     if words(guest / 'reapplied-stock-composed.bin') != baseline['composed']:
         raise ValueError('Reinstalled hook did not preserve the stock table without a selection')
     check_trace('reapplied-stock-composed', 'composed', passthrough=True)
@@ -442,14 +548,25 @@ def verify(guest):
     if any(item.get('mapping_reused') is not True or item.get('region') != installed.get('region')
            for item in (idempotent, reapplied)):
         raise ValueError('Repeated installation did not reuse the same RAM allocation')
-    if (guest / 'installed.maps').read_text() != (guest / 'idempotent.maps').read_text():
-        raise ValueError('Repeated installed apply changed target mappings')
+    # glibc may trim an unrelated anonymous page while the fixture runs.
+    # Idempotence concerns the owned image, not every live-process mapping.
+    image_base=installed['region']
+    image_size=struct.unpack('<16I',(OUT/'source-files/lut_ram_blob.bin').read_bytes()[:64])[2]
+    def owned_maps(name):
+        result=[]
+        for line in (guest/name).read_text().splitlines():
+            low,high=(int(v,16) for v in line.split()[0].split('-'))
+            if low<image_base+image_size and high>image_base:
+                result.append(line)
+        return result
+    if not owned_maps('installed.maps') or owned_maps('installed.maps')!=owned_maps('idempotent.maps'):
+        raise ValueError('Repeated installed apply changed its owned image mappings')
     if rerestored.get('restored') is not True or rerestored.get('mapping_retained') is not True:
         raise ValueError('Second restore did not retain and disable the mapping')
     statuses = {label: json.loads((guest / f'status-{label}.json').read_text())
                 for label in ('before', 'installed', 'restored', 'reapplied', 'rerestored')}
     lazy = json.loads((guest / 'status-lazy-before.json').read_text())
-    original = json.loads((PROJECT / 'outputs/deployment/lut-live-loader/build-report.json').read_text())
+    original = json.loads((BUILD / 'build-report.json').read_text())
     if lazy['slot_lut'] != lazy['iq_bias'] + original['stock']['iq']['lut_resolver'] or not lazy['rw_slots_original']:
         raise ValueError('Startup fixture did not retain and recognize the original unresolved LUT JUMP_SLOT')
     if not json.loads((guest / 'lazy-apply.json').read_text()).get('hooks_installed'):
@@ -490,12 +607,32 @@ def verify(guest):
         raise ValueError('Fresh installation after known-image recovery failed to apply the selected table')
     if not json.loads((guest / 'binding-recovered.json').read_text()).get('binding_ready'):
         raise ValueError('Fresh installation after recovery is not ready')
+    performance = None
+    if (guest / 'perf-baseline-1.fixture.json').is_file():
+        samples = {}
+        for variant in ('baseline', 'candidate'):
+            samples[variant] = []
+            for trial in range(1, 6):
+                tag = f'perf-{variant}-{trial}'
+                sample = json.loads((guest / f'{tag}.fixture.json').read_text())
+                if sample.get('repeats') != 256 or sample.get('update_wall_ns', 0) <= 0:
+                    raise ValueError(f'{tag}: invalid hot-path timing sample')
+                if words(guest / f'{tag}.bin') != candidate['composed']:
+                    raise ValueError(f'{tag}: timing batch did not forward the selected full-strength LUT')
+                samples[variant].append(sample['update_wall_ns'] / 256 / 1e6)
+        medians = {variant: statistics.median(values) for variant, values in samples.items()}
+        performance = {'scope': 'QEMU ARM Update callback + genuine stock IQ/UDD RAM writer, tracing off',
+                       'samples_ms_per_update': samples, 'median_ms_per_update': medians,
+                       'candidate_over_baseline': medians['candidate'] / medians['baseline'],
+                       'physical_isp_jpeg_sd_timing': False}
     return {'passed': True, 'native_arm_kernel': True, 'real_ptrace': True,
             'lazy_writer_admission_checked': True, 'first_call_after_lazy_install_checked': True,
             'known_image_recovery_checked': True, 'unknown_image_refused_without_slot_writes': True,
             'target_identity_preserved': True, 'original_cached_parameters_reloaded': True,
             'checks': checks, 'stock_selection_restored': True, 'original_slots_restored': True,
             'trace_checks': trace_checks, 'zero_strength_original_pointers_preserved': True,
+            'full_strength_cached_planes_forwarded': True, 'table_cache_checks': cache_checks,
+            'hot_path_comparison': performance,
             'repeated_apply_same_mapping': True, 'restore_reapply_stock_preserved': True,
             'direct_source_tested': 'direct' in modes,
             'restore_refresh_method': 'change genuine parameter index' if 'direct' in modes else 'explicit original node Reset in fixture',
@@ -535,12 +672,18 @@ def run():
 
 
 def main():
+    global OUT, BUILD, BASELINE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--linux', choices=['start', 'stop', 'exec'])
     parser.add_argument('payload', nargs='?', default='')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--factory-only', action='store_true', help='Limit to the genuine factory-table branch')
+    parser.add_argument('--output-dir', type=Path, default=OUT)
+    parser.add_argument('--build-dir', type=Path, default=BUILD)
+    parser.add_argument('--baseline-dir', type=Path, help='Optional saved loader/blob for same-VM hot-path comparison')
     args = parser.parse_args()
+    OUT, BUILD = args.output_dir.resolve(), args.build_dir.resolve()
+    BASELINE = args.baseline_dir.resolve() if args.baseline_dir else None
     configure(args.factory_only)
     if args.linux:
         print(json.dumps(vm.linux_worker(args.linux, args.payload)))

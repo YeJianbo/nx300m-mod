@@ -89,6 +89,9 @@ class RemoteActivity : AppCompatActivity() {
         /** OSD 突发轮询间隔：按键后短时间内密集观察画面变化 */
         private const val OSD_ACTIVE_INTERVAL_MS = 300L
 
+        /** NX300M 的整屏与视频共用 OSD 通道，不能按静态菜单每两秒刷新。 */
+        private const val SCREEN_INTERVAL_MS = 300L
+
         private const val INPUT_OBSERVE_WINDOW_MS = 2500L
     }
 
@@ -114,6 +117,9 @@ class RemoteActivity : AppCompatActivity() {
     private var previewGeneration = 0
     private var previewSwitchJob: Job? = null
     private var osdJob: Job? = null
+    private var screenSourceJob: Job? = null
+    private var screenSourceText = "正在检查画面来源…"
+    private var screenCameraAtPause: NxCamera? = null
     private var changingPreview = false
     private var updatingOsdSwitch = false
     private lateinit var osdView: OsdView
@@ -127,6 +133,20 @@ class RemoteActivity : AppCompatActivity() {
     private val heldInputQueue = Channel<HeldInput>(Channel.UNLIMITED)
     private val heldTouches = mutableMapOf<String, HeldInput>()
     private val heldButtons = mutableMapOf<String, android.widget.Button>()
+    private class ScreenGesture(val camera: NxCamera, val pointerId: Int, val first: android.graphics.Point) {
+        var last = first
+        var pendingMove: android.graphics.Point? = null
+        var moveQueued = false
+        var cancelled = false
+    }
+    private sealed class ScreenCommand {
+        data class Down(val gesture: ScreenGesture) : ScreenCommand()
+        data class Move(val gesture: ScreenGesture) : ScreenCommand()
+        data class Up(val gesture: ScreenGesture, val point: android.graphics.Point) : ScreenCommand()
+    }
+    private val screenInputQueue = Channel<ScreenCommand>(Channel.UNLIMITED)
+    private val pendingScreenGestures = mutableSetOf<ScreenGesture>()
+    private var screenGesture: ScreenGesture? = null
     private var feedbackTicker: Job? = null
     private var liveStatusText = "取景未启动"
     private var osdStatusText = "等待首帧"
@@ -204,6 +224,7 @@ class RemoteActivity : AppCompatActivity() {
             return
         }
         startHeldInputs()
+        startScreenInputs()
         b.previewFrame.screenRatio = profile.geometry.width.toFloat() / profile.geometry.height
 
         b.toolbar.setNavigationOnClickListener { if (monitorExpanded) toggleMonitor() else finish() }
@@ -292,6 +313,11 @@ class RemoteActivity : AppCompatActivity() {
             }
         }
         osdView.configure(profile.geometry)
+        if (nx300Body) {
+            osdView.isClickable = true
+            osdView.contentDescription = "相机屏幕，点击或滑动进行遥控"
+            osdView.setOnTouchListener { _, event -> handleScreenTouch(event) }
+        }
         b.liveView.osdGeometry = profile.geometry
         b.btnSilentToggle.isEnabled = profile.silentShutter || profile.hasBodySettings
         if (!profile.silentShutter) {
@@ -425,7 +451,7 @@ class RemoteActivity : AppCompatActivity() {
     private fun connectStockRvf() {
         val cam = NxApp.camera ?: return
         if (!nx300Body || stockRvfClient != null || shooting || bulbRunning) return
-        if (activeInputs.isNotEmpty() || heldTouches.isNotEmpty()) {
+        if (activeInputs.isNotEmpty() || heldTouches.isNotEmpty() || pendingScreenGestures.isNotEmpty()) {
             toast("请先松开机身按键，等待相机响应后再连接")
             return
         }
@@ -547,8 +573,13 @@ class RemoteActivity : AppCompatActivity() {
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                NxApp.log("原厂 Shot 失败：${e.message}")
-                if (stockRvfClient === client) toast("拍摄失败：${e.message}")
+                NxApp.log("原厂 Shot 未完成：${e.message}")
+                if (stockRvfClient === client) {
+                    val message = if (e is StockRvfClient.ProtocolException && e.faultCode != null)
+                        e.message ?: "相机拒绝拍摄"
+                    else "拍摄结果未确认，请检查相机回放后再试"
+                    toast(message)
+                }
             }
             finally {
                 if (stockShotToken === token) {
@@ -727,7 +758,7 @@ class RemoteActivity : AppCompatActivity() {
         b.liveStatus.text = when {
             stockRvfSession != null && ::stockVideo.isInitialized && stockVideo.visibility == View.VISIBLE -> stockVideoStatus
             profile.screenOnly && previewMode == PreviewMode.OFF && previewNotice == null -> "屏幕镜像未开启"
-            profile.screenOnly && previewMode == PreviewMode.OVERLAY -> "${profile.geometry.width}×${profile.geometry.height} · 屏幕镜像"
+            profile.screenOnly && previewMode == PreviewMode.OVERLAY -> screenSourceText
             previewMode == PreviewMode.OVERLAY && !overlayGeometryOk ->
                 "$liveStatusText\n取景比例非 3:2，叠加暂不可用"
             previewMode == PreviewMode.OVERLAY -> liveStatusText
@@ -744,6 +775,8 @@ class RemoteActivity : AppCompatActivity() {
         previewSwitchJob?.cancel()
         val previousOsd = osdJob
         previousOsd?.cancel()
+        screenSourceJob?.cancel()
+        if (target != PreviewMode.OVERLAY) releaseScreenTouch(cancelled = true)
         feedbackTicker?.cancel()
         previewMode = target
         previewNotice = null
@@ -769,6 +802,7 @@ class RemoteActivity : AppCompatActivity() {
                         osdView.reset()
                         osdStatusText = "等待首帧"
                         startOsdLoop(cam, generation)
+                        if (cam.profile.screenOnly) startScreenSourceLoop(cam, generation)
                         feedbackTicker = lifecycleScope.launch {
                             while (isActive && generation == previewGeneration) {
                                 refreshOsdFeedback()
@@ -862,11 +896,36 @@ class RemoteActivity : AppCompatActivity() {
         }
     }
 
+    private fun startScreenSourceLoop(cam: NxCamera, generation: Int) {
+        screenSourceText = "正在检查画面来源…"
+        screenSourceJob = lifecycleScope.launch {
+            while (isActive && generation == previewGeneration && NxApp.camera === cam) {
+                val source = try {
+                    withContext(Dispatchers.IO) { cam.screenVideoSource() }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+                if (generation != previewGeneration || NxApp.camera !== cam) return@launch
+                screenSourceText = when (source) {
+                    "none" -> "仅界面叠层 · 实时取景未接入"
+                    "stock-lcd-observer" -> "检测到 LCD 采集记录 · 画面完整性待核验"
+                    "laboratory-lcd-backend" -> "测试画面源 · 非真实取景"
+                    else -> "屏幕镜像 · 画面来源未知"
+                }
+                renderPreviewStatus()
+                delay(5_000L)
+            }
+        }
+    }
+
     /** 输入只唤醒延时，不取消 HTTP；按请求起点节流，慢帧不会再额外加 200ms。 */
     private suspend fun waitForOsdPoll(started: Long, unavailable: Boolean = false) {
         while (true) {
             val now = SystemClock.elapsedRealtime()
-            val interval = if (!unavailable && (pendingInput != null || now < burstUntil))
+            val interval = if (!unavailable && profile.screenOnly) SCREEN_INTERVAL_MS
+                else if (!unavailable && (pendingInput != null || now < burstUntil))
                 OSD_ACTIVE_INTERVAL_MS else OSD_IDLE_INTERVAL_MS
             val wait = interval - (now - started)
             if (wait <= 0L) return
@@ -882,6 +941,8 @@ class RemoteActivity : AppCompatActivity() {
             // 原异常已上报，日志失败不能再次导致崩溃。
         }
         feedbackTicker?.cancel()
+        screenSourceJob?.cancel()
+        releaseScreenTouch(cancelled = true)
         previewMode = if (b.liveView.isRunning) PreviewMode.LIVE else PreviewMode.OFF
         previewNotice = "相机屏幕已停止：${t.message ?: t.javaClass.simpleName}"
         resetUiTracking()
@@ -895,6 +956,8 @@ class RemoteActivity : AppCompatActivity() {
         ++previewGeneration
         previewSwitchJob?.cancel()
         osdJob?.cancel()
+        screenSourceJob?.cancel()
+        releaseScreenTouch(cancelled = true)
         feedbackTicker?.cancel()
         b.liveView.stop()
         previewMode = PreviewMode.OFF
@@ -1097,6 +1160,9 @@ class RemoteActivity : AppCompatActivity() {
         }
         if (!profile.keyInput) { toast("当前连接未提供拍摄按键"); return }
         if (bulbRunning) { toast("B 门曝光中，请先结束曝光"); return }
+        if (heldTouches.isNotEmpty() || activeInputs.isNotEmpty() || pendingScreenGestures.isNotEmpty()) {
+            toast("请先松开屏幕和机身按键"); return
+        }
         if (shooting) {
             NxApp.log("上一次拍摄还在进行，忽略本次点击（避免变成连拍）")
             return
@@ -1133,17 +1199,19 @@ class RemoteActivity : AppCompatActivity() {
                 NxApp.log(
                     "拍摄按键已发送：S1按住→S2单击→松S1" + if (silent) "（静音快门类型）" else "",
                 )
-                toast("已发送拍摄按键")
+                toast(if (nx300Body) "已发送拍摄按键，请在相机确认结果" else "已发送拍摄按键")
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                toast("拍摄失败：${e.message}")
+                toast(if (nx300Body) "拍摄结果未确认，请先检查相机回放" else "拍摄失败：${e.message}")
                 NxApp.log("拍摄失败：${e.message}")
             } finally {
                 withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
                     if (!skipAf) try { cam.keyUp(KeyMap.S1) } catch (e: Exception) { NxApp.log("释放半按失败：${e.message}") }
                 }
                 shooting = false
-                b.btnShutter.isEnabled = true
                 b.btnShutter.setText(R.string.shutter)
+                updateCaptureControls()
             }
         }
     }
@@ -1467,6 +1535,147 @@ class RemoteActivity : AppCompatActivity() {
         }
     }
 
+    private fun handleScreenTouch(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (previewMode != PreviewMode.OVERLAY || !profile.keyInput || !osdView.hasCompleteFrame || shooting) return false
+                if (!allowModInput()) return true
+                val point = osdView.cameraPoint(event.x, event.y) ?: return false
+                val camera = NxApp.camera ?: return false
+                if (screenGesture != null) releaseScreenTouch(cancelled = true)
+                if (pendingScreenGestures.size >= 2) return true
+                val gesture = ScreenGesture(camera, event.getPointerId(0), point)
+                screenGesture = gesture
+                pendingScreenGestures.add(gesture)
+                screenInputQueue.trySend(ScreenCommand.Down(gesture))
+                osdView.parent?.requestDisallowInterceptTouchEvent(true)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val gesture = screenGesture ?: return true
+                val index = event.findPointerIndex(gesture.pointerId)
+                if (index < 0) { releaseScreenTouch(cancelled = true); return true }
+                val point = osdView.cameraPoint(event.getX(index), event.getY(index), clamp = true) ?: return true
+                gesture.last = point
+                gesture.pendingMove = point
+                if (!gesture.moveQueued) {
+                    gesture.moveQueued = true
+                    screenInputQueue.trySend(ScreenCommand.Move(gesture))
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                val gesture = screenGesture ?: return true
+                val index = event.findPointerIndex(gesture.pointerId)
+                if (index >= 0) osdView.cameraPoint(event.getX(index), event.getY(index), clamp = true)?.let { gesture.last = it }
+                releaseScreenTouch(cancelled = false)
+                return true
+            }
+            MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                releaseScreenTouch(cancelled = true)
+                return true
+            }
+        }
+        return screenGesture != null
+    }
+
+    private fun releaseScreenTouch(cancelled: Boolean) {
+        if (cancelled) pendingScreenGestures.forEach { it.cancelled = true; it.pendingMove = null }
+        val gesture = screenGesture ?: return
+        screenGesture = null
+        gesture.cancelled = gesture.cancelled || cancelled
+        gesture.pendingMove = null
+        screenInputQueue.trySend(ScreenCommand.Up(gesture, gesture.last))
+        osdView.parent?.requestDisallowInterceptTouchEvent(false)
+    }
+
+    private fun startScreenInputs() {
+        lifecycleScope.launch {
+            var pressed: ScreenGesture? = null
+            var keepAlive: Job? = null
+            suspend fun release(gesture: ScreenGesture): Boolean {
+                keepAlive?.cancel()
+                keepAlive = null
+                return withContext(NonCancellable + Dispatchers.IO) {
+                    runCatching { gesture.camera.mouseUp() }
+                        .onFailure { NxApp.log("释放屏幕触控失败：${it.message}") }.isSuccess
+                }
+            }
+            try {
+                for (command in screenInputQueue) {
+                    when (command) {
+                        is ScreenCommand.Down -> {
+                            val gesture = command.gesture
+                            if (gesture.cancelled || NxApp.camera !== gesture.camera || stockRvfClient != null ||
+                                stockPairingJob?.isActive == true) continue
+                            val previous = pressed
+                            if (previous != null) {
+                                if (!release(previous)) { toast("上次触控尚未松开，请检查连接"); continue }
+                                pressed = null
+                            }
+                            try {
+                                withContext(Dispatchers.IO) { gesture.camera.mouseMove(gesture.first.x, gesture.first.y) }
+                                if (gesture.cancelled || NxApp.camera !== gesture.camera || stockRvfClient != null) continue
+                                // A timeout may occur after the camera received the press.
+                                pressed = gesture
+                                withContext(Dispatchers.IO) { gesture.camera.mouseDown() }
+                                if (gesture.camera.profile.keepAlive) keepAlive = launch {
+                                    while (isActive && pressed === gesture && !gesture.cancelled) {
+                                        delay(2_000L)
+                                        if (pressed !== gesture || gesture.cancelled) break
+                                        try { gesture.camera.keepAlive() }
+                                        catch (e: CancellationException) { throw e }
+                                        catch (e: Exception) { NxApp.log("屏幕触控保活失败：${e.message}") }
+                                    }
+                                }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                if (pressed === gesture && release(gesture)) pressed = null
+                                NxApp.log("屏幕触控按下未确认：${e.message}")
+                                toast("触控未确认，请检查连接")
+                            }
+                        }
+                        is ScreenCommand.Move -> {
+                            val gesture = command.gesture
+                            gesture.moveQueued = false
+                            val point = gesture.pendingMove
+                            gesture.pendingMove = null
+                            if (pressed !== gesture || gesture.cancelled || point == null) continue
+                            try {
+                                withContext(Dispatchers.IO) { gesture.camera.mouseMove(point.x, point.y) }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                NxApp.log("屏幕触控移动未确认：${e.message}")
+                            }
+                        }
+                        is ScreenCommand.Up -> {
+                            val gesture = command.gesture
+                            if (pressed === gesture) {
+                                if (!gesture.cancelled) {
+                                    try {
+                                        withContext(Dispatchers.IO) { gesture.camera.mouseMove(command.point.x, command.point.y) }
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        NxApp.log("屏幕触控终点未确认：${e.message}")
+                                    }
+                                }
+                                if (release(gesture)) pressed = null
+                                else toast("触控松开未确认，请检查连接")
+                            }
+                            pendingScreenGestures.remove(gesture)
+                            osdWake.trySend(Unit)
+                        }
+                    }
+                }
+            } finally {
+                pressed?.let { release(it) }
+            }
+        }
+    }
+
     private fun dp(v: Int): Int = (resources.displayMetrics.density * v).toInt()
 
     // ==================== B 门（长时间曝光）====================
@@ -1694,17 +1903,23 @@ class RemoteActivity : AppCompatActivity() {
         super.onResume()
         stockPageForeground = true
         if (::stockVideo.isInitialized) renderStockRvf(NxApp.stockRvf.state.value)
+        val screenCamera = screenCameraAtPause
+        screenCameraAtPause = null
+        if (screenCamera != null && screenCamera === NxApp.camera && stockRvfClient == null) {
+            selectPreview(PreviewMode.OVERLAY)
+        }
     }
 
     override fun onPause() {
         stockPageForeground = false
+        screenCameraAtPause = NxApp.camera.takeIf { nx300Body && previewMode == PreviewMode.OVERLAY }
         super.onPause()
         releaseHeldInputs()
-        // 两路预览都停止；返回前台后由用户手动重新开启。
+        // 停止后台请求；返回时恢复此前开启的 NX300M 屏幕镜像。
         stopPreviewForLifecycle()
         stockPairingJob?.cancel(); stockPairingJob = null
-        stockActionJob?.cancel(); stockActionJob = null
         if (stockVideoStarted) invalidateStockVideo("原厂取景已关闭，原厂连接需重新建立")
+        stockActionJob?.cancel(); stockActionJob = null
     }
 
     override fun onStop() {
@@ -1716,6 +1931,10 @@ class RemoteActivity : AppCompatActivity() {
     private fun allowModInput(keysym: String? = null): Boolean {
         if (nx300Body && (keysym == KeyMap.S1 || keysym == KeyMap.S2)) {
             toast("请使用原厂遥控的对焦和拍摄按钮")
+            return false
+        }
+        if ((keysym == KeyMap.S1 || keysym == KeyMap.S2) && (shooting || bulbRunning)) {
+            toast("拍摄进行中，请稍候")
             return false
         }
         if (NxApp.stockRvf.clientFor(NxApp.camera) == null && stockPairingJob?.isActive != true) return true

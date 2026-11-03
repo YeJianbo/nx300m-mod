@@ -35,18 +35,22 @@ static struct nx_item items[NXUI_MAX_ITEMS];
 static struct nx_queue queue;
 static const char *root, *engine, *arm_runner;
 static int count, item_count, selected, menu, page, live, dirty = 1, quit;
-/* LUT mode stages a table for the NX300M firmware's next LUT call. MENU
- * restores the entry selection; OK, retain and half-press keep it staged. */
+/* A successful LUT choice stays selected when the panel closes. */
 static int lut_mode = 0;
-static int mfw_services, mfw_selected, mfw_readonly, mfw_open_lut, mfw_preview;
+static int mfw_services, mfw_selected, mfw_readonly, mfw_open_lut, mfw_preview, mfw_quick;
 static const char *mfw_stock_key;
-static char mfw_status[1024] = "正在读取机身服务状态…";
-static int lut_keep = 0;
+static char mfw_status[1024] = "选择操作；需要服务信息时点“刷新服务状态”。";
 static int lut_strength = 100;
+static int lut_draft;
+static void confirm_lut(void);
+static void close_choice(void) {
+    if (lut_mode && lut_draft && !queue.close_requested) confirm_lut();
+    else queue.close_requested = 1;
+}
 static int touch_x, touch_active;
 static long long close_flag_check;
 static struct nx_panel_input panel_input = {.ev_fd = -1};
-static int busy_kind, child_fd = -1, output_len, child_timed_out;
+static int busy_kind, child_fd = -1, output_len, child_timed_out, child_slow;
 static pid_t child;
 static pid_t mfw_retired_child;
 static int mfw_child_readonly, mfw_child_preview;
@@ -69,11 +73,9 @@ static int panel_visibility = VisibilityFullyObscured, panel_raise_retry, panel_
  * Stock windows can also raise themselves or reclaim focus during a transition.
  * Camera navigation arrives as X KeyPress; an invisible panel must yield it. */
 static void request_s1_close(void) {
-    /* Closing keeps the applied session state and waits for an in-flight
-     * backend. It must not enqueue a second recipe application. */
-    if (lut_mode) lut_keep = 1;
+    /* A LUT strip submits only its final choice when leaving. */
     panel_yielded = 1;
-    queue.close_requested = 1;
+    close_choice();
     nx_panel_input_hide(&panel_input);
 }
 
@@ -288,7 +290,9 @@ static void refresh_services(int force) {
     }
 }
 static void preview_status(void) {
-    if (child && busy_kind == 1 && queue.desired >= 0 && queue.desired != queue.running)
+    if (lut_mode && lut_draft && !queue.close_requested)
+        snprintf(status, sizeof status, "已选择 %s · 按 OK 应用", recipes[selected].label);
+    else if (child && busy_kind == 1 && queue.desired >= 0 && queue.desired != queue.running)
         snprintf(status, sizeof status, "已选择 %s · 等待当前预览完成", recipes[queue.desired].label);
     else if (child && busy_kind == 1 && busy_recipe >= 0)
         snprintf(status, sizeof status, "%s：%s", backend_phase == 2 ? "正在确认预览" : "正在应用", recipes[busy_recipe].label);
@@ -309,12 +313,13 @@ static int checked(const char *name) {
     return access(path, F_OK) == 0;
 }
 static void resize_panel(void) {
-    int next = mfw_services ? 464 : (menu ? 336 : (lut_mode ? 272 : 216));
+    int next_width = mfw_quick ? 560 : 720;
+    int next = mfw_services ? (mfw_quick ? 240 : 464) : (menu ? 336 : (lut_mode ? 272 : 216));
     if (next > DisplayWidth(display, screen)) next = DisplayWidth(display, screen);
     dirty = 1;
-    if (next == height) return;
-    height = next;
-    XMoveResizeWindow(display, window, 0, (panel_parent_height-width)/2,
+    if (next == height && next_width == width) return;
+    height = next; width = next_width;
+    XMoveResizeWindow(display, window, mfw_quick ? (DisplayWidth(display,screen)-height)/2 : 0, (panel_parent_height-width)/2,
         (unsigned)height, (unsigned)width);
     /* Resize only our CPU image alongside the native window. */
     nk_xsurf_resize(xlib.surf, (unsigned)width, (unsigned)height);
@@ -336,17 +341,43 @@ static int load_menu(const char *source) {
 static void choose(int index) {
     if (count <= 0 || queue.close_requested) return;
     selected = (index + count) % count;
-    /* An explicit tap also reapplies after a camera/legacy-menu effect change. */
+    if (lut_mode) fprintf(stderr, "LUT_CHOICE event=select index=%d key=%s running=%d\n",
+                          selected, recipes[selected].key, queue.running);
+    /* Browsing is local. Reconfiguring every intermediate row serializes
+     * expensive camera transactions and shows stale looks after closing. */
+    if (lut_mode) {
+        lut_draft = 1;
+        preview_status();
+        return;
+    }
     queue.applied = -1;
     nx_queue_select(&queue, selected, now_ms());
     preview_status();
+}
+static void confirm_lut(void) {
+    if (count <= 0 || queue.close_requested) return;
+    fprintf(stderr, "LUT_CHOICE event=confirm index=%d key=%s running=%d desired=%d\n",
+            selected, recipes[selected].key, queue.running, queue.desired);
+    /* OK confirms the displayed choice even while an earlier control drains.
+     * Reuse that control when it already owns this exact choice; otherwise
+     * retain the new commit until the previous operation completes. */
+    if (child && busy_kind == 1 && queue.running == selected && queue.desired == selected) {
+        queue.committing = 1;
+        queue.commit_requested = 0;
+    } else {
+        queue.applied = -1;
+        nx_queue_select(&queue, selected, now_ms()-NXUI_DEBOUNCE_MS);
+        queue.commit_requested = 1;
+    }
+    queue.close_requested = 1;
+    lut_draft = 0;
 }
 static void change_lut_strength(int delta) {
     /* The queue identifies work by recipe index. Keep strength fixed while a
      * child owns that index so its completion cannot mark a newer strength
      * as applied without sending it to the engine. */
     int next;
-    if (!lut_mode || child || queue.close_requested || count <= 0) return;
+    if (!lut_mode || child || queue.close_requested || count <= 0 || !strcmp(recipes[selected].key, "__off")) return;
     next = lut_strength + delta;
     if (next < 0) next = 0;
     if (next > 100) next = 100;
@@ -369,6 +400,12 @@ static void read_output(void) {
     }
 }
 static void exec_lut_engine(const char *action, const char *key) {
+    if (lut_mode && !strcmp(action, "apply") && key && !strcmp(key, "__off")) {
+        if (arm_runner && *arm_runner)
+            execl(arm_runner, arm_runner, "-cpu", "cortex-a9", "-L", "/", engine, "disable", (char *)0);
+        else execl(engine, engine, "disable", (char *)0);
+        return;
+    }
     if (lut_mode && !strcmp(action, "apply")) {
         char strength[4];
         snprintf(strength, sizeof strength, "%d", lut_strength);
@@ -384,6 +421,9 @@ static void exec_lut_engine(const char *action, const char *key) {
 static int start_child(int kind, int index, const char *command) {
     int pipefd[2]; pid_t pid;
     if (child) return 0;
+    if (kind == 1 && lut_mode)
+        fprintf(stderr, "LUT_SUBMIT index=%d key=%s strength=%d committing=%d\n",
+                index, recipes[index].key, lut_strength, queue.committing);
     if (!live) {
         if (kind == 1) {
             nx_queue_done(&queue, 1);
@@ -397,7 +437,7 @@ static int start_child(int kind, int index, const char *command) {
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return 0; }
     if (pid == 0) {
         char envpath[1024]; const char *old = getenv("PATH");
-        setpriority(PRIO_PROCESS, 0, 19);
+        setpriority(PRIO_PROCESS, 0, kind == 1 && lut_mode ? 0 : 19);
         setpgid(0, 0);
         close(pipefd[0]); dup2(pipefd[1], STDOUT_FILENO); dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]); close(ConnectionNumber(display));
@@ -418,14 +458,14 @@ static int start_child(int kind, int index, const char *command) {
     close(pipefd[1]); fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
     child_fd = pipefd[0]; child = pid; busy_kind = kind;
     busy_recipe = index; backend_phase = 0; pipe_eof = 0;
-    child_started = now_ms(); child_timed_out = 0; output_len = 0;
+    child_started = now_ms(); child_timed_out = child_slow = 0; output_len = 0;
     output[0] = 0;
     if (kind == 1) preview_status(); else message("正在执行…");
     return 1;
 }
 static int mfw_action_allowed(const char *action) {
     const char *allowed[] = {"status", "network-info", "lut", "menu", "gallery", "disable-autostart", "enable-autostart", "close",
-        "preview", "back", "preview-enable", "preview-identity", "preview-monochrome", "preview-sync", "preview-restore", "preview-status"};
+        "preview", "debug", "back", "preview-enable", "preview-s2-enable", "preview-probe-once", "preview-identity", "preview-monochrome", "preview-monochrome-timing", "preview-sync", "preview-stop", "preview-restore", "preview-status", "preview-diag-export"};
     for (unsigned int i = 0; i < sizeof allowed / sizeof *allowed; i++)
         if (!strcmp(action, allowed[i])) return 1;
     return 0;
@@ -444,14 +484,15 @@ static void mfw_child_close_fds(void) {
 }
 static int start_mfw_action(const char *action) {
     int pipefd[2]; pid_t pid; char launcher[NXUI_PATH];
+    int readonly = !strcmp(action, "status") || !strcmp(action, "network-info") || !strcmp(action, "preview-status");
     if (child || mfw_retired_child || !mfw_action_allowed(action)) return 0;
     if (snprintf(launcher, sizeof launcher, "%s/mfw-panel-actions.sh", root) >= (int)sizeof launcher || pipe(pipefd) < 0) return 0;
     pid_t parent = getpid();
     pid = fork();
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return 0; }
     if (!pid) {
-        if (setpgid(0, 0) || prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != parent) _exit(126);
-        setpriority(PRIO_PROCESS, 0, 19);
+        if (setpgid(0, 0) || (readonly && prctl(PR_SET_PDEATHSIG, SIGKILL)) || getppid() != parent) _exit(126);
+        setpriority(PRIO_PROCESS, 0, readonly ? 19 : 0);
         signal(SIGINT, SIG_DFL); signal(SIGTERM, SIG_DFL); signal(SIGCHLD, SIG_DFL);
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO); dup2(pipefd[1], STDERR_FILENO);
@@ -462,9 +503,9 @@ static int start_mfw_action(const char *action) {
     setpgid(pid, pid); close(pipefd[1]); fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
     child_fd = pipefd[0]; child = pid; busy_kind = 5;
     mfw_child_preview = !strncmp(action, "preview-", 8);
-    mfw_child_readonly = !strcmp(action, "status") || !strcmp(action, "network-info") || !strcmp(action, "preview-status");
+    mfw_child_readonly = readonly;
     mfw_cancel_started = 0;
-    pipe_eof = child_timed_out = output_len = 0; output[0] = 0; child_started = now_ms();
+    pipe_eof = child_timed_out = child_slow = output_len = 0; output[0] = 0; child_started = now_ms();
     if (mfw_child_preview) mfw_status_message(mfw_child_readonly ? "正在读取预览状态…" : "正在更新预览，完成后返回取景…");
     else if (mfw_child_readonly)
         mfw_status_message(!strcmp(action, "status") ? "正在读取机身服务状态…" : "正在读取网络连接信息…");
@@ -476,14 +517,16 @@ static void activate_mfw_item(int index) {
     if (!mfw_action_allowed(action)) { message("此操作不可用"); return; }
     if (!strcmp(action, "close")) { queue.close_requested = 1; return; }
     if (child) return;
-    if (!strcmp(action, "preview") || !strcmp(action, "back")) {
-        int next_preview = !strcmp(action, "preview");
-        if (load_menu(next_preview ? "gui_preview.NX300M" : "gui_mfw.NX300M")) {
+    if (!strcmp(action, "preview") || !strcmp(action, "debug") || !strcmp(action, "back")) {
+        int next_preview = !strcmp(action, "debug") ? 2 : !strcmp(action, "preview");
+        int was_quick = mfw_quick;
+        mfw_quick = 0;
+        if (load_menu(next_preview == 2 ? "gui_debug.NX300M" : next_preview ? "gui_preview.NX300M" : "gui_mfw.NX300M")) {
             mfw_preview = next_preview; mfw_selected = 0;
-            mfw_status_message(next_preview
-                ? "先选启用预览，再在原厂智能滤镜中选 Miniature。\n单位表应保持原样，黑白表应去掉颜色。\n操作成功后自动返回取景。"
-                : "请选择机身服务或 LUT 滤镜。");
-        }
+            mfw_status_message(next_preview == 2 ? "选择要查看或保存的诊断信息。"
+                : next_preview ? "取景预览可单独关闭，照片继续使用所选 LUT。"
+                : "选择 LUT、取景预览或原厂功能。");
+        } else mfw_quick = was_quick;
         return;
     }
     if (mfw_readonly && strcmp(action, "status") && strcmp(action, "network-info") && strcmp(action, "preview-status")) { message("截图模式不执行操作"); return; }
@@ -535,8 +578,16 @@ static void poll_child(void) {
             }
             return;
         }
-        /* The preview loader has its own 15 s recovery supervisor. Let it
-         * finish before applying the UI task timeout. */
+        /* LUT/preview controls own drain and ptrace recovery. A UI deadline
+         * must not kill their process group while the camera is paused. */
+        if ((busy_kind == 1 && lut_mode) || (busy_kind == 5 && mfw_child_preview)) {
+            if (age > 12000 && !child_slow) {
+                child_slow = 1;
+                fprintf(stderr, "BACKEND waiting_for_control pid=%ld elapsed_ms=%lld\n", (long)child, age);
+                message("切换仍在完成，可关闭面板返回取景");
+            }
+            return;
+        }
         long long timeout = busy_kind == 5 && mfw_child_preview ? 20000 : 12000;
         if (age > timeout && !child_timed_out) {
             child_timed_out = 1; kill(-child, SIGTERM);
@@ -563,25 +614,34 @@ static void poll_child(void) {
                 : "服务信息读取失败 · 请重试");
         } else if (mfw_child_preview) {
             snprintf(mfw_status, sizeof mfw_status, "%.*s", (int)sizeof(mfw_status)-1, output);
-            message("预览操作失败 · 详情见上方及面板日志");
+            if (strstr(output, "LUT_OFF ")) {
+                for (int i = 0; i < item_count; ++i)
+                    if (!strcmp(items[i].command, "lut")) { mfw_selected = i; break; }
+                message("当前 LUT 为关 · 请先选择 LUT，再开启预览");
+                fprintf(stderr, "MFW preview_needs_selection status=%s\n", status);
+            } else message("预览操作失败 · 详情见面板日志");
         } else message("服务操作失败 · 请查看面板日志");
     } else if (busy_kind == 1) {
         was_commit = queue.committing;
         nx_queue_done(&queue, success);
         if (queue.desired >= 0 && queue.desired != busy_recipe) preview_status();
         else if (success) {
-            if (lut_mode && strstr(output, "PERSIST-WARNING")) snprintf(status, sizeof status, "已暂存 %s · 未保存到卡，仅本次有效", recipes[busy_recipe].label);
+            if (lut_mode && !strcmp(recipes[busy_recipe].key, "__off")) {
+                snprintf(status, sizeof status, "LUT 已关闭 · 原厂拍摄%s", strstr(output, "PERSIST-WARNING") ? " · 未保存到卡" : "");
+            }
+            else if (lut_mode && strstr(output, "PERSIST-WARNING")) snprintf(status, sizeof status, "已暂存 %s · 未保存到卡，仅本次有效", recipes[busy_recipe].label);
             else if (lut_mode) snprintf(status, sizeof status, "已暂存 %s · 强度 %d%% · 等待原厂 LUT 重载", recipes[busy_recipe].label, lut_strength);
             else snprintf(status, sizeof status, "预览已应用：%s", recipes[busy_recipe].label);
             dirty = 1;
-        } else message("应用失败 · 可重新选择以重试");
+        } else message(lut_mode && strstr(output, "PREVIEW-WARNING")
+                       ? "照片 LUT 已选择，预览更新失败 · 可重新选择以重试"
+                       : "应用失败 · 可重新选择以重试");
         if (was_commit && success && !(lut_mode && strstr(output, "PERSIST-WARNING"))) quit = 1;
         if (was_commit && success && lut_mode && strstr(output, "PERSIST-WARNING") && !panel_yielded) {
             queue.close_requested = 0; queue.commit_requested = 0;
             if (panel_input.unmapped && !panel_show()) request_s1_close();
         }
         if (!success && !panel_yielded) {
-            lut_keep = 0;
             queue.close_requested = 0; queue.commit_requested = 0;
             if (panel_input.unmapped) {
                 if (!panel_show()) request_s1_close();
@@ -683,9 +743,10 @@ static void draw(void) {
     if (mfw_services) {
         if (nk_begin(ctx, "NXWA", nk_rect(0, 0, (float)width, (float)height), NK_WINDOW_NO_SCROLLBAR)) {
             nk_layout_row_dynamic(ctx, 26, 1);
-            nk_label_colored(ctx, mfw_preview ? "LUT  /  取景预览" : "NX300M  /  机身服务", NK_TEXT_LEFT, accent);
-            nk_layout_row_dynamic(ctx, 154, 1);
-            if (nk_group_begin(ctx, "mfw-status", 0)) {
+            nk_label_colored(ctx, mfw_quick ? "LUT  /  取景预览" : (mfw_preview == 2 ? "NX300M  /  调试与诊断" : mfw_preview ? "LUT  /  取景预览" : "NX300M  /  MOD 菜单"), NK_TEXT_LEFT, accent);
+            if (!mfw_quick) {
+              nk_layout_row_dynamic(ctx, 154, 1);
+              if (nk_group_begin(ctx, "mfw-status", 0)) {
                 const char *begin = mfw_status;
                 while (*begin) {
                     const char *end = strchr(begin, '\n');
@@ -697,14 +758,16 @@ static void draw(void) {
                     begin = end + 1;
                 }
                 nk_group_end(ctx);
+              }
             }
-            nk_layout_row_dynamic(ctx, item_count > 8 ? 40 : 48, 2);
+            nk_layout_row_dynamic(ctx, mfw_quick ? 32 : (item_count > 8 ? 40 : 48), mfw_quick ? 1 : 2);
             for (i = 0; i < item_count; i++) {
                 snprintf(line, sizeof line, "%s%s", i == mfw_selected ? "› " : "", items[i].label);
                 if (nk_button_label(ctx, line)) { mfw_selected = i; activate_mfw_item(i); }
             }
             nk_layout_row_dynamic(ctx, 23, 1);
-            nk_label_colored(ctx, child ? (mfw_child_readonly ? "正在读取…" : "正在执行…") : status, NK_TEXT_LEFT, nk_rgb(171, 182, 190));
+            nk_label_colored(ctx, child ? (mfw_child_readonly ? "正在读取…" : "正在执行…")
+                : (mfw_quick && !*status ? "方向键选择 · OK 确认 · MENU 关闭" : status), NK_TEXT_LEFT, nk_rgb(171, 182, 190));
         }
         nk_end(ctx); nk_xlib_render(window, nk_rgb(24, 29, 33)); XFlush(display);
         return;
@@ -762,22 +825,19 @@ static void draw(void) {
                 if (idx >= count) { nk_spacing(ctx, 1); continue; }
                 nk_bool picked = (idx == selected);
                 snprintf(line, sizeof line, "%s%s", idx == selected ? "● " : "", recipes[idx].label);
-                /* A tap always applies, including on the highlighted row: the
-                 * camera or the legacy menu may have changed ISP state since
-                 * the preview, so the marker is not proof the value is live.
-                 * Nuklear reports a press once and flips *picked, so the old
-                 * "&& idx != selected" guard made the highlighted row inert. */
+                /* A repeated tap also selects a fresh application on OK. */
                 if (nk_selectable_label(ctx, line, NK_TEXT_CENTERED, &picked))
                     choose(idx);
             }
             snprintf(line, sizeof line, "%d/%d   R%d G%d B%d   H%d S%d 锐%d 对比%d", selected+1, count,
                 recipes[selected].value[0], recipes[selected].value[1], recipes[selected].value[2],
                 recipes[selected].value[3], recipes[selected].value[4], recipes[selected].value[5], recipes[selected].value[6]);
-            if (lut_mode) snprintf(line, sizeof line, "%d/%d   NX300M 9×9×9 LUT · 待实机校色", selected+1, count);
+            if (lut_mode) snprintf(line, sizeof line, "%d/%d   %s", selected+1, count,
+                !strcmp(recipes[selected].key, "__off") ? "原厂拍摄 · 不应用 LUT" : "NX300M 9×9×9 LUT");
             nk_layout_row_dynamic(ctx, 16, 1);
             nk_label_colored(ctx, line, NK_TEXT_LEFT, nk_rgb(171, 182, 190));
             if (lut_mode) {
-                int locked = child || queue.close_requested;
+                int locked = child || queue.close_requested || !strcmp(recipes[selected].key, "__off");
                 int minus_disabled = locked || lut_strength == 0;
                 nk_layout_row_dynamic(ctx, 34, 3);
                 if (minus_disabled) nk_widget_disable_begin(ctx);
@@ -794,9 +854,7 @@ static void draw(void) {
             if (nk_button_label(ctx, "‹ 上一个")) choose(selected-1);
             if (nk_button_label(ctx, lut_mode ? "保留并关闭" : (live ? "应用并关闭" : "选择并关闭")) && !queue.close_requested) {
                 if (lut_mode) {
-                    lut_keep = 1;
-                    nx_queue_select(&queue, selected, now_ms()-NXUI_DEBOUNCE_MS);
-                    queue.commit_requested = 1; queue.close_requested = 1;
+                    confirm_lut();
                 } else {
                 /* Confirm the selected recipe through the same batch path,
                  * including after a previous preview. No flash save occurs. */
@@ -857,6 +915,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--dry-run")) { live = 0; explicit_dry_run = 1; }
         else if (!strcmp(argv[i], "--lut")) lut_mode = 1;
         else if (!strcmp(argv[i], "--mfw-services")) mfw_services = 1;
+        else if (!strcmp(argv[i], "--mfw-quick-preview")) { mfw_services = 1; mfw_quick = 1; }
         else if (i+1 < argc && !strcmp(argv[i], "--root")) root = argv[++i];
         else if (i+1 < argc && !strcmp(argv[i], "--engine")) engine = argv[++i];
         else if (i+1 < argc && !strcmp(argv[i], "--arm-runner")) arm_runner = argv[++i];
@@ -877,7 +936,7 @@ int main(int argc, char **argv) {
         if (live || lut_mode || initial_menu || recipe_path || engine || arm_runner) {
             fprintf(stderr, "MFW services mode does not accept recipe/control options\n"); return 2;
         }
-        initial_menu = "gui_mfw.NX300M";
+        initial_menu = mfw_quick ? "gui_preview_quick.NX300M" : "gui_mfw.NX300M";
         status[0] = 0;
         mfw_readonly = shot != NULL || explicit_dry_run;
     }
@@ -929,6 +988,12 @@ int main(int argc, char **argv) {
     count = mfw_services ? 0 : nx_load_recipes(recipe_path, recipes, NXUI_MAX_RECIPES);
     if (count < 0) count = 0;
     if (lut_mode) {
+        /* Off is a control action, not an identity LUT or a catalogue file. */
+        if (count == NXUI_MAX_RECIPES) --count;
+        memmove(recipes+1, recipes, (size_t)count*sizeof *recipes);
+        memset(recipes, 0, sizeof *recipes);
+        strcpy(recipes[0].key, "__off"); strcpy(recipes[0].label, "关"); ++count;
+        snprintf(status, sizeof status, "当前选择：关 · 原厂拍摄");
         FILE *selection = fopen("/var/run/nx300m-lut-selection", "r");
         if (selection) {
             unsigned int generation, strength = 100; char path[256], candidate[256];
@@ -950,20 +1015,21 @@ int main(int argc, char **argv) {
     if (lut_mode) {
         const char *notice = getenv("NXUI_LUT_NOTICE");
         if (notice && *notice) snprintf(status, sizeof status, "%s", notice);
+        fprintf(stderr, "LUT_ENTRY index=%d key=%s strength=%d\n", selected, recipes[selected].key, lut_strength);
     }
     recipes_ready = now_ms();
     display = XOpenDisplay(NULL);
     if (!display) { fprintf(stderr, "XOpenDisplay failed\n"); return 4; }
     display_ready = now_ms();
-    screen = DefaultScreen(display); width = 720;
+    screen = DefaultScreen(display); width = mfw_quick ? 560 : 720;
     fprintf(stderr, "PANEL_DISPLAY vendor=%s release=%d raw=%dx%d depth=%d\n", ServerVendor(display), VendorRelease(display),
         DisplayWidth(display, screen), DisplayHeight(display, screen), DefaultDepth(display, screen));
     /* Allocate the actual entry layout once, rather than create a small
      * pixmap and immediately discard it when load_menu resizes the panel. */
-    height = mfw_services ? 464 : (initial_menu ? 336 : (lut_mode ? 272 : 216));
+    height = mfw_services ? (mfw_quick ? 240 : 464) : (initial_menu ? 336 : (lut_mode ? 272 : 216));
     if (height > DisplayWidth(display, screen)) height = DisplayWidth(display, screen);
     if (DisplayHeight(display, screen) < width || DisplayWidth(display, screen) < height) {
-        fprintf(stderr, "NX300M raw display must be at least %dx720\n", height); XCloseDisplay(display); return 4;
+        fprintf(stderr, "NX300M raw display must be at least %dx%d\n", height, width); XCloseDisplay(display); return 4;
     }
     panel_parent_height = DisplayHeight(display, screen);
     panel_parent = panel_stock_parent();
@@ -984,7 +1050,7 @@ int main(int argc, char **argv) {
      * on press/release; subscribing to motion needlessly repaints while sliding. */
     attr.event_mask = ExposureMask|KeyPressMask|KeyReleaseMask|ButtonPressMask|ButtonReleaseMask|StructureNotifyMask|
         VisibilityChangeMask|FocusChangeMask;
-    window = XCreateWindow(display, panel_parent, 0, (panel_parent_height-width)/2,
+    window = XCreateWindow(display, panel_parent, mfw_quick ? (DisplayWidth(display,screen)-height)/2 : 0, (panel_parent_height-width)/2,
         (unsigned)height, (unsigned)width, 0, DefaultDepth(display, screen), InputOutput,
         DefaultVisual(display, screen), CWOverrideRedirect|CWBackPixel|CWEventMask, &attr);
     XStoreName(display, window, "Metol-NX300M");
@@ -1076,7 +1142,8 @@ int main(int argc, char **argv) {
         panel_input.ev_fd = open("/dev/event0", O_RDONLY | O_NONBLOCK);
         if (panel_input.ev_fd >= 0) fcntl(panel_input.ev_fd, F_SETFD, FD_CLOEXEC);
     }
-    if (mfw_services && !start_mfw_action("status")) message("服务状态读取未能启动");
+    /* Opening a panel does not need a service process or network scan.
+     * Status is fetched only by the explicit refresh action. */
     /* NX500 capdtm command numbers do not apply to DRIMeIV. */
     while (!quit) {
         alarm(5);
@@ -1129,7 +1196,7 @@ int main(int argc, char **argv) {
                 continue;
             }
             if (event.type == KeyPress || event.type == ButtonPress || event.type == ButtonRelease) dirty = 1;
-            if (event.type == ClientMessage && (Atom)event.xclient.data.l[0] == wm_delete) queue.close_requested = 1;
+            if (event.type == ClientMessage && (Atom)event.xclient.data.l[0] == wm_delete) close_choice();
             if (nx_panel_input_handle_s1(&panel_input, &event, request_s1_close)) continue;
             if (queue.close_requested || panel_visibility != VisibilityUnobscured) continue;
             if (event.type == KeyPress || event.type == KeyRelease)
@@ -1137,20 +1204,22 @@ int main(int argc, char **argv) {
             if (event.type == KeyPress) {
                 KeySym key = XLookupKeysym(&event.xkey, 0);
                 /* Only standard keysyms are asserted. Camera wheel mappings need measurement. */
-                if (key == XK_Escape || key == XK_Menu) queue.close_requested = 1;
+                if (key == XK_Escape || key == XK_Menu) close_choice();
                 else if (mfw_services) {
                     if (key == XK_Right || key == XK_KP_Right) mfw_selected = (mfw_selected+1)%item_count;
                     else if (key == XK_Left || key == XK_KP_Left) mfw_selected = (mfw_selected+item_count-1)%item_count;
-                    else if (key == XK_Down || key == XK_KP_Down) mfw_selected = (mfw_selected+2)%item_count;
-                    else if (key == XK_Up || key == XK_KP_Up) mfw_selected = (mfw_selected+item_count-2)%item_count;
+                    else if (key == XK_Down || key == XK_KP_Down) mfw_selected = (mfw_selected+(mfw_quick?1:2))%item_count;
+                    else if (key == XK_Up || key == XK_KP_Up) mfw_selected = (mfw_selected+item_count-(mfw_quick?1:2))%item_count;
                     else if (key == XK_Return || key == XK_KP_Enter) activate_mfw_item(mfw_selected);
                 }
                 else if (!menu && (key == XK_Right || key == XK_Down || key == XK_KP_Right || key == XK_KP_Down)) choose(selected+1);
                 else if (!menu && (key == XK_Left || key == XK_Up || key == XK_KP_Left || key == XK_KP_Up)) choose(selected-1);
-                else if (!menu && (key == XK_Return || key == XK_KP_Enter) && !child && count > 0) {
-                    if (lut_mode) lut_keep = 1;
-                    nx_queue_select(&queue, selected, now_ms()-NXUI_DEBOUNCE_MS);
-                    queue.commit_requested = 1; queue.close_requested = 1;
+                else if (!menu && (key == XK_Return || key == XK_KP_Enter) && (lut_mode || !child) && count > 0) {
+                    if (lut_mode) confirm_lut();
+                    else {
+                        nx_queue_select(&queue, selected, now_ms()-NXUI_DEBOUNCE_MS);
+                        queue.commit_requested = 1; queue.close_requested = 1;
+                    }
                 }
             }
             if (event.type == ButtonPress && !menu && (event.xbutton.button == 4 || event.xbutton.button == 5))
@@ -1186,7 +1255,7 @@ int main(int argc, char **argv) {
         poll_child();
         refresh_services(0);
         /* Unmap as soon as a close is requested: while the backend finishes
-         * (up to the 12 s timeout) the panel must not keep covering the frame
+         * its control transaction the panel must not keep covering the frame
          * or hold the keyboard focus away from the camera UI. */
         if (queue.close_requested) {
             nx_panel_input_hide(&panel_input);
@@ -1209,12 +1278,13 @@ int main(int argc, char **argv) {
                 nk_xsurf_blit(window, xlib.surf, (unsigned)width, (unsigned)height);
                 XFlush(display); blits++;
             }
-            if (events || painted || refresh) next_frame = now_ms() + 100;
+            if (events || painted || refresh) next_frame = now_ms() + 33;
             if (trace_frames && (events || painted || refresh))
                 fprintf(stderr, "PANEL_FRAME pid=%ld dequeued_ms=%lld submitted_ms=%lld events=%d painted=%d exposed=%d\n",
                     (long)getpid(), input_dequeued, now_ms(), events, painted, refresh);
         }
         if (shot && render_count) { snapshot(shot); break; }
+        if (quit) break;
         tick = now_ms(); pending = XPending(display);
         if (child) delay = 100; /* only a running backend needs periodic reaping */
         if (services_visible() && service_due - tick < delay) delay = service_due - tick;
@@ -1222,7 +1292,10 @@ int main(int argc, char **argv) {
             if (queue.due - tick < delay) delay = queue.due - tick;
         if (lifetime > 0 && !queue.close_requested && started + lifetime - tick < delay)
             delay = started + lifetime - tick;
-        if ((dirty || pending) && next_frame - tick < delay) delay = next_frame - tick;
+        /* A hidden panel waiting for its backend cannot draw. Its stale frame
+         * deadline must not turn the child wait into a zero-timeout spin. */
+        if (!queue.close_requested && (dirty || pending) && next_frame - tick < delay)
+            delay = next_frame - tick;
         if (delay < 0) delay = 0;
         FD_ZERO(&fds);
         /* Pending events are already in the client queue. Watching a readable
@@ -1248,17 +1321,6 @@ int main(int argc, char **argv) {
     nx_panel_input_drain_s1(&panel_input, request_s1_close);
     nk_xlib_shutdown(); nk_xfont_del(display, font);
     alarm(0);
-    /* MENU/Close restores the selection captured on entry. OK, the retain
-     * button and half-press leave the staged selection for firmware reload. */
-    if (lut_mode && live && !lut_keep) {
-            pid_t restore_pid = fork();
-            if (restore_pid == 0) {
-                close(ConnectionNumber(display));
-                exec_lut_engine("off", NULL);
-                _exit(127);
-            }
-            if (restore_pid > 0) waitpid(restore_pid, NULL, 0);
-    }
     nx_panel_input_close_evdev(&panel_input);
     alarm(5);
     XDestroyWindow(display, window); XSync(display, False);

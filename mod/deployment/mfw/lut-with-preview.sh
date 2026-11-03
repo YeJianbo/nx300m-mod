@@ -3,9 +3,8 @@
 set -eu
 HERE=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
 ROOT=$(CDPATH= cd -P "${NX300M_MOD_SOURCE_ROOT:-$HERE}" && pwd -P)
-export NX300M_MOD_ROOT="$ROOT"
-unset NX300M_MOD_SOURCE_ROOT NX300M_MOD_SOURCE_ID
-engine=$ROOT/bin/lut_engine.arm
+export NX300M_MOD_ROOT="$HERE" NX300M_MOD_SOURCE_ROOT="$ROOT"
+engine=$HERE/bin/lut_engine.arm
 [ -x "$engine" ] || { printf 'Existing LUT engine is required.\n' >&2; exit 1; }
 case ${1:-} in
     stock) [ "$#" -eq 1 ] || exit 2; NX300M_LUT_SKIP_PREVIEW_SYNC=1 "$engine" stock ;;

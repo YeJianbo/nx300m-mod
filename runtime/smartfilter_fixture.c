@@ -19,9 +19,13 @@
 #ifdef NX_SF_RAM_FIXTURE
 #define PREVIEW_BRIDGE_NAME "nx_fixture_unused_preview_bridge"
 #define FILTER_BRIDGE_NAME "nx_fixture_unused_filter_bridge"
+#define MODE_GETTER_NAME "nx_fixture_unused_mode_getter"
+#define WORK_GETTER_NAME "nx_fixture_unused_work_getter"
 #else
 #define PREVIEW_BRIDGE_NAME "_ZN24CLiveviewNodeSmartFilter11smartFilterEP9CCapImagePv22E_LIVEVIEW_SMARTFILTER"
 #define FILTER_BRIDGE_NAME "_Z26ADE_SmartFilter_YccProcess9eADE_MODEP9ADE_Image"
+#define MODE_GETTER_NAME "_ZN15CLiveviewCommon18GetSmartFilterModeEv"
+#define WORK_GETTER_NAME "_ZN24CLiveviewNodeSmartFilter14getWorkAddressE15E_LIVEVIEW_MODE"
 #endif
 
 #define W 64U
@@ -83,7 +87,7 @@ EXPORTED(void, common_print, "_ZN15CLiveviewCommon13LiveviewPrintEiPKcz", (void 
 }
 /* S2 probe: forge mode 0 only for calls whose return address lies inside the
  * stock execute function, exactly like the RAM hook filters its PLT slot. */
-EXPORTED(int, common_filter, "_ZN15CLiveviewCommon18GetSmartFilterModeEv", (void *self)) {
+EXPORTED(int, common_filter, MODE_GETTER_NAME, (void *self)) {
     (void)self;
     if (s2_lr_filter) {
         void *lr;
@@ -102,7 +106,7 @@ EXPORTED(unsigned, buffer_address, "_ZN15CLiveviewBuffer14GetVirtAddressEii", (v
 }
 /* S2 probe: the missing 0x1000f area is replaced before getBaseAddress runs,
  * so the stock assertion on a zero GetAddress result is never reached. */
-EXPORTED(unsigned, work_address, "_ZN24CLiveviewNodeSmartFilter14getWorkAddressE15E_LIVEVIEW_MODE",
+EXPORTED(unsigned, work_address, WORK_GETTER_NAME,
          (void *self, int stream_mode)) {
     (void)self; (void)stream_mode;
     if (s2_managed && filter_mode >= 15) return (unsigned)(uintptr_t)s2_work;
@@ -262,8 +266,31 @@ static int copy_frame(void *opaque, void *image_ptr) {
 
 /* The device calls below replace the UDD boundary. Real ADE init and IQ
  * parameter-list code execute; no physical device or register is accessed. */
+#ifdef NX_SFR_SESSION
+static unsigned session_device_opens,session_device_closes,session_ref_opens,session_ref_closes;
+static unsigned session_ref_tid[50];
+static pthread_mutex_t session_ref_mutex=PTHREAD_MUTEX_INITIALIZER;
+int ipcs_open(void) {
+    REQUIRE(native_active); REQUIRE(!pthread_mutex_lock(&session_ref_mutex));
+    REQUIRE(native_opened<50); unsigned id=(unsigned)syscall(224),slot=0;
+    while(slot<50&&session_ref_tid[slot]) ++slot;
+    REQUIRE(slot<50); session_ref_tid[slot]=id;
+    if(!native_opened) ++session_device_opens;
+    ++native_opened; ++session_ref_opens;
+    REQUIRE(!pthread_mutex_unlock(&session_ref_mutex)); return 0;
+}
+int ipcs_close(void) {
+    REQUIRE(native_active); REQUIRE(!pthread_mutex_lock(&session_ref_mutex));
+    unsigned id=(unsigned)syscall(224),slot=0;
+    while(slot<50&&session_ref_tid[slot]!=id) ++slot;
+    REQUIRE(native_opened&&slot<50); session_ref_tid[slot]=0;
+    if(!--native_opened) ++session_device_closes;
+    ++session_ref_closes; REQUIRE(!pthread_mutex_unlock(&session_ref_mutex)); return 0;
+}
+#else
 int ipcs_open(void) { REQUIRE(native_active && !native_opened); native_opened=1; return 0; }
 int ipcs_close(void) { REQUIRE(native_active && native_opened); native_opened=0; return 0; }
+#endif
 int ipcs_init(void) { REQUIRE(native_active && native_opened); ++native_init_calls; return 0; }
 void ipcs_tone_lut(void *p) { REQUIRE(native_active && p); }
 void ipcs_ycc2rgb_param(void *p) { REQUIRE(native_active && p); }

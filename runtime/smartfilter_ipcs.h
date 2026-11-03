@@ -1,6 +1,7 @@
 #ifndef NX_SMARTFILTER_IPCS_H
 #define NX_SMARTFILTER_IPCS_H
 #include "smartfilter_lut_bridge.h"
+#include "smartfilter_timing.h"
 
 #define NX_SF_IPCS_SEMAPHORES 4U
 #define NX_SF_ADE_SWITCHES 6U
@@ -34,6 +35,7 @@ struct nx_sf_ipcs {
     unsigned char saved_switch[NX_SF_ADE_SWITCHES];
     unsigned transactions, uploads, operations, reloads, busy, failures;
     int last_error;
+    struct nx_sft_record *(*trace_current)(void);
 };
 
 int nx_sf_ipcs_init(struct nx_sf_ipcs *, const struct nx_sf_ipcs_api *, struct nx_sf_bridge *);

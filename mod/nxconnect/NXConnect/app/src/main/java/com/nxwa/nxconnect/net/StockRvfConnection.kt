@@ -52,6 +52,13 @@ class StockRvfConnection(
                 ?: throw StockRvfClient.ProtocolException("原厂拍摄等待超时，请检查机身回放，避免重复拍摄")
             log("原厂 Shot 响应成功")
             return result
+        } catch (e: CancellationException) {
+            if (clientFor(camera) === expected && state.value.phase == Phase.CONNECTED) {
+                val message = "拍摄中断，结果未确认。请检查相机回放"
+                mutableState.value = state.value.copy(message = message)
+                log(message)
+            }
+            throw e
         } finally {
             if (capturing === expected) capturing = null
         }
@@ -106,16 +113,21 @@ class StockRvfConnection(
 
     fun cancel(camera: NxCamera, message: String = "原厂连接已取消，可手动重试") {
         if (mutableState.value.camera !== camera) return
+        val resultMessage = interruptedCaptureMessage(camera, message)
         clearClient()
-        mutableState.value = State(camera, Phase.CANCELLED, message)
+        mutableState.value = State(camera, Phase.CANCELLED, resultMessage)
     }
 
     /** Closing an RVF video GET may terminate the stock AP; never keep a successful control badge. */
     fun videoClosed(camera: NxCamera, expected: StockRvfClient, message: String) {
         if (clientFor(camera) !== expected) return
+        val resultMessage = interruptedCaptureMessage(camera, message)
         clearClient()
-        mutableState.value = State(camera, Phase.RECONNECT_REQUIRED, message)
+        mutableState.value = State(camera, Phase.RECONNECT_REQUIRED, resultMessage)
     }
+
+    private fun interruptedCaptureMessage(camera: NxCamera, message: String): String =
+        if (captureInProgress(camera)) "$message。拍摄结果未确认，请检查相机回放" else message
 
     private fun current(camera: NxCamera, expected: StockRvfClient, token: Long) =
         generation == token && clientFor(camera) === expected

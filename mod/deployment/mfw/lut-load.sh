@@ -10,22 +10,34 @@ operation=${1:-status}
 case $operation in status|apply|restore) ;; *) fail 'use status, apply or restore' ;; esac
 CODE_ROOT=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
 ROOT=$CODE_ROOT
+fixture=${NX_SF_PROBE_FIXTURE:-0}
+case $fixture in 0|1) ;; *) fail 'invalid fixture mode' ;; esac
 if [ -n "${NX300M_MOD_SOURCE_ROOT:-}${NX300M_MOD_SOURCE_ID:-}" ]; then
     [ -n "${NX300M_MOD_SOURCE_ROOT:-}" ] && [ -n "${NX300M_MOD_SOURCE_ID:-}" ] || fail 'incomplete data source identity'
     ROOT=$(CDPATH= cd -P "$NX300M_MOD_SOURCE_ROOT" && pwd -P) || fail 'data source unavailable'
     [ "$(stat -c '%d:%i' "$ROOT")" = "$NX300M_MOD_SOURCE_ID" ] || fail 'data source identity changed'
 fi
+[ "$fixture" != 1 ] || [ "$ROOT" = /perf ] || fail 'fixture requires explicit /perf data root'
 case $ROOT in *[!A-Za-z0-9_./-]*) fail 'unsupported data root' ;; esac
 [ "$(id -u)" = 0 ] || fail 'root required'
 case $(uname -m) in armv7l) ;; *) fail 'native ARMv7 required' ;; esac
 unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH NX300M_MOD_SOURCE_ROOT NX300M_MOD_SOURCE_ID
 export NX300M_MOD_ROOT="$ROOT"
+# Still upgrades and preview controls both stop the same target threads.
+# Serialize them before any ptrace operation; retain unresolved recovery state.
+if [ "$operation" != status ]; then
+    [ ! -e /tmp/nx300m-smartfilter-preview.uncertain ] || fail 'preview recovery is still active'
+    exec 9>/tmp/nx300m-smartfilter-preview.lock
+    flock -n 9 || fail 'preview control is running; no LUT installation attempted'
+fi
 pids=
 for entry in /proc/[0-9]*/exe; do
     target=$(readlink "$entry" 2>/dev/null) || continue
     case $target in
         /usr/bin/di-camera-app-nx300|/usr/bin/di-camera-app)
             value=${entry#/proc/}; pids="$pids ${value%/exe}" ;;
+        /mnt/mmc/bin/smartfilter_fixture.arm)
+            if [ "$fixture" = 1 ]; then value=${entry#/proc/}; pids="$pids ${value%/exe}"; fi ;;
     esac
 done
 set -- $pids
@@ -56,9 +68,11 @@ done
 chmod 700 "$runtime/lut_live_loader.arm" "$runtime/lut_engine.arm"
 printf 'loader_runtime=%s\nlut_data_root=%s\n' "$runtime" "$ROOT"
 run_loader() {
+    set --
+    [ "$fixture" != 1 ] || set -- --fixture
     case $operation in
-        apply) "$runtime/lut_live_loader.arm" apply --pid "$camera_pid" --blob "$runtime/lut_ram_blob.bin" --root "$ROOT" ;;
-        restore) "$runtime/lut_live_loader.arm" restore --pid "$camera_pid" ;;
+        apply) "$runtime/lut_live_loader.arm" apply --pid "$camera_pid" --blob "$runtime/lut_ram_blob.bin" --root "$ROOT" "$@" ;;
+        restore) "$runtime/lut_live_loader.arm" restore --pid "$camera_pid" "$@" ;;
         status) "$runtime/lut_live_loader.arm" status --pid "$camera_pid" ;;
     esac
 }
@@ -96,10 +110,15 @@ if [ "$operation" = apply ] && { [ "$loader_exit" -eq 3 ] || [ "$loader_exit" -e
     fi
 fi
 if [ "$operation" = apply ] && [ "$loader_exit" -eq 0 ]; then
+    # Selection restoration may sync preview after the Still transaction.
+    # Release its shared control lease before that nested synchronization.
+    flock -u 9
     # Restore selection through the same validated backend used by App/panel.
     # An invalid saved look must not turn a successful hook load into a retry.
-    "$runtime/lut_engine.arm" restore-selection || \
-        printf 'RESTORE-WARNING saved LUT could not be restored; select a look again.\n' >&2
+    if [ "${NX300M_LUT_ENGINE_OWNS_LOCK:-0}" != 1 ]; then
+        "$runtime/lut_engine.arm" restore-selection || \
+            printf 'RESTORE-WARNING saved LUT could not be restored; select a look again.\n' >&2
+    fi
 fi
 # Result evidence must survive power-off for the physical camera loop.
 [ -n "${NX_FN_KEY_LOG:-}" ] && \

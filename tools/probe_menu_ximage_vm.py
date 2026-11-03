@@ -61,11 +61,6 @@ def main():
     vm = entry.vm
     vm.DRIVER = vm.DRIVER.replace('    Window w; int revert;', EXTRA_DRIVER+'\n    Window w; int revert;')
     vm.DRIVER = vm.DRIVER.replace('    if(argc==2) {', FOCUSED_DRIVER+'\n    if(argc==2) {')
-    entry.PROBE = entry.PROBE.replace('sleep 3\n/perf/close.arm lut', '''attempt=0
-until awk '/^NX_PANEL_START / {ready=0} /^BACKEND kind=5 ok=1 / {ready=1} END {exit !ready}' /perf/remote.log; do
-    attempt=$((attempt+1)); [ "$attempt" -lt 20 ]; sleep 1
-done
-/perf/close.arm lut''', 1)
     entry.PROBE = entry.PROBE.replace('/perf/remote-fixture.arm --listen',
         '/perf/close.arm stock > /perf/stock.log 2>&1 &\nstock=$!\nsleep 1\n/perf/remote-fixture.arm --listen',1)
     entry.PROBE = entry.PROBE.replace('/perf/close.arm /perf/first.ppm',

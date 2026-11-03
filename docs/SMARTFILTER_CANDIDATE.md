@@ -1,76 +1,93 @@
-# 单槽 LUT 预览候选包
+# S2：RAW / RAW+JPEG 的 LUT 取景候选包
 
-原厂 Miniature 槽位提供取景节点、工作区和完成回调，MOD 独立选择 LUT 与 0–100% 强度。其他原厂滤镜保持原功能。成片继续使用已有 JPEG LUT 模块。
+**2026-11-01：ABI2 S2 首轮实机验收未通过，存在严重卡顿及拍摄后长时间迟滞，不应继续作为可用预览使用。**
 
-## 安装内容
+本文保留原 ABI2 实验背景；新的独立计时诊断版见 [SMARTFILTER_TIMING.md](SMARTFILTER_TIMING.md)，它不是已完成的性能修复。
 
-这是现有 MFW 1.15 MOD 的增量包。先备份将被覆盖的同名文件，再把包内 `nx300m-mod` 合并到卡上的同名目录。保留现有 `looks`、`looks.txt`、黑白风格和开机脚本。包内不含固件、`autoexec.sh` 或新的自动注入入口。
+S2 在原厂智能滤镜保持关闭时，按精确调用点借用普通取景 SmartFilter 节点，并提供独立工作区。原厂 RAW 菜单限制并未修改：因为不需要打开原厂滤镜，RAW 选择与合成预览才有机会同时工作。JPEG 继续使用原有 LUT 引擎，RAW Bayer 文件不做处理。
 
-`bin/lut_engine.arm` 和 `bin/nx-remote-controller.arm` 增加选择同步；预览加载器、RAM 模块和脚本负责启用、切换及恢复。机身 MOD 菜单增加“取景预览”子菜单。写卡工具保留开机脚本，并更新已有服务重载标记，让下次启动加载新版菜单；开机不会自动启用预览。
+本轮不优化卡顿，不改原厂代码段、不刷固件、不增加开机自动注入。
 
-## 首次验证
+## 安装与版本边界
 
-全程在相机上操作，不需要手机、电脑连接或 Shell。
+- 测试包为 `nx300m-smartfilter-s2-preview.zip`，需要现有 NX300M 1.15 MFW MOD。
+- ABI2 同时保留旧 S1 的五槽方式及独立 S2 七槽方式，但**同一相机进程不能在 S1/S2 安装类型之间切换**。
+- 安装前备份覆盖文件；正常关机后换卡，再正常启动。重载 MOD 服务不能替代相机进程重启。
+- 若提示驻留模块/版本不匹配，不要删除 `/var/run` 状态来绕过检查。使用匹配的旧工具处理旧模块，再正常重启。
+- 不覆盖 `looks`、`looks.txt` 或 `autoexec.sh`；预览默认不启用。
+- 原 ABI2 包已在备份后写卡并完成首轮测试，但实机未通过；ABI3 诊断版尚未写卡。任何后续写卡仍须先备份，读回核对哈希并检查 FAT dirty 位。
 
-首次测试先临时将 **画质设为仅 JPEG（超高画质，不选 RAW 或 RAW+JPEG）**，图片向导选标准，驱动模式选单张。当前候选仍保留原厂 SmartFilter 的 RAW 菜单限制；这一步用于进入宿主槽位验证取景，不代表已支持 RAW 与该预览同时使用。如果“智能滤镜”仍呈灰色，先停在菜单检查当前设置，不要反复启用 MOD。原厂中文菜单将 Miniature 称为“微型”。图片向导与智能滤镜不能同时设置，见 [NX300M 使用说明书第 101 页](https://manualzilla.com/doc/6848545/samsung-nx300m-%E7%94%A8%E6%88%B7%E6%89%8B%E5%86%8C)。
+## S2 机身测试顺序
 
-1. 安全弹出卡，装回相机开机。
-2. 长按 **Custom** 约 1.2 秒后松开，在 MOD 菜单选择 **取景预览 → 启用预览 · 原样**。上下左右选择，OK 确认，也可以触摸。操作成功后面板自动关闭。
-3. 在原厂智能滤镜中选择 **微型（Miniature）**。先确认取景和按键正常，本轮先不同时拍照。
-4. 再长按 Custom，选择 **取景预览 → 单位表测试**。返回取景后，画面应基本保持原样。
-5. 再进入同一菜单，选择 **黑白测试**。返回取景后，画面应变成黑白，不应偏绿、偏紫、花屏或冻结。
-6. 基础检查通过后，选择 **跟随当前 LUT**。通过已有 LUT 菜单或短按 Custom 切换风格，观察取景是否跟随。Miniature 槽位要保持选中。
+1. 原厂 **智能滤镜 → 关闭**，普通照片取景、常规画幅、单张驱动。画质先选 RAW+JPEG，图片向导标准。
+2. 长按 Custom 打开 MOD，进入 **取景预览**，选择末尾的 **启用 S2 · RAW 预览**。不要先选旧的“启用预览 · 原样”，后者首次安装的是 S1。
+3. 先检查取景和按键正常，再打开 **预览状态**。`profile=1` 是 S2，`insert_enabled=1` 表示允许插入；这两项不能证明当前管线已经接管。
+4. 选择 **单位表测试**，再选 **黑白测试**。黑白测试只改变取景；确认没有偏绿/偏紫、花屏、冻结。
+5. **启用发生在当前取景管线建立之后，可能尚未生效。** 可先正常进入回放再返回取景。若没有接管且机身提供焦点峰值开关，可只切换一次并恢复原设置：静态代码在焦点峰值状态变化时会请求重建，实际菜单能否触发尚待上机确认。若 `s2_frames` 始终为 0、`mode_forged[0]` 为 0，记录状态并停止测试，不强制调用原厂重建入口、不反复注入。
+6. 接管且颜色正常后，分别在 RAW+JPEG、RAW 下单张拍摄，确认保存、返回取景、相机内 RAW 显影正常。不要把 RAW 内嵌 JPEG 的黑白当作 Bayer 数据被改写的证明。
+7. 最后测试 **跟随当前 LUT**，短按 Custom 或原有面板切换风格/强度。原厂智能滤镜始终保持关闭。
 
-操作失败时面板保留并显示错误，可用 MENU 退出；不要连续重复触发。**预览状态**可查看请求和处理代次：`requested_generation` 表示已选择，`applied_generation` 追上它才表示后端完成了帧处理，计数本身不能证明真实像素正确。
+本阶段只支持验证普通照片取景路径。Wide、视频、放大取景、连续拍摄和切换真实滤镜尚未完成硬件验证，不作为本轮测试范围。
 
-恢复时长按 Custom，选择 **取景预览 → 关闭预览并恢复**，返回取景后关闭原厂智能滤镜。该操作恢复五个原厂调用槽，关闭后续选择同步；保留 RAM 映射供已取到旧函数地址的调用返回。不要手动删除驻留状态文件。
+## 关闭：S2 是软停，不是热卸载
 
-## 开发诊断命令
+选择 **关闭预览并恢复** 后：
 
-以下为已有相机 ARM Shell 的调试命令，机身测试不需要输入：
+- LUT 和新的节点插入停止，选择同步关闭；
+- 已存在或已经排队的节点仍走原样直通并完成原厂回调；
+- 七个钩子、RAM 模块和工作区保留至相机进程结束；
+- `installed=true`、`enabled=false`、`routing_retained=true` 是预期状态，不代表关闭失败；
+- **正常关机再开机才是完整退出。不要手动删驻留状态，也不要在取景运行时解除映射。**
 
-```sh
-cd /mnt/mmc/nx300m-mod
-sh smartfilter-preview.sh enable
-sh smartfilter-preview.sh stock
-sh smartfilter-preview.sh status
+S1 仍保留原来的五槽恢复方式；不能把 S1 的立即恢复槽位套用到 S2。
+
+## 状态与日志
+
+重点记录 `profile`、`enabled`、`insert_enabled`、`mode_forged`、`s2_path`、`s2_frames`、`s2_fallback`、`s2_fault`、`work_base`、`work_size`、`last_error` 和拍摄相关计数。
+
+- `mode_forged` 顺序：normal Create、worker execute、normal B2Y、normal LDC。
+- `s2_path` 是最近一次普通 Create 的合成路由决策，不是硬件显示正确的证明。
+- `s2_frames` 是生产桥接观察到的合成来源帧，不能冒充已完成回调或硬件像素验证。
+- `requested_generation` 是请求代次；`applied_generation` 追上后仍需肉眼检查图像。
+- `s2_fallback` 包括软停或故障的安全直通；原有 `passthrough` 计数不包括这里的所有直接回退。
+- `s2_fault` 或错误出现时先软停，再正常关机，回传 `nx300m-mod/logs/fn-key.log` 和对应照片文件名。
+
+## 已有 ARM Shell 的开发命令
+
+机身菜单测试不需要 Shell。以下命令仅供已有授权调试连接使用：
+
+```bash
+sh /mnt/mmc/nx300m-mod/smartfilter-preview.sh enable-s2-stock
 ```
 
-然后在原厂相机选择 Miniature 槽位。原厂菜单目前仍显示 Miniature。
-
-包内测试表与 ARM 模拟使用同一份文件：
-
-```sh
-sh smartfilter-preview.sh test-identity
-sh smartfilter-preview.sh test-monochrome
-sh smartfilter-preview.sh sync
+```bash
+sh /mnt/mmc/nx300m-mod/smartfilter-preview.sh test-identity
 ```
 
-测试命令只改变预览；`sync` 恢复跟随当前 MOD 选择。原样或 0% 应透传，单位表应尽量保持原图，黑白应去掉色度且不出现绿／紫色偏。`status` 的 `requested_generation` 表示已选择，`applied_generation` 追上它才表示后端完成了帧处理；这个计数本身不能证明真实像素正确。
-
-完成基础检查后，通过已有 MOD 面板选择风格和强度，或短按 Custom 轮换。
-
-切换也可显式执行：
-
-```sh
-sh lut-with-preview.sh apply LOOK_ID 100
-sh lut-with-preview.sh stock
+```bash
+sh /mnt/mmc/nx300m-mod/smartfilter-preview.sh test-monochrome
 ```
 
-`LOOK_ID` 使用现有 `looks.txt` 第一列，预览读取对应直接 `table.d4lut`。它不使用含原厂映射的 `table-stock3d.d4lut`。
-
-## 恢复
-
-```sh
-sh smartfilter-preview.sh restore
+```bash
+sh /mnt/mmc/nx300m-mod/smartfilter-preview.sh sync
 ```
 
-该命令恢复五个原厂调用槽，并关闭后续选择同步；保留 RAM 映射，供可能已取到旧函数地址的调用安全返回。再把原厂滤镜选回关闭即可。相同构建可以重新 `enable`。不要手动删除驻留状态文件来跳过加载器检查。
+```bash
+sh /mnt/mmc/nx300m-mod/smartfilter-preview.sh status
+```
 
-## 当前验证范围
+```bash
+sh /mnt/mmc/nx300m-mod/smartfilter-preview.sh restore
+```
 
-当前源码通过原厂 ARM 用户态控制流和真实 ptrace／PLT 装入模拟，使用核对过的 MFW `libmisc.so`。像素设备边界由明确的软件参考后端代替，未模拟 DRIMe IV ISP。新增机身菜单另在 ARM Xvfb 中检查按键导航、六个动作的派发、失败提示、自动关闭和原厂焦点恢复；该菜单检查的预览加载命令使用替代后端。
+`enable-s2` 会直接跟随当前 LUT；`enable-s2-stock` 先原样。旧 `enable` / `enable-stock` 可用于干净进程中的 S1。预览读直接 `table.d4lut`，不读 JPEG 合成表 `table-stock3d.d4lut`。
 
-尚需实机确认真实 YCC 颜色域、3D 插值、cache 同步、DMA 完成及错误恢复。原厂 SmartFilter 的 RAW 菜单限制仍存在；本包没有修改 RAW Bayer 数据，也未放开该菜单限制。先完成上述顺序像素检查，再单独验证拍照时的资源交接和原厂参数恢复。
+## 验证范围与限制
 
-调用链、实现和模拟证据见项目 `docs/SMARTFILTER_LUT_PREVIEW.md`；具体写卡结果和备份位置以 `latest-card-deployment.json` 指向的报告为准。
+VM 使用真实 ptrace loader、七个真实 GOT 槽、原厂模式 getter、Prepare/Execute/worker、ADE 构造及既有 IPCS/IQ 适配器。设备/缓存及图像像素边界是明确的软件替身，不是 DRIMe IV ISP 仿真。
+
+路径白名单检查执行原厂 Create/B2Y/LDC 的前缀，在 getter 后的下一个环境调用处退出，因此能验证精确 LR 和合成路由决策，**不能声称完成真实硬件管线重建**。原厂格式菜单及传感器 RAW 数据也没有在 VM 中模拟。
+
+独立匿名工作区为 `0x168000` 字节、页对齐。已接管的 YCC 适配器只提交输入/输出平面，不显式提交该工作平面；初始化失败和软停时禁止落回原厂微型算法。其完整 DMA/物理地址/缓存契约、真实并发节点、硬件颜色、RAW 保存和自然重建仍须上机验证。
+
+原有 S1 包及匹配恢复工具保存在本地 `outputs/deployment/smartfilter-preview/s1-before-s2`，不混入 S2 安装包。

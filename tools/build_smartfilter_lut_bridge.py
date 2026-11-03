@@ -25,6 +25,7 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
  -Wl,-z,defs -Wl,-soname,libnx-smartfilter-lut.so \
  {shlex.quote(wsl_path(ROOT/'runtime/smartfilter_lut_bridge.c'))} \
  {shlex.quote(wsl_path(ROOT/'runtime/smartfilter_ipcs.c'))} \
+ {shlex.quote(wsl_path(ROOT/'runtime/smartfilter_timing.c'))} \
  -o {shlex.quote(wsl_path(LIBRARY))}
 '''
     result = subprocess.run(['wsl.exe', '-d', 'Debian', '-u', 'root', '-e', 'sh', '-s'],

@@ -160,6 +160,17 @@ class OsdView @JvmOverloads constructor(
         invalidate() // 几何或可见性改变必须清除旧位置。
     }
 
+    /** Match input to the same letterboxed rectangle used to draw the camera frame. */
+    fun cameraPoint(x: Float, y: Float, clamp: Boolean = false): android.graphics.Point? {
+        checkMainThread()
+        if (!viewportCompatible || destination.isEmpty || !x.isFinite() || !y.isFinite()) return null
+        if (!clamp && !destination.contains(x, y)) return null
+        return android.graphics.Point(
+            (((x - destination.left) / destination.width()) * FRAME_W).toInt().coerceIn(0, FRAME_W - 1),
+            (((y - destination.top) / destination.height()) * FRAME_H).toInt().coerceIn(0, FRAME_H - 1),
+        )
+    }
+
     /** 只在新会话清零；空体、零块和可重试网络错误绝不能重置增量基线。 */
     fun reset() {
         checkMainThread()

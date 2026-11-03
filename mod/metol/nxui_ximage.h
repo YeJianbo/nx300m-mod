@@ -19,6 +19,8 @@ typedef struct XFont {
     FT_Face ft;
     int ascent, height;
     struct nk_user_font handle;
+    /* Nuklear measures the same labels several times at one fixed size. */
+    struct { nk_rune rune; int advance, valid; } advances[512];
 } XFont;
 typedef struct XSurface {
     Display *dpy;
@@ -42,7 +44,14 @@ static float nx_cpu_text_width(nk_handle handle, float height, const char *text,
     (void)height;
     while (text && offset < length) {
         offset += nx_cpu_rune(text + offset, length - offset, &rune);
-        if (!FT_Load_Char(font->ft, rune, FT_LOAD_DEFAULT)) advance += font->ft->glyph->advance.x >> 6;
+        unsigned slot = (unsigned)rune % NK_LEN(font->advances);
+        if (!font->advances[slot].valid || font->advances[slot].rune != rune) {
+            font->advances[slot].advance = FT_Load_Char(font->ft, rune, FT_LOAD_DEFAULT)
+                ? 0 : (int)(font->ft->glyph->advance.x >> 6);
+            font->advances[slot].rune = rune;
+            font->advances[slot].valid = 1;
+        }
+        advance += font->advances[slot].advance;
     }
     return (float)advance;
 }
@@ -94,6 +103,8 @@ static void nx_cpu_pixel(XSurface *s, int x, int y, struct nk_color c, unsigned 
     if (x < s->left || y < s->top || x >= s->right || y >= s->bottom) return;
     uint32_t *pixel = s->pixels + (size_t)y * s->w + x;
     unsigned a = (coverage * c.a + 127) / 255, inv = 255 - a;
+    if (!a) return;
+    if (a == 255) { *pixel = 0xff000000u | ((uint32_t)c.r<<16) | ((uint32_t)c.g<<8) | c.b; return; }
     unsigned r = (c.r*a + ((*pixel>>16)&255)*inv + 127) / 255;
     unsigned g = (c.g*a + ((*pixel>>8)&255)*inv + 127) / 255;
     unsigned b = (c.b*a + (*pixel&255)*inv + 127) / 255;
@@ -101,12 +112,22 @@ static void nx_cpu_pixel(XSurface *s, int x, int y, struct nk_color c, unsigned 
 }
 static void nx_cpu_rect(XSurface *s, int x, int y, int w, int h, int round, struct nk_color c) {
     int r = NK_MIN(round, NK_MIN(w/2, h/2));
-    for (int j=NK_MAX(y,s->top); j<NK_MIN(y+h,s->bottom); j++)
-        for (int i=NK_MAX(x,s->left); i<NK_MIN(x+w,s->right); i++) {
+    if (!c.a) return;
+    for (int j=NK_MAX(y,s->top); j<NK_MIN(y+h,s->bottom); j++) {
+        int left=NK_MAX(x,s->left), right=NK_MIN(x+w,s->right);
+        int dy = j < y+r ? y+r-1-j : (j >= y+h-r ? j-(y+h-r) : 0);
+        /* The interior and straight edges cover almost the entire menu.
+         * Clip once per row and blend only its translucent/rounded pixels. */
+        if (c.a == 255 && (!r || !dy)) {
+            uint32_t color=0xff000000u|((uint32_t)c.r<<16)|((uint32_t)c.g<<8)|c.b;
+            for (int i=left; i<right; i++) s->pixels[(size_t)j*s->w+i]=color;
+            continue;
+        }
+        for (int i=left; i<right; i++) {
             int dx = i < x+r ? x+r-1-i : (i >= x+w-r ? i-(x+w-r) : 0);
-            int dy = j < y+r ? y+r-1-j : (j >= y+h-r ? j-(y+h-r) : 0);
             if (!r || dx*dx+dy*dy < r*r) nx_cpu_pixel(s,i,j,c,255);
         }
+    }
 }
 static void nx_cpu_line(XSurface *s, int x, int y, int ex, int ey, int thickness, struct nk_color c) {
     int dx=abs(ex-x), sx=x<ex?1:-1, dy=-abs(ey-y), sy=y<ey?1:-1, err=dx+dy;
@@ -146,8 +167,10 @@ static void nk_xsurf_blit(Drawable target, XSurface *s, unsigned int w, unsigned
     if (s->present_failed) return;
     if (w!=s->w || h!=s->h) {s->present_failed=1;return;}
     if (!s->rotated_ready) {
-        for (unsigned y=0;y<h;y++) for (unsigned x=0;x<w;x++)
-            ((uint32_t *)(s->image->data+(size_t)x*s->image->bytes_per_line))[h-1-y]=s->pixels[(size_t)y*w+x];
+        /* A tiled transpose keeps both buffers local on the camera's CPU. */
+        for (unsigned by=0;by<h;by+=16) for (unsigned bx=0;bx<w;bx+=16)
+            for (unsigned y=by;y<NK_MIN(by+16,h);y++) for (unsigned x=bx;x<NK_MIN(bx+16,w);x++)
+                ((uint32_t *)(s->image->data+(size_t)x*s->image->bytes_per_line))[h-1-y]=s->pixels[(size_t)y*w+x];
         s->rotated_ready=1;
     }
     XPutImage(s->dpy,target,s->gc,s->image,0,0,0,0,h,w);
