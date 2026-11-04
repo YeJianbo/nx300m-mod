@@ -51,6 +51,10 @@ for trial in 1 2 3; do
         --font-metadata "$service/fonts/mfw-font.charset" > "$log" 2>&1 &
     panel=$!
     wait_log '^FIRST_FRAME '
+    if [ "$variant-$trial" = current-1 ]; then
+        /perf/close.arm snapshot /perf/main-menu.ppm
+        gzip /perf/main-menu.ppm
+    fi
     /perf/close.arm key KP_Enter > /perf/$variant-$trial-input.txt
     if [ "$variant" = baseline ]; then
         attempt=0
@@ -63,11 +67,15 @@ for trial in 1 2 3; do
         [ ! -s /perf/actions.txt ]
         grep -q 'LUT_ENTRY .*key=nx300-hard-mono strength=75 saved=1' "$log"
         if [ "$trial" = 1 ]; then
+            /rescue/busybox usleep 300000
             /perf/close.arm snapshot /perf/lut-page.ppm
             gzip /perf/lut-page.ppm
             # Return discards local browsing; the same window can reopen LUT.
             /perf/close.arm key KP_Right >/dev/null
-            /perf/close.arm tap 520 22
+            /perf/close.arm tap 620 22
+            /rescue/busybox usleep 200000
+            /perf/close.arm key Left >/dev/null
+            /perf/close.arm key KP_Enter >/dev/null
             /rescue/busybox usleep 200000
             /perf/close.arm key KP_Enter >/dev/null
             attempt=0
@@ -76,7 +84,13 @@ for trial in 1 2 3; do
             done
             [ ! -s /perf/actions.txt ]
             /perf/close.arm key KP_Enter >/dev/null
+            wait_log '^BACKEND kind=1 ok=1'
+            /perf/close.arm key Menu >/dev/null
+            /rescue/busybox usleep 200000
+            /perf/close.arm key Menu >/dev/null
         else
+            /perf/close.arm key Menu >/dev/null
+            /rescue/busybox usleep 200000
             /perf/close.arm key Menu >/dev/null
         fi
     fi
@@ -99,7 +113,7 @@ def main():
         raise RuntimeError('Preserve the recorded menu entry comparison')
     before = ROOT/'outputs/performance/lut-menu-entry/before'
     current = ROOT/'outputs/metol/nxui.arm'
-    with ZipFile(ROOT/'outputs/deployment/smartfilter-session/diagnostic-card/nx300m-ipcs-open-diagnostic.zip') as package:
+    with ZipFile(ROOT/'outputs/looks/lightroom-import/on-camera-test/nx300m-lut-color-test.zip') as package:
         catalogue = package.read('nx300m-mod/looks.txt')
     engine = b'''#!/bin/sh
 printf '%s %s root=%s\n' "$1" "${2:-}" "$NX300M_MOD_ROOT" >> /perf/actions.txt
@@ -113,7 +127,12 @@ printf 'STAGED fixture\n'
              'perf/mod/bin/lut_engine.arm': engine,
              'perf/mod/fonts/mfw-font.charset': (ROOT/'outputs/metol/mfw-font.charset').read_bytes()}
     for name in ('gui_mfw.NX300M', 'gui_debug.NX300M'):
-        files['perf/mod/'+name] = (ROOT/'mod/deployment/mfw'/name).read_bytes()
+        # The recorded binary predates preview-toggle. Keep the same menu
+        # labels/positions, using its supported preview-submenu action.
+        data = (ROOT/'mod/deployment/mfw'/name).read_bytes().replace(b'|preview-toggle',b'|preview')
+        for action in (b'lenses',b'exposure',b'connection',b'settings'):
+            data=data.replace(b'|'+action,b'|status')
+        files['perf/mod/'+name] = data
     overlay = io.BytesIO()
     directories = {p.as_posix() for name in files for p in Path(name).parents if str(p) != '.'}
     for name in sorted(directories):
@@ -132,6 +151,9 @@ printf 'STAGED fixture\n'
     printf("INPUT sent_ms=%llu window=%lu\\n",(unsigned long long)t[0]*1000+t[1]/1000000,w);
     XEvent event={0};''', 1)
     vm.EXTRA_FILES = {'perf/data/looks.txt': catalogue, 'perf/mod/bin/lut_engine.arm': engine}
+    with ZipFile(ROOT/'outputs/looks/lightroom-import/on-camera-test/nx300m-lut-color-test.zip') as package:
+        vm.EXTRA_FILES.update({'perf/data/'+name.removeprefix('nx300m-mod/'):package.read(name)
+                               for name in package.namelist() if '/looks/' in name and name.endswith('.d4lut')})
     vm.prepare()
     report = dict(passed=False, physical_camera_measured=False,
                   scope='ARM X11 menu-to-LUT; adapter fixture has no artificial delay, no physical ptrace or preview sync',
@@ -149,15 +171,17 @@ printf 'STAGED fixture\n'
             raise TimeoutError('Menu entry VM boot')
         execution = vm.call('exec', '/bin/sh /perf/probe.sh')
         arm_vm.write_json(out/'execution.json', execution)
+        if execution['exit_code']:
+            raise RuntimeError('Menu entry probe exit '+str(execution['exit_code'])+': '+execution['output'])
         for variant in ('baseline', 'current'):
             for trial in range(1, 4):
                 for suffix in ('.log', '-input.txt', '-actions.txt'):
                     collect(out, f'{variant}-{trial}{suffix}')
-        if execution['exit_code']:
-            raise RuntimeError('Menu entry probe exit '+str(execution['exit_code'])+': '+execution['output'])
         collect(out, 'lut-page.ppm.gz')
+        collect(out, 'main-menu.ppm.gz')
         from PIL import Image
-        Image.open(io.BytesIO(gzip.decompress((out/'lut-page.ppm.gz').read_bytes()))).save(out/'lut-page.png')
+        Image.open(io.BytesIO(gzip.decompress((out/'lut-page.ppm.gz').read_bytes()))).rotate(90,expand=True).save(out/'lut-page.png')
+        Image.open(io.BytesIO(gzip.decompress((out/'main-menu.ppm.gz').read_bytes()))).rotate(90,expand=True).save(out/'main-menu.png')
         samples = {}
         for variant in ('baseline', 'current'):
             samples[variant] = []

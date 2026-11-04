@@ -29,6 +29,9 @@ TEXT_EXTS = {'.py', '.c', '.h', '.ld', '.sh', '.ps1', '.md', '.txt', '.json',
              '.yaml', '.yml', '.html', '.css', '.js', '.ts', '.proto', '.in',
              '.bat', '.pro', '.nx300m', '.cube', '.d4lut'}
 BINARY_ASSETS = {
+    'mod/metol/assets/lut-reference.png',
+    'mod/metol/assets/lut-reference-landscape.png',
+    'mod/metol/assets/lut-reference-night.png',
     'mod/nxconnect/NXConnect/gradle/wrapper/gradle-wrapper.jar',
     'mod/nxconnect/NXConnect/app/src/main/res/drawable-nodpi/home_device_photo.jpg',
     'mod/nxconnect/NXConnect/app/src/main/res/drawable-nodpi/home_device_cutout.png',

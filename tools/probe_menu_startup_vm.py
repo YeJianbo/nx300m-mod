@@ -41,6 +41,23 @@ int main(int argc,char **argv) {
         execv(argv[2],argv+2);return 5;
     }
     Display *d=XOpenDisplay(NULL); if(!d)return 2;
+    /* Populate Samsung keys before any panel starts. Reassigning one spare
+     * keycode per injected event races the panel's keyboard-map cache. */
+    const char *extra_names[]={"XF86HomePage","XF86ScrollUp","XF86ScrollDown"};
+    int minimum,maximum;XDisplayKeycodes(d,&minimum,&maximum);
+    for(int i=0;i<3;i++){
+        KeySym symbol=XStringToKeysym(extra_names[i]);
+        if(XKeysymToKeycode(d,symbol))continue;
+        int code;
+        for(code=maximum;code>=minimum;code--){
+            int per_code=0,unused=1;KeySym *symbols=XGetKeyboardMapping(d,code,1,&per_code);
+            if(!symbols)return 22;
+            for(int j=0;j<per_code;j++)if(symbols[j]!=NoSymbol)unused=0;
+            XFree(symbols);
+            if(unused){XChangeKeyboardMapping(d,code,1,&symbol,1);XSync(d,False);break;}
+        }
+        if(code<minimum)return 22;
+    }
     if(argc==2 && !strcmp(argv[1],"ping")){XCloseDisplay(d);return 0;}
     if(argc==2 && !strcmp(argv[1],"stock-parent")) {
         Window stock=XCreateSimpleWindow(d,DefaultRootWindow(d),0,0,480,800,0,0,0);
@@ -71,7 +88,9 @@ int main(int argc,char **argv) {
         fclose(out);XDestroyImage(image);
     }
     XEvent event={0}; event.xkey.display=d;event.xkey.window=w;
-    event.xkey.keycode=XKeysymToKeycode(d,XStringToKeysym("Menu"));
+    KeySym requested=XStringToKeysym("Menu");
+    event.xkey.keycode=XKeysymToKeycode(d,requested);
+    if(!event.xkey.keycode)return 22;
     event.type=KeyPress;XSendEvent(d,w,False,KeyPressMask,&event);
     event.type=KeyRelease;XSendEvent(d,w,False,KeyReleaseMask,&event);
     XSync(d,False);XCloseDisplay(d);return 0;
@@ -165,6 +184,7 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
         'perf/mod/common.sh': (PROJECT / 'mod/deployment/common.sh').read_bytes(),
         'perf/mod/gui_mfw.NX300M': (PROJECT / 'mod/deployment/mfw/gui_mfw.NX300M').read_bytes(),
         'perf/mod/gui_debug.NX300M': (PROJECT / 'mod/deployment/mfw/gui_debug.NX300M').read_bytes(),
+        'perf/mod/lenses.txt': (PROJECT / 'mod/deployment/mfw/lenses.txt').read_bytes(),
         'perf/mod/fonts/fonts.conf.in': (PROJECT / 'mod/deployment/mfw/fonts.conf.in').read_bytes(),
         'perf/mod/fonts/mfw-font.charset': (PROJECT / 'outputs/metol/mfw-font.charset').read_bytes(),
     }

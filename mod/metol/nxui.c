@@ -29,6 +29,7 @@
 #include "panel_input.h"
 #include "nxui_services.h"
 #include "mod_paths.h"
+#include "lut_tune.h"
 extern Bool XTestFakeKeyEvent(Display *, unsigned int, Bool, unsigned long);
 /* glibc 2.13 exposes the versioned ARM stat64 entry points. */
 extern int __xstat64(int, const char *, struct stat64 *);
@@ -47,12 +48,37 @@ static int mfw_lut_quick, mfw_return_requested;
 static char mfw_lut_root[NXUI_PATH], mfw_lut_engine[NXUI_PATH];
 static long long lut_page_requested;
 static const char *mfw_stock_key;
-static char mfw_status[1024] = "选择操作；需要服务信息时点“刷新服务状态”。";
+static char mfw_status[1024];
 static int lut_strength = 100;
 static int lut_draft;
+static int lut_leave_dialog,lut_leave_target,lut_leave_option,lut_submit_failed,lut_saved_config;
+static int lut_exit_after_save;
+static int lut_origin_selected,lut_origin_strength;
+static struct nx_lut_tune lut_origin_tune;
+static int lut_reference_scene,lut_reference_original,lut_reference_press,lut_list_open,lut_list_cursor;
+static int lut_fn_down;
+static int lut_tab_start=-1;
+static long long lut_reference_pressed_at;
+static void resize_panel(void);
+static struct nx_lut_tune lut_tune;
+static int lut_edit, lut_field, lut_category, lut_category_focus, lut_reference_dirty=1;
+static int lut_brand[NXUI_MAX_RECIPES],lut_favorite[NXUI_MAX_RECIPES];
+static const char *lut_categories[]={"全部","收藏","富士","奥巴","宾得","松下","理光","索尼","自制"};
+static int lut_category_count[9];
+static void lut_load_tune(void);
+static void lut_init_groups(void);
+static void lut_step(int delta);
 static void confirm_lut(void);
+static void lut_request_leave(int target);
+static void lut_save_navigation(void);
+static int lut_field_supported(int field);
+static int lut_in_group(int index);
+static void feature_snapshot(void);
+static int lut_has_changes(void) {
+    return selected!=lut_origin_selected||lut_strength!=lut_origin_strength||memcmp(&lut_tune,&lut_origin_tune,sizeof lut_tune);
+}
 static void close_choice(void) {
-    if (lut_mode && lut_draft && !queue.close_requested) confirm_lut();
+    if (lut_mode && lut_has_changes() && !queue.close_requested) lut_request_leave(1);
     else queue.close_requested = 1;
 }
 static int touch_x, touch_active;
@@ -81,9 +107,9 @@ static int panel_visibility = VisibilityFullyObscured, panel_raise_retry, panel_
  * Stock windows can also raise themselves or reclaim focus during a transition.
  * Camera navigation arrives as X KeyPress; an invisible panel must yield it. */
 static void request_s1_close(void) {
-    /* A LUT strip submits only its final choice when leaving. */
+    /* Shutter/focus preemption discards local edits and yields immediately. */
     panel_yielded = 1;
-    close_choice();
+    lut_leave_dialog=lut_draft=0;queue.close_requested=1;
     nx_panel_input_hide(&panel_input);
 }
 
@@ -275,6 +301,7 @@ static void mfw_status_message(const char *s) {
     snprintf(mfw_status, sizeof mfw_status, "%s", s);
     message("");
     fprintf(stderr, "MFW status=%s\n", mfw_status);
+    resize_panel();
 }
 static const char *base_name(const char *p) {
     const char *last = strrchr(p, '/'); return last ? last + 1 : p;
@@ -321,8 +348,9 @@ static int checked(const char *name) {
     return access(path, F_OK) == 0;
 }
 static void resize_panel(void) {
-    int next_width = mfw_quick ? 560 : 720;
-    int next = mfw_services ? (mfw_quick ? 240 : 464) : (menu ? 336 : (lut_mode ? 272 : 216));
+    int next_width = mfw_quick ? 560 : 800;
+    if (next_width > panel_parent_height) next_width = panel_parent_height;
+    int next = mfw_services ? (mfw_quick ? 240 : mfw_preview>=3?480:(*mfw_status ? 336 : mfw_preview?296:264)) : (menu ? 336 : (lut_mode ? 480 : 216));
     if (next > DisplayWidth(display, screen)) next = DisplayWidth(display, screen);
     dirty = 1;
     if (next == height && next_width == width) return;
@@ -333,6 +361,7 @@ static void resize_panel(void) {
     nk_xsurf_resize(xlib.surf, (unsigned)width, (unsigned)height);
     dirty = 1;
 }
+#include "nxui_prefs.h"
 static int load_menu(const char *source) {
     static struct nx_item pending[NXUI_MAX_ITEMS];
     char next[NXUI_PATH]; int n;
@@ -353,7 +382,8 @@ static int load_lut_choices(const char *path) {
     if (n < 0) return 0;
     memset(recipes, 0, sizeof *recipes);
     strcpy(recipes[0].key, "__off"); strcpy(recipes[0].label, "关");
-    count = n+1; selected = lut_draft = 0; lut_strength = 100;
+    count = n+1; selected = lut_draft = lut_edit = lut_category_focus = 0; lut_strength = 100;
+    memset(&lut_tune,0,sizeof lut_tune);
     nx_queue_init(&queue);
     snprintf(status, sizeof status, "当前选择：关 · 原厂拍摄");
     FILE *selection = fopen("/var/run/nx300m-lut-selection", "r");
@@ -374,12 +404,17 @@ static int load_lut_choices(const char *path) {
         }
     }
     if (selection) {
-        unsigned int generation, strength = 100; char table[256], candidate[256];
+        unsigned int generation, strength = 100; char table[256], candidate[256], base_id[64]="";
         if (fscanf(selection, "%u %255s %u", &generation, table, &strength) >= 2) {
+            char *slash=strrchr(table,'/');
+            if(slash && !strcmp(slash,"/table.d4lut")) {
+                char meta[512];snprintf(meta,sizeof meta,"%.*s/tune.txt",(int)(slash-table),table);
+                nx_tune_read(meta,base_id,&lut_tune,NULL);
+            }
             for (int i = 1; i < count; i++) {
                 int length = snprintf(candidate, sizeof candidate, "%s/looks/%.63s/table.d4lut", root, recipes[i].key);
                 if (length < 0 || length >= (int)sizeof candidate) continue;
-                if (!strcmp(table, candidate)) {
+                if (!strcmp(table, candidate) || !strcmp(base_id,recipes[i].key)) {
                     selected = i; lut_strength = strength <= 100 ? (int)strength : 100;
                     snprintf(status, sizeof status, "%s %s · 强度 %d%%%s", saved ? "上次选择" : "当前选择",
                         recipes[i].label, lut_strength, saved ? " · 按 OK 应用" : "");
@@ -389,9 +424,33 @@ static int load_lut_choices(const char *path) {
         }
         fclose(selection);
     }
+    /* Saved preferences are loaded only for the displayed choice. */
+    int selection_strength=lut_strength;struct nx_lut_tune selection_tune=lut_tune;
+    lut_load_tune();lut_strength=selection_strength;
+    if(!nx_tune_zero(&selection_tune))lut_tune=selection_tune;
+    lut_init_groups();
+    lut_category=selected?lut_brand[selected]:0;
+    char category_file[NXUI_PATH];int category_value=-1;snprintf(category_file,sizeof category_file,"%s/.state/lut-category",root);
+    FILE *category_in=fopen(category_file,"r");
+    if(category_in){if(fscanf(category_in,"%d",&category_value)!=1)category_value=-1;fclose(category_in);}
+    if(category_value>=0&&category_value<9&&(category_value<=1||lut_category_count[category_value]))lut_category=category_value;
+    lut_origin_selected=selected;lut_origin_strength=lut_strength;lut_origin_tune=lut_tune;
+    lut_leave_dialog=lut_submit_failed=0;lut_list_open=1;lut_saved_config=saved;
+    lut_list_cursor=0;for(int i=1;i<selected;i++)if(lut_in_group(i))lut_list_cursor++;
+    if(!saved){char saved_file[NXUI_PATH],saved_path[256],runtime_path[256];unsigned sg,ss,rg,rs;
+        snprintf(saved_file,sizeof saved_file,"%s/.state/lut-choice",root);
+        FILE *sf=fopen(saved_file,"r"),*rf=fopen("/var/run/nx300m-lut-selection","r");
+        if(sf&&rf&&fscanf(sf,"%u %255s %u",&sg,saved_path,&ss)==3&&fscanf(rf,"%u %255s %u",&rg,runtime_path,&rs)==3)
+            lut_saved_config=sg==rg&&ss==rs&&!strcmp(saved_path,runtime_path);
+        if(sf)fclose(sf);
+        if(rf)fclose(rf);
+    }
+    lut_reference_dirty=1;
     const char *notice = getenv("NXUI_LUT_NOTICE");
     if (notice && *notice) snprintf(status, sizeof status, "%s", notice);
     fprintf(stderr, "LUT_ENTRY index=%d key=%s strength=%d saved=%d\n", selected, recipes[selected].key, lut_strength, saved);
+    fprintf(stderr,"LUT_TUNE key=%s values=%d,%d,%d,%d,%d,%d,%d\n",recipes[selected].key,
+        lut_tune.value[0],lut_tune.value[1],lut_tune.value[2],lut_tune.value[3],lut_tune.value[4],lut_tune.value[5],lut_tune.value[6]);
     return 1;
 }
 static void open_mfw_lut(void) {
@@ -423,16 +482,22 @@ static void return_mfw_menu(void) {
     mfw_services = menu = 1; mfw_quick = mfw_lut_quick;
     lut_mode = live = lut_draft = 0; nx_queue_init(&queue);
     status[0] = 0; touch_active = 0; resize_panel();
+    feature_snapshot();
 }
 static void choose(int index) {
     if (count <= 0 || queue.close_requested) return;
+    int previous=selected;
     selected = (index + count) % count;
+    if(lut_mode && selected!=previous)lut_load_tune();
     if (lut_mode) fprintf(stderr, "LUT_CHOICE event=select index=%d key=%s running=%d\n",
                           selected, recipes[selected].key, queue.running);
     /* Browsing is local. Reconfiguring every intermediate row serializes
      * expensive camera transactions and shows stale looks after closing. */
     if (lut_mode) {
+        lut_list_cursor=0;
+        for(int i=1;i<selected;i++)if(lut_in_group(i))lut_list_cursor++;
         lut_draft = 1;
+        lut_reference_dirty=1;
         preview_status();
         return;
     }
@@ -455,8 +520,9 @@ static void confirm_lut(void) {
         nx_queue_select(&queue, selected, now_ms()-NXUI_DEBOUNCE_MS);
         queue.commit_requested = 1;
     }
-    queue.close_requested = 1;
+    queue.close_requested = 0;
     lut_draft = 0;
+    lut_submit_failed=0;lut_leave_dialog=0;
 }
 static void change_lut_strength(int delta) {
     /* The queue identifies work by recipe index. Keep strength fixed while a
@@ -486,6 +552,7 @@ static void read_output(void) {
     }
 }
 static void exec_lut_engine(const char *action, const char *key) {
+    lut_save_navigation();
     if (lut_mode && !strcmp(action, "apply") && key && !strcmp(key, "__off")) {
         if (arm_runner && *arm_runner)
             execl(arm_runner, arm_runner, "-cpu", "cortex-a9", "-L", "/", engine, "disable", (char *)0);
@@ -493,11 +560,13 @@ static void exec_lut_engine(const char *action, const char *key) {
         return;
     }
     if (lut_mode && !strcmp(action, "apply")) {
-        char strength[4];
+        char strength[4],v[NX_TUNE_FIELDS][8];
         snprintf(strength, sizeof strength, "%d", lut_strength);
+        for(int i=0;i<NX_TUNE_FIELDS;i++)snprintf(v[i],sizeof v[i],"%d",lut_tune.value[i]);
         if (arm_runner && *arm_runner)
-            execl(arm_runner, arm_runner, "-cpu", "cortex-a9", "-L", "/", engine, action, key, strength, (char *)0);
-        else execl(engine, engine, action, key, strength, (char *)0);
+            execl(arm_runner, arm_runner, "-cpu", "cortex-a9", "-L", "/", engine, action, key, strength,
+                v[0],v[1],v[2],v[3],v[4],v[5],v[6],(char *)0);
+        else execl(engine, engine, action, key, strength,v[0],v[1],v[2],v[3],v[4],v[5],v[6],(char *)0);
         return;
     }
     if (arm_runner && *arm_runner)
@@ -514,7 +583,11 @@ static int start_child(int kind, int index, const char *command) {
         if (kind == 1) {
             nx_queue_done(&queue, 1);
             message("演示模式 · 已选择，未写入相机");
-            if (queue.committing) quit = 1;
+            if (queue.committing) {
+                if(!lut_mode||lut_exit_after_save==1)quit=1;
+                else if(lut_exit_after_save==2)mfw_return_requested=1;
+                if(lut_mode){lut_origin_selected=selected;lut_origin_strength=lut_strength;lut_origin_tune=lut_tune;lut_exit_after_save=0;}
+            }
         } else message("演示模式 · 未执行菜单命令");
         return 1;
     }
@@ -551,7 +624,7 @@ static int start_child(int kind, int index, const char *command) {
 }
 static int mfw_action_allowed(const char *action) {
     const char *allowed[] = {"status", "network-info", "lut", "menu", "gallery", "disable-autostart", "enable-autostart", "close",
-        "preview", "debug", "back", "preview-enable", "preview-s2-enable", "preview-probe-once", "preview-identity", "preview-monochrome", "preview-monochrome-timing", "preview-sync", "preview-stop", "preview-restore", "preview-status", "preview-diag-export"};
+        "lenses","exposure","connection","settings", "preview", "debug", "back", "preview-toggle", "preview-enable", "preview-s2-enable", "preview-probe-once", "preview-identity", "preview-monochrome", "preview-monochrome-timing", "preview-sync", "preview-stop", "preview-restore", "preview-status", "preview-diag-export"};
     for (unsigned int i = 0; i < sizeof allowed / sizeof *allowed; i++)
         if (!strcmp(action, allowed[i])) return 1;
     return 0;
@@ -597,9 +670,22 @@ static int start_mfw_action(const char *action) {
         mfw_status_message(!strcmp(action, "status") ? "正在读取机身服务状态…" : "正在读取网络连接信息…");
     return 1;
 }
+#include "nxui_feature_pages.h"
+static void mfw_step(int delta) {
+    if(item_count<=0||child)return;
+    mfw_selected=(mfw_selected+delta+item_count)%item_count;
+    fprintf(stderr,"MFW_SELECT page=%d index=%d action=%s\n",mfw_preview,mfw_selected,items[mfw_selected].command);
+    dirty=1;
+}
 static void activate_mfw_item(int index) {
-    if (index < 0 || index >= item_count) return;
-    const char *action = items[index].command;
+    if (index < -1 || index >= item_count) return;
+    const char *action = index == -1 ? "back" : items[index].command;
+    if(child)return;
+    if(feature_action(action))return;
+    if(!strcmp(action,"back")&&mfw_preview>=2){
+        int parent=mfw_preview==6||mfw_preview==9?3:mfw_preview==2||mfw_preview==8?5:0;
+        if(parent){feature_page(parent);return;}
+    }
     if (!mfw_action_allowed(action)) { message("此操作不可用"); return; }
     if (!strcmp(action, "close")) { queue.close_requested = 1; return; }
     if (child) return;
@@ -609,9 +695,7 @@ static void activate_mfw_item(int index) {
         mfw_quick = 0;
         if (load_menu(next_preview == 2 ? "gui_debug.NX300M" : next_preview ? "gui_preview.NX300M" : "gui_mfw.NX300M")) {
             mfw_preview = next_preview; mfw_selected = 0;
-            mfw_status_message(next_preview == 2 ? "选择要查看或保存的诊断信息。"
-                : next_preview ? "取景预览可单独关闭，照片继续使用所选 LUT。"
-                : "选择 LUT、取景预览或原厂功能。");
+            mfw_status_message("");
         } else mfw_quick = was_quick;
         return;
     }
@@ -693,7 +777,10 @@ static void poll_child(void) {
         if (success) {
             snprintf(mfw_status, sizeof mfw_status, "%.*s", (int)sizeof(mfw_status)-1, output);
             message("");
-            if (mfw_child_preview && !mfw_child_readonly) queue.close_requested = 1;
+            if (mfw_child_preview && !mfw_child_readonly) {
+                if(lut_mode){mfw_status[0]=0;message("LUT 预览设置已更新");}
+                else queue.close_requested = 1;
+            }
         } else if (mfw_child_readonly) {
             mfw_status_message(mfw_cancel_started
                 ? (queue.close_requested ? "读取已取消" : "读取超时 · 请重试")
@@ -722,7 +809,15 @@ static void poll_child(void) {
         } else message(lut_mode && strstr(output, "PREVIEW-WARNING")
                        ? "照片 LUT 已选择，预览更新失败 · 可重新选择以重试"
                        : "应用失败 · 可重新选择以重试");
-        if (was_commit && success && !(lut_mode && strstr(output, "PERSIST-WARNING"))) quit = 1;
+        if(lut_mode&&!success){lut_submit_failed=1;lut_draft=lut_has_changes();lut_exit_after_save=0;}
+        if(was_commit&&success&&lut_mode&&!strstr(output,"PERSIST-WARNING")) {
+            lut_origin_selected=selected;lut_origin_strength=lut_strength;lut_origin_tune=lut_tune;
+            lut_draft=lut_submit_failed=0;lut_saved_config=1;dirty=1;
+            if(lut_exit_after_save==1)quit=1;
+            else if(lut_exit_after_save==2)mfw_return_requested=1;
+            lut_exit_after_save=0;
+        }else if(was_commit&&success&&!lut_mode)quit=1;
+        if(lut_mode&&success&&strstr(output,"PERSIST-WARNING")){lut_submit_failed=2;lut_exit_after_save=0;}
         if (was_commit && success && lut_mode && strstr(output, "PERSIST-WARNING") && !panel_yielded) {
             queue.close_requested = 0; queue.commit_requested = 0;
             if (panel_input.unmapped && !panel_show()) request_s1_close();
@@ -823,14 +918,53 @@ static void activate_item(int index) {
     }
     dirty = 1;
 }
+#include "nxui_lut_panel.h"
+#include "nxui_feature_draw.h"
 static void draw(void) {
     char line[320]; int i, start;
-    struct nk_color accent = nk_rgb(203, 233, 153);
+    struct nk_color accent = nk_rgb(88, 174, 255);
+    if(lut_mode){draw_lut_panel();return;}
     if (mfw_services) {
+        if(mfw_preview>=3){draw_feature_page();return;}
+        if(!mfw_quick&&!mfw_preview&&!*mfw_status) {
+            struct nk_style_button saved=ctx->style.button;
+            ctx->style.button.rounding=8;ctx->style.button.border=0;
+            if(nk_begin(ctx,"NXWA",nk_rect(0,0,(float)width,(float)height),NK_WINDOW_NO_SCROLLBAR)) {
+                nk_layout_space_begin(ctx,NK_STATIC,(float)height-18,12);
+                lut_place(4,0,480,42);nk_label(ctx,"NX300M",NK_TEXT_LEFT);
+                lut_place((float)width-136,0,112,42);
+                if(nk_button_label(ctx,"关闭"))queue.close_requested=1;
+                float card_width=((float)width-24-(item_count-1)*10)/item_count;
+                for(i=0;i<item_count;i++) {
+                    if(!strcmp(items[i].command,"preview-toggle")) {
+                        char backend[32]="";FILE *marker=fopen("/var/run/nx300m-preview-backend","r");
+                        if(marker){if(!fgets(backend,sizeof backend,marker))backend[0]=0;fclose(marker);}
+                        snprintf(line,sizeof line,"取景预览  %s",!strcmp(backend,"smartfilter\n")||!strcmp(backend,"smartfilter")?"开":"关");
+                    } else snprintf(line,sizeof line,"%s",items[i].label);
+                    lut_place(i*(card_width+10),58,card_width,110);
+                    if(lut_button(line,i==mfw_selected)){mfw_selected=i;activate_mfw_item(i);break;}
+                }
+                char lens_state[40];if(feature_lens_selected<0)snprintf(lens_state,sizeof lens_state,"未记录");else snprintf(lens_state,sizeof lens_state,"%dmm",feature_focal);
+                snprintf(line,sizeof line,"LUT预览：%s     模式拨盘：%s     镜头：%s",feature_preview_enabled?"开":"关",feature_mode_locked<0?"未确认":feature_mode_locked?"锁定":"未锁定",lens_state);
+                lut_place(4,180,(float)width-28,30);nk_label_colored(ctx,line,NK_TEXT_LEFT,nk_rgb(185,196,209));
+                lut_place(4,214,(float)width-28,30);
+                nk_label_colored(ctx,child?"正在执行…":*status?status:"左右选择    OK / 下键进入    MENU 返回",NK_TEXT_LEFT,nk_rgb(158,171,188));
+                nk_layout_space_end(ctx);
+            }
+            nk_end(ctx);ctx->style.button=saved;
+            nk_xlib_render(window,nk_rgb(23,24,26));XFlush(display);return;
+        }
         if (nk_begin(ctx, "NXWA", nk_rect(0, 0, (float)width, (float)height), NK_WINDOW_NO_SCROLLBAR)) {
-            nk_layout_row_dynamic(ctx, 26, 1);
-            nk_label_colored(ctx, mfw_quick ? "LUT  /  取景预览" : (mfw_preview == 2 ? "NX300M  /  调试与诊断" : mfw_preview ? "LUT  /  取景预览" : "NX300M  /  MOD 菜单"), NK_TEXT_LEFT, accent);
-            if (!mfw_quick) {
+            nk_layout_row_begin(ctx, NK_STATIC, 30, 2);
+            nk_layout_row_push(ctx, (float)(width-138));
+            nk_label_colored(ctx, mfw_preview == 2 ? "调试" : "NX300M", NK_TEXT_LEFT, accent);
+            nk_layout_row_push(ctx, 100);
+            if (nk_button_label(ctx, mfw_preview ? "返回" : "关闭")) {
+                if (mfw_preview && !child) activate_mfw_item(-1);
+                else if (!mfw_preview) queue.close_requested = 1;
+            }
+            nk_layout_row_end(ctx);
+            if (!mfw_quick && *mfw_status) {
               nk_layout_row_dynamic(ctx, 154, 1);
               if (nk_group_begin(ctx, "mfw-status", 0)) {
                 const char *begin = mfw_status;
@@ -846,21 +980,27 @@ static void draw(void) {
                 nk_group_end(ctx);
               }
             }
-            nk_layout_row_dynamic(ctx, mfw_quick ? 32 : (item_count > 8 ? 40 : 48), mfw_quick ? 1 : 2);
+            nk_layout_row_dynamic(ctx, mfw_quick ? 32 : 42, mfw_quick ? 1 : 2);
             for (i = 0; i < item_count; i++) {
-                snprintf(line, sizeof line, "%s%s", i == mfw_selected ? "› " : "", items[i].label);
-                if (nk_button_label(ctx, line)) { mfw_selected = i; activate_mfw_item(i); break; }
+                if (!strcmp(items[i].command, "preview-toggle")) {
+                    char backend[32] = "";
+                    FILE *marker = fopen("/var/run/nx300m-preview-backend", "r");
+                    if (marker) { if (!fgets(backend, sizeof backend, marker)) backend[0] = 0; fclose(marker); }
+                    snprintf(line, sizeof line, "%s取景预览  %s", i == mfw_selected ? "› " : "",
+                        !strcmp(backend, "smartfilter\n") || !strcmp(backend, "smartfilter") ? "开" : "关");
+                } else snprintf(line, sizeof line, "%s%s", i == mfw_selected ? "› " : "", items[i].label);
+                if (lut_button(line,i==mfw_selected)) { mfw_selected = i; activate_mfw_item(i); break; }
             }
             nk_layout_row_dynamic(ctx, 23, 1);
             nk_label_colored(ctx, child ? (mfw_child_readonly ? "正在读取…" : "正在执行…")
                 : (mfw_quick && !*status ? "方向键选择 · OK 确认 · MENU 关闭" : status), NK_TEXT_LEFT, nk_rgb(171, 182, 190));
         }
-        nk_end(ctx); nk_xlib_render(window, nk_rgb(24, 29, 33)); XFlush(display);
+        nk_end(ctx); nk_xlib_render(window, nk_rgb(23, 24, 26)); XFlush(display);
         return;
     }
     if (nk_begin(ctx, "NXWA", nk_rect(0, 0, (float)width, (float)height), NK_WINDOW_NO_SCROLLBAR)) {
         nk_layout_row_begin(ctx, NK_STATIC, 24, 3);
-        nk_layout_row_push(ctx, 460);
+        nk_layout_row_push(ctx, (float)(width-260));
         nk_label_colored(ctx, menu ? "NX300M  /  系统设置"
                             : (lut_mode ? "LUT  /  3D 滤镜" : (live ? "FILMLAB  /  滤镜预览" : "FILMLAB  /  配方浏览")),
                          NK_TEXT_LEFT, accent);
@@ -919,8 +1059,8 @@ static void draw(void) {
             snprintf(line, sizeof line, "%d/%d   R%d G%d B%d   H%d S%d 锐%d 对比%d", selected+1, count,
                 recipes[selected].value[0], recipes[selected].value[1], recipes[selected].value[2],
                 recipes[selected].value[3], recipes[selected].value[4], recipes[selected].value[5], recipes[selected].value[6]);
-            if (lut_mode) snprintf(line, sizeof line, "%d/%d   %s", selected+1, count,
-                !strcmp(recipes[selected].key, "__off") ? "原厂拍摄 · 不应用 LUT" : "NX300M 9×9×9 LUT");
+            if (lut_mode) snprintf(line, sizeof line, "%d/%d%s", selected+1, count,
+                !strcmp(recipes[selected].key, "__off") ? "   原厂拍摄" : "");
             nk_layout_row_dynamic(ctx, 16, 1);
             nk_label_colored(ctx, line, NK_TEXT_LEFT, nk_rgb(171, 182, 190));
             if (lut_mode) {
@@ -939,7 +1079,7 @@ static void draw(void) {
             }
             nk_layout_row_dynamic(ctx, 26, 3);
             if (nk_button_label(ctx, "‹ 上一个")) choose(selected-1);
-            if (nk_button_label(ctx, lut_mode ? "保留并关闭" : (live ? "应用并关闭" : "选择并关闭")) && !queue.close_requested) {
+            if (nk_button_label(ctx, lut_mode ? "确定" : (live ? "应用并关闭" : "选择并关闭")) && !queue.close_requested) {
                 if (lut_mode) {
                     confirm_lut();
                 } else {
@@ -1079,12 +1219,12 @@ int main(int argc, char **argv) {
     display = XOpenDisplay(NULL);
     if (!display) { fprintf(stderr, "XOpenDisplay failed\n"); return 4; }
     display_ready = now_ms();
-    screen = DefaultScreen(display); width = mfw_quick ? 560 : 720;
+    screen = DefaultScreen(display); width = mfw_quick ? 560 : 800;
     fprintf(stderr, "PANEL_DISPLAY vendor=%s release=%d raw=%dx%d depth=%d\n", ServerVendor(display), VendorRelease(display),
         DisplayWidth(display, screen), DisplayHeight(display, screen), DefaultDepth(display, screen));
     /* Allocate the actual entry layout once, rather than create a small
      * pixmap and immediately discard it when load_menu resizes the panel. */
-    height = mfw_services ? (mfw_quick ? 240 : 464) : (initial_menu ? 336 : (lut_mode ? 272 : 216));
+    height = mfw_services ? 264 : (initial_menu ? 336 : (lut_mode ? 480 : 216));
     if (height > DisplayWidth(display, screen)) height = DisplayWidth(display, screen);
     if (DisplayHeight(display, screen) < width || DisplayWidth(display, screen) < height) {
         fprintf(stderr, "NX300M raw display must be at least %dx%d\n", height, width); XCloseDisplay(display); return 4;
@@ -1104,10 +1244,9 @@ int main(int argc, char **argv) {
         panel_focus_revert == RevertToParent ? "stock-child" : "dry-run-root", panel_parent, panel_focus_revert);
     memset(&attr, 0, sizeof attr);
     attr.override_redirect = True; attr.background_pixel = BlackPixel(display, screen);
-    /* This panel has buttons, no draggable controls. Touch coordinates arrive
-     * on press/release; subscribing to motion needlessly repaints while sliding. */
+    /* Only held-touch motion is needed for LUT parameter rows. Hover stays idle. */
     attr.event_mask = ExposureMask|KeyPressMask|KeyReleaseMask|ButtonPressMask|ButtonReleaseMask|StructureNotifyMask|
-        VisibilityChangeMask|FocusChangeMask;
+        VisibilityChangeMask|FocusChangeMask|Button1MotionMask;
     window = XCreateWindow(display, panel_parent, mfw_quick ? (DisplayWidth(display,screen)-height)/2 : 0, (panel_parent_height-width)/2,
         (unsigned)height, (unsigned)width, 0, DefaultDepth(display, screen), InputOutput,
         DefaultVisual(display, screen), CWOverrideRedirect|CWBackPixel|CWEventMask, &attr);
@@ -1128,15 +1267,16 @@ int main(int argc, char **argv) {
      * reason to redraw creates a self-sustaining busy loop on the camera. */
     XSetGraphicsExposures(display, xlib.surf->gc, False);
     ctx->style.window.padding = nk_vec2(12, 8); ctx->style.window.spacing = nk_vec2(8, 5);
-    ctx->style.window.background = nk_rgb(24, 29, 33);
-    ctx->style.window.fixed_background = nk_style_item_color(nk_rgb(24, 29, 33));
-    ctx->style.button.normal = nk_style_item_color(nk_rgb(45, 53, 59));
+    ctx->style.window.background = nk_rgb(23, 24, 26);
+    ctx->style.window.fixed_background = nk_style_item_color(nk_rgb(23, 24, 26));
+    ctx->style.button.normal = nk_style_item_color(nk_rgb(39, 41, 44));
     ctx->style.button.hover = ctx->style.button.normal;
-    ctx->style.button.active = nk_style_item_color(nk_rgb(88, 111, 79));
-    ctx->style.button.text_normal = nk_rgb(234, 239, 231);
-    ctx->style.button.rounding = 4;
+    ctx->style.button.active = nk_style_item_color(nk_rgb(29, 102, 164));
+    ctx->style.button.text_normal = nk_rgb(235, 237, 240);
+    ctx->style.button.rounding = 2;
     if (initial_menu && !load_menu(initial_menu)) return 6;
     if (mfw_services) {
+        feature_snapshot();
         for (i = 0; i < item_count; i++)
             if (items[i].checkbox || !mfw_action_allowed(items[i].command)) return 6;
     }
@@ -1238,7 +1378,8 @@ int main(int argc, char **argv) {
                 }
                 continue;
             }
-            if (event.type == MotionNotify || event.type == NoExpose) continue;
+            if (event.type == NoExpose) continue;
+            if (event.type == MappingNotify) {XRefreshKeyboardMapping(&event.xmapping);continue;}
             if (trace_frames && input_dequeued < 0 &&
                 (event.type == KeyPress || event.type == KeyRelease || event.type == ButtonPress || event.type == ButtonRelease))
                 input_dequeued = now_ms();
@@ -1257,19 +1398,51 @@ int main(int argc, char **argv) {
             if (event.type == ClientMessage && (Atom)event.xclient.data.l[0] == wm_delete) close_choice();
             if (nx_panel_input_handle_s1(&panel_input, &event, request_s1_close)) continue;
             if (queue.close_requested || panel_visibility != VisibilityUnobscured) continue;
+            if (event.type == MotionNotify) {
+                if(lut_mode&&lut_reference_press){
+                    int dx=event.xmotion.y-touch_x;
+                    if(dx>=30||dx<=-30){lut_reference_press=lut_reference_original=0;lut_reference_dirty=dirty=1;}
+                }
+                if(lut_mode&&lut_edit&&nk_input_is_mouse_down(&ctx->input,NK_BUTTON_LEFT)) {
+                    nk_input_motion(ctx,event.xmotion.y,height-1-event.xmotion.x);dirty=1;
+                }
+                continue;
+            }
             if (event.type == KeyPress || event.type == KeyRelease)
                 fprintf(stderr, "PANEL_KEY type=%d code=%u symbol=0x%lx\n", event.type, event.xkey.keycode, XLookupKeysym(&event.xkey, 0));
+            if(lut_mode&&(event.type==KeyPress||event.type==KeyRelease)&&XLookupKeysym(&event.xkey,0)==XF86XK_HomePage){
+                /* X11 autorepeat emits a release/press pair with one timestamp.
+                 * One physical Fn press must cause only one view transition. */
+                if(event.type==KeyRelease){
+                    XEvent next;
+                    if(XPending(display)){XPeekEvent(display,&next);
+                        if(next.type==KeyPress&&next.xkey.keycode==event.xkey.keycode&&next.xkey.time==event.xkey.time)continue;
+                    }
+                    lut_fn_down=0;
+                }else if(!lut_fn_down){lut_fn_down=1;lut_key(XF86XK_HomePage);}
+                continue;
+            }
             if (event.type == KeyPress) {
                 KeySym key = XLookupKeysym(&event.xkey, 0);
-                /* Only standard keysyms are asserted. Camera wheel mappings need measurement. */
-                if (key == XK_Escape || key == XK_Menu) close_choice();
+                /* Samsung's main wheel uses multimedia keysyms; its events
+                 * only affect this focused panel, never the stock camera UI. */
+                if(lut_mode&&(lut_leave_dialog||lut_list_open)){lut_key(key);}
+                else if (key == XK_Escape || key == XK_Menu) {
+                    if (mfw_services && mfw_preview && !child) activate_mfw_item(-1);
+                    else if(lut_mode)lut_request_leave(mfw_menu_root?2:1);
+                    else close_choice();
+                }
                 else if (mfw_services) {
-                    if (key == XK_Right || key == XK_KP_Right) mfw_selected = (mfw_selected+1)%item_count;
-                    else if (key == XK_Left || key == XK_KP_Left) mfw_selected = (mfw_selected+item_count-1)%item_count;
-                    else if (key == XK_Down || key == XK_KP_Down) mfw_selected = (mfw_selected+(mfw_quick?1:2))%item_count;
-                    else if (key == XK_Up || key == XK_KP_Up) mfw_selected = (mfw_selected+item_count-(mfw_quick?1:2))%item_count;
+                    if (key == XK_Right || key == XK_KP_Right || key == XF86XK_ScrollUp) mfw_step(1);
+                    else if (key == XK_Left || key == XK_KP_Left || key == XF86XK_ScrollDown) mfw_step(-1);
+                    else if (key == XK_Down || key == XK_KP_Down) {
+                        if(!mfw_quick&&!mfw_preview&&!*mfw_status)activate_mfw_item(mfw_selected);
+                        else mfw_selected = (mfw_selected+(mfw_quick||mfw_preview>=3?1:2))%item_count;
+                    }
+                    else if (key == XK_Up || key == XK_KP_Up) mfw_selected = (mfw_selected+item_count-(mfw_quick||mfw_preview>=3?1:2))%item_count;
                     else if (key == XK_Return || key == XK_KP_Enter) activate_mfw_item(mfw_selected);
                 }
+                else if(lut_mode)lut_key(key);
                 else if (!menu && (key == XK_Right || key == XK_Down || key == XK_KP_Right || key == XK_KP_Down)) choose(selected+1);
                 else if (!menu && (key == XK_Left || key == XK_Up || key == XK_KP_Left || key == XK_KP_Up)) choose(selected-1);
                 else if (!menu && (key == XK_Return || key == XK_KP_Enter) && (lut_mode || !child) && count > 0) {
@@ -1280,8 +1453,11 @@ int main(int argc, char **argv) {
                     }
                 }
             }
-            if (event.type == ButtonPress && !menu && (event.xbutton.button == 4 || event.xbutton.button == 5))
-                choose(selected + (event.xbutton.button == 4 ? -1 : 1));
+            if (event.type == ButtonPress && (event.xbutton.button == 4 || event.xbutton.button == 5)) {
+                if(lut_mode)lut_key(event.xbutton.button==4?XF86XK_ScrollUp:XF86XK_ScrollDown);
+                else if(mfw_services)mfw_step(event.xbutton.button==4?1:-1);
+                else if(!menu)choose(selected + (event.xbutton.button == 4 ? -1 : 1));
+            }
             /* Touchscreens can send a tap without a preceding MotionNotify. */
             if (event.type == ButtonPress || event.type == ButtonRelease) {
                 int raw_x = event.xbutton.x;
@@ -1290,14 +1466,33 @@ int main(int argc, char **argv) {
                 nk_input_motion(ctx, event.xbutton.x, event.xbutton.y);
             }
             /* 左右滑动手势：超阈值切换选中；release 移出控件避免被当成点击 */
-            if (event.type == ButtonPress && !menu) { touch_x = event.xbutton.x; touch_active = 1; }
+            if (event.type == ButtonPress && !menu && lut_mode && selected &&!lut_list_open&&!lut_leave_dialog&&
+                event.xbutton.x >= 350 && event.xbutton.y >= 102 && event.xbutton.y < 454) {
+                int field=(event.xbutton.y-102)/44;
+                if(lut_field_supported(field)){lut_field=field;lut_edit=1;lut_category_focus=0;dirty=1;}
+            }
+            if(event.type==ButtonPress&&lut_mode&&!lut_leave_dialog&&!child&&event.xbutton.button==1&&
+               event.xbutton.x>=12&&event.xbutton.x<320&&event.xbutton.y>=108&&event.xbutton.y<288){
+                lut_reference_press=1;lut_reference_pressed_at=now_ms();lut_edit=0;
+                touch_x=event.xbutton.x;touch_active=1;
+            }
+            if(event.type==ButtonRelease&&lut_reference_press&&event.xbutton.button==1){
+                int dx=event.xbutton.x-touch_x;
+                if(dx>-30&&dx<30&&now_ms()-lut_reference_pressed_at<300)lut_reference_scene=(lut_reference_scene+1)%3;
+                lut_reference_press=lut_reference_original=0;lut_reference_dirty=dirty=1;
+            }
+            if (event.type == ButtonPress && !menu && !lut_edit &&
+                (!lut_mode || (!lut_list_open&&!lut_leave_dialog&&event.xbutton.x < 338 && event.xbutton.y >= 100 && event.xbutton.y < 288))) {
+                touch_x = event.xbutton.x; touch_active = 1;
+            }
             if (event.type == ButtonRelease && touch_active) {
                 int dx = event.xbutton.x - touch_x;
                 int step = (dx >= 0 ? dx : -dx) / 45;   /* 每 45px 切一项：滑得远切得快 */
                 touch_active = 0;
                 if (step < 1 && (dx >= 30 || dx <= -30)) step = 1;   /* 轻扫阈值 30px */
                 if (!menu && step > 0) {
-                    choose(selected + (dx < 0 ? step : -step));
+                    if(lut_mode){for(int swipe=0;swipe<step;swipe++)lut_step(dx<0?1:-1);}
+                    else choose(selected + (dx < 0 ? step : -step));
                     nk_input_motion(ctx, -10000, -10000);
                     dirty = 1;
                 }
@@ -1309,6 +1504,7 @@ int main(int argc, char **argv) {
           }
           nk_input_end(ctx);
         }
+        if(lut_mode&&lut_reference_press&&!lut_reference_original&&now_ms()-lut_reference_pressed_at>=300){lut_reference_original=1;lut_reference_dirty=dirty=1;}
         if (mfw_return_requested) { mfw_return_requested = 0; return_mfw_menu(); }
         if (mfw_open_lut && !queue.close_requested) open_mfw_lut();
         panel_check_visibility();
@@ -1353,6 +1549,8 @@ int main(int argc, char **argv) {
         if (quit) break;
         tick = now_ms(); pending = XPending(display);
         if (child) delay = 100; /* only a running backend needs periodic reaping */
+        if(lut_mode&&lut_reference_press&&!lut_reference_original&&lut_reference_pressed_at+300-tick<delay)
+            delay=lut_reference_pressed_at+300-tick;
         if (services_visible() && service_due - tick < delay) delay = service_due - tick;
         if (!child && queue.desired >= 0 && (queue.desired != queue.applied || queue.commit_requested))
             if (queue.due - tick < delay) delay = queue.due - tick;
@@ -1390,6 +1588,7 @@ int main(int argc, char **argv) {
     nx_panel_input_close_evdev(&panel_input);
     alarm(5);
     XDestroyWindow(display, window); XSync(display, False);
+    lut_save_navigation();
     if (mfw_stock_key) {
         Window target; int revert; XWindowAttributes target_attr;
         XGetInputFocus(display, &target, &revert);

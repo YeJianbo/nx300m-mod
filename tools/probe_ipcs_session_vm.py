@@ -17,7 +17,8 @@ OUT=BUILD/'arm-vm'
 PROBE=ram.PROBE[:ram.PROBE.index('request original-mode 2')]+r'''
 set -x
 operation binding-libc-apply apply --s2 --session 0 --calltrace 0 --table /mnt/mmc/identity.d4lut --look identity --strength 100
-request automatic-insert 124
+request loader-no-forced-refresh 124
+request automatic-insert 121
 operation automatic-insert-status status
 grep -q '"s2_path":1' automatic-insert-status.json
 request automatic-repeat 120
@@ -93,6 +94,9 @@ cp /mnt/mmc/panel-actions.sh "$RUNTIME/mfw-panel-actions.sh"
 cp /mnt/mmc/fn-panel-actions.sh "$RUNTIME/fn-panel-actions.sh"
 cp /mnt/mmc/gui_preview_quick_ipcs.NX300M "$RUNTIME/gui_preview.NX300M"
 cp /mnt/mmc/lut-load.sh "$RUNTIME/lut-load.sh"
+cp /mnt/mmc/lut-boot.sh "$RUNTIME/lut-boot.sh"
+/bin/sh -n /mnt/mmc/lut-boot.sh
+/bin/sh -n /mnt/mmc/mfw-services.sh
 /bin/sh -n /mnt/mmc/lut-load.sh
 /bin/sh -n /mnt/mmc/lut-panel.sh
 /bin/sh -n /mnt/mmc/lut-cycle.sh
@@ -305,6 +309,21 @@ set -e
 operation wrapper-selection-stock-enable status
 /bin/sh "$RUNTIME/smartfilter-preview.sh" restore > wrapper-fast-stop.json 2> wrapper-fast-stop.stderr
 operation wrapper-fast-status status
+# Startup restores the saved card choice despite the explicit-stock RAM
+# session, without opening nxui. First Still only, then the saved preview flag.
+export NX_LUT_VM_PID="$pid"
+/bin/sh "$RUNTIME/lut-boot.sh" > boot-still.txt 2> boot-still.stderr
+NX300M_MOD_ROOT=/perf "$ENGINE" status > boot-still-selection.txt
+grep -q 'current-mono/table.d4lut' boot-still-selection.txt
+NX300M_MOD_ROOT=/perf "$ENGINE" save-preview 1
+/bin/sh "$RUNTIME/lut-boot.sh" > boot-preview.txt 2> boot-preview.stderr
+request boot-still-forward 113
+cp /tmp/lut-switch-still.bin boot-still.bin
+request boot-preview-render 100
+operation boot-preview-status status
+/bin/sh "$RUNTIME/smartfilter-preview.sh" stop > boot-stop.txt 2> boot-stop.stderr
+request boot-still-disabled-fixture 114
+unset NX_LUT_VM_PID
 /bin/sh "$RUNTIME/smartfilter-preview.sh" test-monochrome-timing > wrapper-arm.json 2> wrapper-arm.stderr
 wait_kdd_arm wrapper-arm.json
 check_waiter_has_no_leases
@@ -509,6 +528,8 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
                         ('fn-gui_mfw.NX300M',ROOT/'mod/deployment/mfw/fn-gui_mfw.NX300M'),
                         ('gui_debug.NX300M',ROOT/'mod/deployment/mfw/gui_debug.NX300M'),
                         ('lut-load.sh',ROOT/'mod/deployment/mfw/lut-load.sh'),
+                        ('lut-boot.sh',ROOT/'mod/deployment/mfw/lut-boot.sh'),
+                        ('mfw-services.sh',ROOT/'mod/deployment/mfw/services.sh'),
                         ('lut-panel.sh',ROOT/'mod/deployment/mfw/lut-panel.sh'),
                         ('lut-cycle.sh',ROOT/'mod/deployment/mfw/lut-cycle.sh'),
                         ('fn-panel.sh',ROOT/'mod/deployment/mfw/fn-panel.sh'),
@@ -553,8 +574,8 @@ def verify(guest):
     assert repeated['s2_path']==1 and repeated['refresh_requests']==1,repeated
     assert switched['look_id']=='monochrome' and switched['s2_path']==1 and switched['refresh_requests']==1,switched
     assert removed['s2_path']==0 and removed['refresh_requests']==removed['refresh_dispatches']==2,removed
-    assert full['s2_path']==0 and full['refresh_requests']==4 and full['refresh_error']!=0,full
-    assert retry['s2_path']==1 and retry['refresh_requests']==5 and retry['refresh_dispatches']==3 and retry['refresh_error']==0,retry
+    assert full['s2_path']==0 and full['refresh_requests']==3 and full['refresh_error']!=0,full
+    assert retry['s2_path']==1 and retry['refresh_requests']==4 and retry['refresh_dispatches']==3 and retry['refresh_error']==0,retry
     baseline=(guest/'baseline.yuv').read_bytes()
     assert baseline==(guest/'candidate.yuv').read_bytes()==(guest/'return-baseline.yuv').read_bytes()
     for label in ['baseline-trace','returned-trace','stopped-trace']:
@@ -597,6 +618,10 @@ def verify(guest):
     assert 'PREVIEW-WARNING' not in (guest/'wrapper-selection-sync.stderr').read_text(encoding='utf-8')
     assert 'PREVIEW-WARNING' not in (guest/'wrapper-selection-stock.stderr').read_text(encoding='utf-8')
     assert rows('still-engine-ready')[0]['ready'] is True
+    assert 'LUT_BOOT restored preview=0' in (guest/'boot-still.txt').read_text()
+    assert 'LUT_BOOT restored preview=1' in (guest/'boot-preview.txt').read_text()
+    assert (guest/'boot-still.bin').read_bytes()==(OUT/'source-files/monochrome.d4lut').read_bytes()
+    assert rows('boot-preview-status')[0]['look_id']=='current-mono'
     assert len({(guest/f'switch-{i}.saved-inode').read_text(encoding='utf-8') for i in (1,2,3)})==1
     for i,look in enumerate(('nx300-hard-mono','nx300-fuji-classic-chrome','nx300-hard-mono'),1):
         tag=f'switch-{i}'
@@ -710,7 +735,7 @@ def verify(guest):
     assert not stopped['enabled'] and not after_switch['enabled'] and stopped['requested_generation']==after_switch['requested_generation']
     assert '取景预览已关闭；照片 LUT 保留' in (guest/'preview-only-stop.json').read_text(encoding='utf-8')
     return dict(passed=True,abi=7,actual_ram_loader=True,actual_got_hooks=20,mfw_userspace_verified=True,
-                loader_wakes_controller_without_first_frame=True,
+                loader_does_not_force_topology_refresh=True,
                 admission_file_cache_reused_across_commands=True,
                 admission_new_process_requires_full_hash=True,
                 admission_cost_arm_fixture=dict(cold=cold,warm=warm,new_process=restarted),
@@ -742,6 +767,7 @@ def verify(guest):
                 default_preview_enables_session_with_diagnostics_off=True,
                 normal_wrapper_stop_releases_session=True,
                 current_preview_installs_still_before_first_frame=True,
+                boot_restores_still_and_saved_preview_without_menu=True,
                 active_stream_switch_capture_and_off_checked=True,
                 continuous_stream_samples=streams,
                 failed_preview_sync_is_reported_without_reverting_choice=True,

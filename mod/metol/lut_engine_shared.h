@@ -16,6 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "mod_paths.h"
+#include "lut_tune.h"
 #include "../../runtime/lut_ram_blob.h"
 #include "../../runtime/lut_ram_blob_build.h"
 
@@ -85,6 +86,21 @@ static inline int nx_lut_validate_look(const char *id,char *path,int *composed_a
     *composed_available=1;
     return nx_lut_file(relative,variant) && nx_lut_table_valid(variant);
 }
+/* Resolve cached output tables back to their catalogue identity. Selection
+ * syntax and the existing RAM hook ABI do not change. */
+static inline int nx_lut_selection_id(const char *selected,char id[64],struct nx_lut_tune *t) {
+    const char *root=nx_lut_data_root();if(!root)return 0;
+    size_t n=strlen(root);if(strncmp(selected,root,n)||strncmp(selected+n,"/looks/",7))return 0;
+    const char *key=selected+n+7,*end=strchr(key,'/');if(!end||end-key<1||end-key>63||strcmp(end,"/table.d4lut"))return 0;
+    memcpy(id,key,(size_t)(end-key));id[end-key]=0;
+    if(!nx_lut_id_valid(id))return 0;
+    memset(t,0,sizeof *t);
+    if(strncmp(id,"nx-tune-",8))return 1;
+    char relative[128],file[256],base[64];unsigned strength;
+    snprintf(relative,sizeof relative,"looks/%s/tune.txt",id);
+    if(!nx_lut_file(relative,file)||!nx_tune_read(file,base,t,&strength)||!nx_lut_id_valid(base)||!strncmp(base,"nx-tune-",8))return 0;
+    strcpy(id,base);return 1;
+}
 /* looks.txt uses the same 9-column format as NXUI. Refuse ambiguous IDs and
  * malformed metadata instead of letting CLI and HTTP select different rows. */
 static inline int nx_lut_catalog_read(struct nx_lut_look *looks,int *count,int verify_tables) {
@@ -120,6 +136,7 @@ static inline int nx_lut_catalog_index(struct nx_lut_look *looks,int *count) {
 static inline int nx_lut_catalog(struct nx_lut_look *looks,int *count) {
     return nx_lut_catalog_read(looks,count,1);
 }
+#include "lut_tune_cache.h"
 static inline int nx_lut_uint(const char *value,unsigned int *out) {
     if (!*value) return 0;
     unsigned int number=0;
@@ -325,6 +342,21 @@ static inline int nx_lut_saved_path(char *path) {
     if (!nx_lut_root(root)) return 0;
     return snprintf(path,PATH_MAX,"%s/.state/lut-choice",root)<PATH_MAX;
 }
+static inline int nx_lut_preview_preference(unsigned enabled) {
+    const char *root=nx_lut_data_root();char directory[PATH_MAX],file[PATH_MAX];struct stat st;
+    if(!root||enabled>1)return 0;
+    if(snprintf(directory,sizeof directory,"%s/.state",root)>=(int)sizeof directory||
+       snprintf(file,sizeof file,"%s/lut-preview",directory)>=(int)sizeof file)return 0;
+    if((mkdir(directory,0700)&&errno!=EEXIST)||lstat(directory,&st)||!S_ISDIR(st.st_mode))return 0;
+    int fd=open(file,O_RDWR|O_CREAT|O_NOFOLLOW,0600);if(fd<0)return 0;
+    char data[2]={(char)('0'+enabled),'\n'},old[3];
+    ssize_t n=read(fd,old,sizeof old);if(n==2&&!memcmp(data,old,2)){close(fd);return 1;}
+    int ok=!ftruncate(fd,0)&&lseek(fd,0,SEEK_SET)==0&&write(fd,data,2)==2&&!fsync(fd);
+    if(close(fd))ok=0;
+    fd=open(directory,O_RDONLY|O_DIRECTORY);if(fd<0)return 0;
+    if(fsync(fd))ok=0;
+    close(fd);return ok;
+}
 static inline int nx_lut_saved_stock(const char *file) {
     FILE *in=fopen(file,"r");if (!in) return 0;
     int valid=fgetc(in)=='0' && fgetc(in)=='\n' && fgetc(in)==EOF && !ferror(in);
@@ -476,13 +508,16 @@ static inline int nx_lut_restore_selection(void) {
     }
     if (nx_lut_saved_stock(saved)) return nx_lut_mark_session()?0:4;
     if (!nx_lut_read_selection_with_strength(saved,&gen,path,&strength)) return 5;
+    char id[64];struct nx_lut_tune tune;
+    if(!nx_lut_selection_id(path,id,&tune))return 5;
     struct nx_lut_look looks[NX_LUT_MAX_LOOKS];int count=0;
     int result=nx_lut_catalog_index(looks,&count);if (result) return result;
     for (int i=0;i<count;i++) {
         char actual[256];int composed;
-        int n=snprintf(actual,sizeof actual,"%s/looks/%s/table.d4lut",nx_lut_data_root(),looks[i].id);
-        if (n>0 && n<(int)sizeof actual && !strcmp(path,actual) && nx_lut_validate_look(looks[i].id,actual,&composed))
+        if (!strcmp(id,looks[i].id) && nx_lut_validate_look(id,actual,&composed)) {
+            int result=nx_tune_cache(id,&tune,strength,actual);if(result)return result;
             return nx_lut_stage_with_strength(actual,strength,NULL);
+        }
     }
     return 5;
 }

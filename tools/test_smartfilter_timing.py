@@ -123,7 +123,7 @@ class TimingTest(unittest.TestCase):
         self.assertEqual(report["outcomes"]["frame_render_success"], 60)
         for group in report["frame_groups"]:
             self.assertEqual(group["metrics"]["preview"],
-                             {"n": 20, "p50_ns": 100, "p90_ns": 180, "p95_ns": 190, "max_ns": 200})
+                             {"n": 20, "p50_ns": 100, "p90_ns": 180, "p95_ns": 190, "p99_ns": 200, "max_ns": 200})
             self.assertEqual(group["key"]["measurement_source"], "vm")
         markdown = sf.to_markdown(report)
         self.assertIn("## 1.", markdown)
@@ -566,7 +566,7 @@ class TimingTest(unittest.TestCase):
         self.assertEqual(group["count"], 3)
         self.assertEqual(group["metrics"]["wall"]["n"], 3)
         self.assertEqual(group["metrics"]["entry_interval"],
-                         {"n": 2, "p50_ns": 20, "p90_ns": 30, "p95_ns": 30, "max_ns": 30})
+                         {"n": 2, "p50_ns": 20, "p90_ns": 30, "p95_ns": 30, "p99_ns": 30, "max_ns": 30})
         self.assertEqual(group["key"]["tid"], 21)
         self.assertEqual(group["key"]["epoch"], 2)
         self.assertIn("record-entry interval", sf.to_markdown(report))

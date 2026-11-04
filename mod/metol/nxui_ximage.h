@@ -33,6 +33,7 @@ typedef struct XSurface {
     int left, top, right, bottom;
 } XSurface;
 static struct { Display *dpy; struct nk_context ctx; XSurface *surf; } xlib;
+struct nx_cpu_image { unsigned w,h;const uint32_t *pixels; };
 
 static int nx_cpu_rune(const char *text, int size, nk_rune *rune) {
     int length = nk_utf_decode(text, rune, size);
@@ -216,6 +217,16 @@ static void nk_xlib_render(Drawable target, struct nk_color clear) {
     } break;
     case NK_COMMAND_TRIANGLE_FILLED: nx_cpu_triangle(s,(const void *)cmd);break;
     case NK_COMMAND_TEXT: nx_cpu_text(s,(const void *)cmd);break;
+    case NK_COMMAND_IMAGE: {
+        const struct nk_command_image *c=(const void *)cmd;
+        const struct nx_cpu_image *im=c->img.handle.ptr;
+        if(!im||!im->pixels||!im->w||!im->h||im->w>800||im->h>800)break;
+        for(unsigned y=0;y<c->h;y++)for(unsigned x=0;x<c->w;x++) {
+            int dx=c->x+(int)x,dy=c->y+(int)y;
+            if(dx<s->left||dy<s->top||dx>=s->right||dy>=s->bottom)continue;
+            s->pixels[(size_t)dy*s->w+dx]=im->pixels[(size_t)(y*im->h/c->h)*im->w+x*im->w/c->w];
+        }
+    } break;
     default:
         fprintf(stderr,"PANEL_PRESENT unsupported_command=%d\n",cmd->type);s->present_failed=1;break;
     }

@@ -1,0 +1,30 @@
+pentax-m-50-17|smc PENTAX-M 50mm F1.7|50|50
+pentax-f-70-200|PENTAX-F 70-200mm F4-5.6|70|200
+pentax-fa-100-300|smc PENTAX-FA 100-300mm F4.7-5.8|100|300
+pentax-takumar-55-18|Super-Takumar 55mm F1.8|55|55
+contax-planar-50-14|Contax Carl Zeiss Planar 50mm F1.4 T*|50|50
+contax-distagon-28-28|Contax Carl Zeiss Distagon 28mm F2.8 T*|28|28
+contax-sonnar-85-28|Contax Carl Zeiss Sonnar 85mm F2.8 T*|85|85
+czj-tessar-50-28|Carl Zeiss Jena Tessar 50mm F2.8|50|50
+czj-flektogon-35-24|Carl Zeiss Jena Flektogon 35mm F2.4|35|35
+leica-summicron-m-35|Leica Summicron-M 35mm F2 ASPH|35|35
+leica-summicron-r-50|Leica Summicron-R 50mm F2|50|50
+leica-elmarit-r-90|Leica Elmarit-R 90mm F2.8|90|90
+canon-fd-50-14|Canon FD 50mm F1.4 S.S.C.|50|50
+canon-fd-35-20|Canon FD 35mm F2 Concave|35|35
+minolta-md-50-14|Minolta MD Rokkor 50mm F1.4|50|50
+nikon-ais-50-14|Nikon AI-S Nikkor 50mm F1.4|50|50
+olympus-om-50-18|Olympus OM-System F.Zuiko 50mm F1.8|50|50
+helios-44-2|Helios-44-2 58mm F2 八羽怪|58|58
+ttartisan-35-14|TTArtisan 35mm F1.4|35|35
+ttartisan-50-12|TTArtisan 50mm F1.2|50|50
+7artisans-35-12|7Artisans 35mm F1.2 II|35|35
+7artisans-50-095|7Artisans 50mm F0.95|50|50
+brightinstar-50-095|Brightin Star 50mm F0.95 星耀|50|50
+samsung-nx-30-20|SAMSUNG NX 30mm F2.0 Pancake|30|30
+samsung-nx-45-18|SAMSUNG NX 45mm F1.8 2D/3D|45|45
+samsung-nx-16-24|SAMSUNG NX 16mm F2.4 Pancake|16|16
+samsung-nx-20-28|SAMSUNG NX 20mm F2.8 Pancake|20|20
+samsung-nx-85-14|SAMSUNG NX 85mm F1.4 ED SSA|85|85
+samsung-nx-18-55|SAMSUNG NX 18-55mm F3.5-5.6 OIS|18|55
+samsung-nx-50-200|SAMSUNG NX 50-200mm F4-5.6 ED OIS|50|200

@@ -269,6 +269,15 @@ case $command in
         printf '取景预览已关闭；照片 LUT 保留。\n' ;;
     stock|enable-s2-stock) printf 'S2 原样请求已提交；没有应用非零 LUT。\n' ;;
 esac
+case $command in
+    enable-s2) preference=1 ;;
+    stop|restore) preference=0 ;;
+    *) preference= ;;
+esac
+if [ -n "$preference" ]; then
+    "$HERE/bin/lut_engine.arm" save-preview "$preference" ||
+        printf 'PERSIST-WARNING 预览已切换，但开机偏好未保存。\n' >&2
+fi
 if [ "$open_diagnostic:$command" = 1:test-monochrome-timing ]; then
     # Publish the backend before transferring the wrapper's preview lease.
     # The observer waits for a committed call after the menu returns.

@@ -453,7 +453,7 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     unsigned diag_epoch=0; int status_pending=0,export_pending=0,probe_save_pending=0,timing_attempted=0,probe_attempted=0;
     unsigned allocated_work=0,allocated_region=0;
 #ifdef NX_SFR_SESSION
-    int session_control_attempted=0,refresh_control_attempted=0;
+    int session_control_attempted=0;
 #endif
     struct stopped *allocation_leader=NULL;
     struct kept_timing *kept=NULL;
@@ -656,39 +656,12 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     }
 #endif
     { unsigned paused=0; if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,control_pause),&paused,4)) goto done; }
-#ifdef NX_SFR_SESSION
-    /* A plain liveview need not run the hooked node callback yet. Publish a
-     * single native item-change notification while the target is stopped;
-     * its controller performs the normal stop/drain/restart after detach.
-     * Changing only the table keeps the existing topology and sends nothing. */
-    unsigned wanted=cfg.enabled&&cfg.strength&&cfg.insert_enabled&&!runtime.s2_fault&&!runtime.bridge.fault;
-    if(cfg.profile==NX_SFR_S2&&!cfg.probe_once&&!runtime.refresh_pending&&
-       !runtime.refresh_queued&&wanted!=runtime.s2_path) {
-        int queue=-1; unsigned queued=1,requests=runtime.refresh_requests+1; int error=0;
-        if(!cfg.capture_queue||!read_exact(t->mem,&queue,sizeof queue,(unsigned)cfg.capture_queue)||queue<0) goto done;
-        refresh_control_attempted=1;
-        if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_queued),&queued,4)||
-           !poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_requests),&requests,4)||
-           !poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_error),&error,4)) goto done;
-        unsigned message[4]={1,0x02010034,0x39,0};
-        if(msgsnd(queue,message,12,IPC_NOWAIT)) {
-            fprintf(stderr,"Native refresh notification failed: errno=%d; selection rolled back.\n",errno); goto done;
-        }
-        fprintf(stderr,"Native refresh queued: generation=%u topology=%u; controller applies after detach.\n",cfg.generation,wanted);
-    }
-#endif
     pause_owner.present=0;
     runtime.control_pause=0; runtime.timing=armed; runtime.probe=probe;
     installed=installing; status_pending=1; rc=0;
 done:
     if(rc) {
 #ifdef NX_SFR_SESSION
-        if(refresh_control_attempted) {
-            unsigned queued=runtime.refresh_queued,requests=runtime.refresh_requests;
-            if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_queued),&queued,4)||
-               !poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_requests),&requests,4)||
-               !poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_error),&runtime.refresh_error,4)) transaction_poisoned=1;
-        }
         if(session_control_attempted) {
             unsigned stop=runtime.session.external_stop;
             if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,session.external_stop),&stop,4)||

@@ -70,6 +70,12 @@ if [ "$result" -ne 0 ]; then
     exit "$result"
 fi
 
+# Restore saved imaging controls outside the HTTP loop and panel launch path.
+# This worker exits after one bounded attempt; it is not a resident service.
+if [ -f "$ROOT/lut-boot.sh" ] && [ ! -L "$ROOT/lut-boot.sh" ]; then
+    /bin/sh "$ROOT/lut-boot.sh" </dev/null >> "$STATE/lut-boot.log" 2>&1 7>&- &
+fi
+
 inspect_remote() {
     record_alive || return 0
     printf '\n== Owned remote process %s ==\n' "$REC_PID"

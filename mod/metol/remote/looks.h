@@ -85,11 +85,12 @@ static void lk_response(struct mg_connection *c,int code,struct nx_lut_look *loo
     int exists=access(NX_LUT_SELECTION,F_OK)==0;
     int parsed=exists && nx_lut_read_selection_with_strength(NX_LUT_SELECTION,&generation,selected_path,&strength) && generation;
     int selected=-1;
+    char selected_id[64]="";struct nx_lut_tune tune={{0}};
+    int identified=parsed && nx_lut_selection_id(selected_path,selected_id,&tune);
     if (parsed) for (int i=0;i<count;i++) {
-        char path[256];snprintf(path,sizeof path,"%.160s/looks/%.63s/table.d4lut",configured,looks[i].id);
-        if (!strcmp(path,selected_path)) { selected=i;break; }
+        if (identified && !strcmp(selected_id,looks[i].id)) { selected=i;break; }
     }
-    int selection_valid=!exists || (selected>=0 && looks[selected].table_valid);
+    int selection_valid=!exists || (selected>=0 && looks[selected].table_valid && nx_lut_table_valid(selected_path));
     struct lk_observed observed;int observed_valid=ready && lk_observe(&observed,pid);
     int matches=observed_valid && (exists?(parsed && observed.generation==generation && observed.strength==strength && !strcmp(observed.path,selected_path)):(!observed.active && !*observed.path));
     const char *stage=!ready?"hook-unavailable":!selection_valid?"invalid-selection":!exists?(matches && !strcmp(observed.stage,"stock")?"stock":"stock-restore-awaiting-stock-call"):matches?observed.stage:"staged-awaiting-stock-call";
@@ -167,7 +168,9 @@ static void lk_request(struct mg_connection *c,struct http_message *h,int action
         if (index<0) { close(lock);reply(c,404,"{\"error\":\"id is not in deployed looks.txt\"}");return; }
         char path[256];int composed;
         if (!looks[index].table_valid || !nx_lut_validate_look(id,path,&composed)) { close(lock);reply(c,422,"{\"error\":\"look table is missing, outside root, or invalid\"}");return; }
-        result=nx_lut_stage_with_strength(path,strength,NULL);
+        struct nx_lut_tune tune={{0}};nx_tune_load(root,id,&tune,NULL);
+        result=nx_tune_cache(id,&tune,strength,path);
+        if(!result)result=nx_lut_stage_with_strength(path,strength,NULL);
     } else if (action==2) result=nx_lut_stock();
     if (result) { close(lock);reply(c,500,"{\"error\":\"could not stage LUT selection\",\"mutation_may_have_been_applied\":true}");return; }
     if (action) {

@@ -1,8 +1,5 @@
 button|LUT 滤镜|lut
-button|开启取景预览 · 当前 LUT|preview-s2-enable
-button|关闭取景预览 · 照片保留|preview-stop
-button|手机连接信息|network-info
-button|原厂菜单|menu
-button|原厂相册|gallery
-button|调试与诊断|debug
-button|退出面板|close
+button|镜头管理|lenses
+button|曝光增强|exposure
+button|手机连接|connection
+button|系统设置|settings

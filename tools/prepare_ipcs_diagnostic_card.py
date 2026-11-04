@@ -19,7 +19,7 @@ def prepare(*, lut_method=DEFAULT_METHOD):
     vm = BASE/'arm-vm'
     checked = json.loads((vm/'report.json').read_text(encoding='utf-8'))
     required = ('passed', 'private_vm_stopped', 'button_wrapper_arms_real_session_calltrace',
-                'loader_wakes_controller_without_first_frame',
+                'loader_does_not_force_topology_refresh',
                 'admission_file_cache_reused_across_commands',
                 'admission_new_process_requires_full_hash',
                 'native_stop_callback_and_memory_matching_executed',
@@ -47,6 +47,7 @@ def prepare(*, lut_method=DEFAULT_METHOD):
                 'default_preview_enables_session_with_diagnostics_off',
                 'normal_wrapper_stop_releases_session',
                 'current_preview_installs_still_before_first_frame',
+                'boot_restores_still_and_saved_preview_without_menu',
                 'active_stream_switch_capture_and_off_checked',
                 'failed_preview_sync_is_reported_without_reverting_choice',
                 'control_cancel_reopens_admission_and_detaches',
@@ -96,10 +97,14 @@ def prepare(*, lut_method=DEFAULT_METHOD):
         raise RuntimeError('Panel differs from its checked ARM event-loop fix')
     selection = ROOT/'outputs/performance/lut-menu-entry/selection-vm/report.json'
     selection_checked = json.loads(selection.read_text(encoding='utf-8'))
+    tuning_checked=json.loads((ROOT/'outputs/review/menu-toggle-width/tuning-arm/report.json').read_text(encoding='utf-8'))
+    if not tuning_checked.get('passed'):
+        raise RuntimeError('Native ARM tuning verification is incomplete')
     if (not all(selection_checked.get(key) is True for key in ('passed', 'private_vm_stopped',
                  'browsing_waits_for_confirmation', 'only_final_choice_submitted_once',
                  'full_catalogue_keyboard_and_touch_select_mono', 'off_preview_explains_selection_required',
                  'direct_launcher_does_not_call_adapter_or_restore_selection', 'saved_choice_visible_without_camera_mutation'))
+            or not selection_checked.get('inline_tuning_persistence_favorites_and_reference_checked')
             or hashlib.sha256(panel_binary).hexdigest() != selection_checked.get('candidate_sha256')
             or hashlib.sha256((ROOT/'mod/deployment/mfw/lut-panel.sh').read_bytes()).hexdigest() != selection_checked.get('lut_panel_sha256')):
         raise RuntimeError('Panel differs from its checked native ARM LUT selection')
@@ -128,12 +133,20 @@ def prepare(*, lut_method=DEFAULT_METHOD):
             raise RuntimeError('Diagnostic differs from checked ARM bytes: '+target)
         package['nx300m-mod/'+target] = data
     package['nx300m-mod/bin/nxui.arm'] = panel_binary
+    package['nx300m-mod/lenses.txt'] = (ROOT/'mod/deployment/mfw/lenses.txt').read_bytes()
+    package['nx300m-mod/REFERENCE_IMAGES.txt'] = (ROOT/'mod/metol/assets/README.md').read_bytes()
     package['nx300m-mod/bin/nx-remote-controller.arm'] = (ROOT/'outputs/metol/remote/nx-remote-controller.arm').read_bytes()
     for target, source in (('mfw-panel.sh','fn-panel.sh'), ('lut-load.sh','lut-load.sh'),
+                           ('lut-boot.sh','lut-boot.sh'), ('mfw-services.sh','services.sh'),
                            ('lut-panel.sh','lut-panel.sh'), ('lut-cycle.sh','lut-cycle.sh'),
                            ('fn-panel/mfw-panel-actions.sh','fn-panel-actions.sh')):
         data = (ROOT/'mod/deployment/mfw'/source).read_bytes()
-        if data != (vm/'source-files'/source).read_bytes():
+        checked_source = 'mfw-services.sh' if source == 'services.sh' else source
+        if source=='lut-cycle.sh':
+            checked_cycle=tuning_checked.get('tuned_favorite_outside_short_cycle_checked') and hashlib.sha256(data).hexdigest()==tuning_checked.get('lut_cycle_sha256')
+        else:
+            checked_cycle=data == (vm/'source-files'/checked_source).read_bytes()
+        if not checked_cycle:
             raise RuntimeError('LUT/menu wrapper differs from its ARM check: '+source)
         package['nx300m-mod/'+target] = data
     for source in sorted((still/'compat').glob('blob-*.bin')):
@@ -198,6 +211,7 @@ def deploy(package, report, serial, select_look=None):
                 if name != 'PREVIEW_QUICK_PANEL']
     extra = {name.removeprefix('nx300m-mod/') for name in package
              if not name.endswith('.md') and not name.startswith('nx300m-mod/looks/')
+             and not name.startswith('nx300m-mod/.state/')
              and name != 'nx300m-mod/looks.txt'}
     for name in set(manifest) | extra:
         parts = PurePosixPath(name)

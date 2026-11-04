@@ -11,6 +11,7 @@ import time
 import arm_vm
 import probe_menu_startup_vm as vm
 from probe_menu_entry_vm import collect
+from probe_lut_selection_vm import TAP_DRIVER
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT/'outputs/performance/menu-event-loop/lut-control-repair'
@@ -23,7 +24,7 @@ until /perf/close.arm ping; do
 done
 /perf/close.arm stock-parent > /perf/stock-parent.log 2>&1 &
 stock=$!
-trap 'kill "$stock" 2>/dev/null || :' EXIT
+trap 'result=$?; if [ "$result" != 0 ] && [ -f /perf/normal-menu.log ]; then cat /perf/normal-menu.log; fi; kill "$stock" 2>/dev/null || :' EXIT
 attempt=0
 until [ -s /perf/stock-parent.ready ]; do
     attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
@@ -63,6 +64,7 @@ for variant in baseline current dry; do
         attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
     done
     /perf/close.arm key Return
+    if [ "$variant" != baseline ]; then /perf/close.arm key Menu; fi
     wait "$panel"
     grep '^EXIT ' /perf/$variant.log
 done
@@ -77,7 +79,8 @@ until grep -q '^FIRST_FRAME ' /perf/off.log; do
     kill -0 "$panel" || { cat /perf/off.log; exit 1; }
     attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
 done
-/perf/close.arm key Return
+/perf/close.arm tap 160 26
+/perf/close.arm key Menu
 wait "$panel"
 grep -q '^disable$' /perf/off-action.txt
 grep -q 'LUT_DISABLED' /perf/off.log
@@ -99,6 +102,7 @@ done
 /perf/close.arm key Right
 /rescue/busybox usleep 400000
 [ ! -s /perf/actions.txt ]
+/perf/close.arm key Return
 /perf/close.arm key Menu
 wait "$panel"
 [ "$(cat /perf/chosen.txt)" = test-color ]
@@ -115,6 +119,7 @@ until grep -q '^FIRST_FRAME ' /perf/long.log; do
     kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
 done
 /perf/close.arm key Return
+/perf/close.arm key Menu
 wait "$panel"
 [ ! -e /perf/backend-terminated.txt ]
 # Exercise the restored main menu and diagnostic page with native ARM input.
@@ -123,6 +128,7 @@ cat > /perf/mod/mfw-panel-actions.sh <<'ACTIONS'
 printf '%s\n' "$1" >> /perf/menu-actions.txt
 printf '取景预览已关闭；照片 LUT 保留。\n'
 ACTIONS
+cp /perf/engine.sh /perf/mod/bin/lut_engine.arm
 NX_STATE_DIR=/tmp/panel-menu /perf/mod/bin/nxui.arm --mfw-services --root /perf/mod \
     --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
     --font-metadata /perf/mod/fonts/mfw-font.charset > /perf/normal-menu.log 2>&1 &
@@ -132,19 +138,40 @@ until grep -q '^FIRST_FRAME ' /perf/normal-menu.log; do
     kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
 done
 [ ! -e /perf/menu-actions.txt ]
-for key in Down Down Down Return; do /perf/close.arm key "$key"; done
+# A dial detent only changes focus. Check both root and feature-list pages.
+for key in XF86ScrollUp Return XF86ScrollUp XF86ScrollDown Menu; do /perf/close.arm key "$key"; done
 attempt=0
-until grep -q 'MENU file=.*/gui_debug.NX300M items=8' /perf/normal-menu.log; do
+until grep -q 'MFW_SELECT page=3 index=0 action=lens-info' /perf/normal-menu.log &&
+      [ "$(grep -c 'MENU file=.*/gui_mfw.NX300M items=5' /perf/normal-menu.log)" -eq 2 ]; do
+    kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 50000
+done
+grep -q 'MFW_SELECT page=0 index=1 action=lenses' /perf/normal-menu.log
+grep -q 'MFW_SELECT page=3 index=1 action=lens-select' /perf/normal-menu.log
+grep -q 'MFW_SELECT page=3 index=0 action=lens-info' /perf/normal-menu.log
+[ ! -e /perf/menu-actions.txt ]
+for key in XF86ScrollUp XF86ScrollUp XF86ScrollUp XF86ScrollUp Return XF86ScrollUp XF86ScrollUp XF86ScrollUp XF86ScrollUp Return; do /perf/close.arm key "$key"; done
+attempt=0
+until grep -q 'MENU file=.*/gui_debug.NX300M items=7' /perf/normal-menu.log; do
     kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
 done
-for key in Down Down Down Right Return; do /perf/close.arm key "$key"; done
+for key in Menu Menu; do /perf/close.arm key "$key"; done
 attempt=0
-until [ "$(grep -c 'MENU file=.*/gui_mfw.NX300M items=8' /perf/normal-menu.log)" -eq 2 ]; do
+until [ "$(grep -c 'MENU file=.*/gui_mfw.NX300M items=5' /perf/normal-menu.log)" -eq 3 ]; do
     kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
 done
-for key in Down Return; do /perf/close.arm key "$key"; done
+for key in Return; do /perf/close.arm key "$key"; done
+attempt=0
+until grep -q '^LUT_PAGE ' /perf/normal-menu.log; do
+    kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+done
+/perf/close.arm tap 310 26
+attempt=0
+until grep -q '^BACKEND kind=5 ok=1' /perf/normal-menu.log; do
+    kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+done
+for key in Menu Menu; do /perf/close.arm key "$key"; done
 wait "$panel"
-[ "$(cat /perf/menu-actions.txt)" = preview-stop ]
+[ "$(cat /perf/menu-actions.txt)" = preview-toggle ]
 kill "$stock"
 trap - EXIT
 '''
@@ -183,7 +210,8 @@ def verify(out):
                 dry_commit_exits_without_wait=True, lut_off_invokes_disable=True,
                 menu_close_retains_new_choice_without_legacy_restore=True,
                 long_lut_control_finishes_without_group_kill=True,long_control_elapsed_ms=elapsed,
-                normal_menu_debug_navigation_and_preview_stop=True)
+                normal_menu_debug_navigation_and_preview_stop=True,
+                root_and_feature_lists_accept_native_wheel_without_auto_action=True)
 
 
 def main():
@@ -208,6 +236,8 @@ def main():
     vm.OUT = OUT
     vm.BASELINE_OVERLAY = recorded
     vm.PROBE = PROBE
+    vm.DRIVER = vm.DRIVER.replace('    if(argc==2) {', TAP_DRIVER+'\n    if(argc==2) {', 1)
+    vm.DRIVER = vm.DRIVER.replace('    XEvent event={0};', '    if(capture_only){XCloseDisplay(d);return 0;}\n    XEvent event={0};', 1)
     vm.DRIVER = vm.DRIVER.replace('XStringToKeysym("Menu")',
                                 'XStringToKeysym(argc==3 ? argv[2] : "Menu")')
     vm.prepare()

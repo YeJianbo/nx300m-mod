@@ -4,7 +4,7 @@ set -eu
 set -f
 [ "$#" -eq 1 ] || exit 64
 case $1 in
-    status|network-info|disable-autostart|enable-autostart|preview-enable|preview-s2-enable|preview-probe-once|preview-identity|preview-monochrome|preview-monochrome-timing|preview-sync|preview-stop|preview-restore|preview-status|preview-diag-export) action=$1 ;;
+    status|network-info|disable-autostart|enable-autostart|preview-toggle|preview-enable|preview-s2-enable|preview-probe-once|preview-identity|preview-monochrome|preview-monochrome-timing|preview-sync|preview-stop|preview-restore|preview-status|preview-diag-export) action=$1 ;;
     *) exit 64 ;;
 esac
 . "${NX300M_MOD_ROOT:-/mnt/mmc/nx300m-mod}/common.sh"
@@ -44,7 +44,7 @@ fi
 # obtains them after READY/ACK; no wait for apply or export belongs to the UI.
 continuous=0
 case $action in
-    preview-s2-enable|preview-enable|preview-monochrome|preview-monochrome-timing|preview-sync)
+    preview-toggle|preview-s2-enable|preview-enable|preview-monochrome|preview-monochrome-timing|preview-sync)
         # Capability belongs to the installed backend, not a visible test button.
         script=$ROOT/smartfilter-preview.sh
         if [ -f "$script" ] && [ ! -L "$script" ] &&
@@ -53,7 +53,7 @@ case $action in
         fi ;;
 esac
 case $action in
-    preview-enable|preview-monochrome|preview-monochrome-timing|preview-sync)
+    preview-toggle|preview-enable|preview-monochrome|preview-monochrome-timing|preview-sync)
         if [ "$action" = preview-enable ] || [ "$continuous" != 1 ]; then
             printf '探针包拒绝 S1、持续和非零 LUT 入口；请使用独立连续 S2 候选。\n' >&2
             exit 1
@@ -85,6 +85,19 @@ case $action in
         script=$ROOT/smartfilter-preview.sh
         [ -r "$script" ] && [ ! -L "$script" ] || fail 'preview script unavailable'
         case $action in
+            preview-toggle)
+                # Same acknowledged RAM marker used by LUT selection sync;
+                # no ptrace/status query belongs to a menu toggle.
+                backend=
+                if [ -e /var/run/nx300m-preview-backend ]; then
+                    [ -f /var/run/nx300m-preview-backend ] && [ ! -L /var/run/nx300m-preview-backend ] || fail 'invalid preview backend marker'
+                    IFS= read -r backend < /var/run/nx300m-preview-backend || fail 'invalid preview backend marker'
+                fi
+                case $backend in
+                    smartfilter) operation=stop ;;
+                    '') operation=enable-s2 ;;
+                    *) fail 'another preview backend is selected' ;;
+                esac ;;
             preview-s2-enable)
                 operation=enable-s2-stock
                 [ "$continuous" != 1 ] || operation=enable-s2 ;;

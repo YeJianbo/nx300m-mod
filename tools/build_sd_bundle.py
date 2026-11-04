@@ -35,12 +35,27 @@ PANEL_BINARIES = ('nxui.arm', 'recipe_engine.arm', 'lut_engine.arm')
 PANEL_FONT = 'usr/share/fonts/SDIC_GP_US_20120720.ttf'
 
 
-def bundle_looks(root, *, method=DEFAULT_METHOD):
+def bundle_looks(root, *, method=DEFAULT_METHOD, complete=False):
     library = LookLibrary()
-    looks = camera_looks(library)
+    looks = camera_looks(library, complete=complete)
     if len(looks) > 256:
         raise ValueError('Native LUT catalog supports at most 256 entries')
     rows, ids = [], set()
+    # Neutral adjustment base: native identity for preview, exact factory
+    # 3D table for the composed Still branch. No creative transform is added.
+    from stock_lut import factory_3d_lut
+    key='nx300-adjust-base'
+    base=root/'looks'/key;base.mkdir(parents=True)
+    direct=[]
+    for channel in range(3):
+        direct.extend(round((r,g,b)[channel]*1023/8) for r in range(9) for g in range(9) for b in range(9))
+        direct.append(0)
+    (base/'table.d4lut').write_bytes(struct.pack('<2190H',*direct))
+    (base/'table-stock3d.d4lut').write_bytes(struct.pack('<2190H',*factory_3d_lut()))
+    (base/'look.json').write_text(json.dumps(dict(id=key,label='原图微调',source_kind='builtin-identity',
+        input_space='native',native_table='table.d4lut',native_stock_3d_table='table-stock3d.d4lut',
+        native_format=dict(grid=9,channels=3,bits=10,bytes=4380)),ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+    rows.append(key+'|原图微调|0|0|0|0|0|0|0\n');ids.add(key)
     for look in looks:
         key = look['id']
         if method is not None:
@@ -62,6 +77,11 @@ def bundle_looks(root, *, method=DEFAULT_METHOD):
         (target / 'look.json').write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         rows.append('|'.join([key, label, *['0'] * 7]) + '\n')
     (root / 'looks.txt').write_text(''.join(rows), encoding='utf-8', newline='\n')
+    if complete:
+        everyday={look['id'] for look in camera_looks(library)}
+        # Add the requested Panasonic style to the short zero-UI cycle too.
+        everyday.add('panasonic-classic-neo-look')
+        (root/'looks-cycle.txt').write_text(''.join(row for row in rows if row.split('|',1)[0] in everyday),encoding='utf-8',newline='\n')
     return sorted(ids)
 
 
@@ -79,6 +99,8 @@ def bundle_panel_assets(root):
     if not records:
         raise ValueError('Build a nonempty recipe catalogue with tools/build_metol.py')
     shutil.copyfile(PROJECT / 'outputs/metol/recipes.txt', root / 'recipes.txt')
+    shutil.copyfile(PROJECT / 'mod/deployment/mfw/lenses.txt', root / 'lenses.txt')
+    shutil.copyfile(PROJECT / 'mod/metol/assets/README.md', root / 'REFERENCE_IMAGES.txt')
     for menu in MENUS:
         target = root / menu
         target.write_text((PROJECT / 'mod/deployment' / menu).read_text(encoding='utf-8'), encoding='utf-8', newline='\n')

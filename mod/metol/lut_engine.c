@@ -128,6 +128,31 @@ static int stage_state(void) {
 }
 static int action(int argc,char **argv) {
     if (argc<2) return 2;
+    if(!strcmp(argv[1],"boot")) {
+        if(argc!=2||setenv("NX300M_LUT_SKIP_PREVIEW_SYNC","1",1))return 2;
+        char saved[PATH_MAX],path[256],id[64];unsigned gen,strength;struct nx_lut_tune tune;
+        if(!nx_lut_saved_path(saved))return 4;
+        if(access(saved,F_OK)) {
+            if(errno!=ENOENT)return 4;
+            snprintf(saved,sizeof saved,"%s/.state/lut-selection",nx_lut_data_root());
+            if(access(saved,F_OK))return errno==ENOENT?0:4;
+        }
+        if(nx_lut_saved_stock(saved)) {
+            if(!access(NX_LUT_RAM_MARKER,F_OK)||!access("/var/run/nx300m-preview-backend",F_OK)||nx_lut_hook_ready()) {
+                char *off[]={argv[0],"disable",NULL};return action(2,off);
+            }
+            int result=nx_lut_stock();
+            return result?result:nx_lut_preview_preference(0)?0:4;
+        }
+        if(!nx_lut_read_selection_with_strength(saved,&gen,path,&strength)||!nx_lut_selection_id(path,id,&tune))return 5;
+        struct nx_lut_look looks[NX_LUT_MAX_LOOKS];int count=0,result=nx_lut_catalog_index(looks,&count);
+        if(result)return result;
+        for(int i=0;i<count;i++)if(!strcmp(id,looks[i].id)) {
+            result=nx_tune_cache(id,&tune,strength,path);
+            return result?result:stage(path,strength);
+        }
+        return 5;
+    }
     if (!strcmp(argv[1],"ready")) {
         if (argc!=2) return 2;
         int ready=nx_lut_hook_ready();printf("{\"ready\":%s}\n",ready?"true":"false");
@@ -191,20 +216,43 @@ static int action(int argc,char **argv) {
         return 0;
     }
     unsigned int strength=100;
-    if (strcmp(argv[1],"apply") || (argc!=3 && argc!=4) || !nx_lut_id_valid(argv[2]) ||
-        (argc==4 && !nx_lut_strength(argv[3],&strength))) return 2;
+    if (strcmp(argv[1],"apply") || (argc!=3 && argc!=4 && argc!=11) || !nx_lut_id_valid(argv[2]) ||
+        (argc>=4 && !nx_lut_strength(argv[3],&strength))) return 2;
+    struct nx_lut_tune tune={{0}};
+    if(argc==11) {
+        for(int i=0;i<NX_TUNE_FIELDS;i++) {
+            char *end;errno=0;long v=strtol(argv[4+i],&end,10);
+            if(errno||!argv[4+i][0]||*end||v<-10||v>10)return 2;
+            tune.value[i]=(int)v;
+        }
+    } else {
+        /* CLI/App selection also recalls the camera's per-look tuning. The
+         * supplied strength remains explicit and is never silently replaced. */
+        nx_tune_load(nx_lut_data_root(),argv[2],&tune,NULL);
+    }
     struct nx_lut_look looks[NX_LUT_MAX_LOOKS];int count=0;
     int result=nx_lut_catalog_index(looks,&count);if (result) return result;
     for (int i=0;i<count;i++) if (!strcmp(looks[i].id,argv[2])) {
         char path[256];int composed;
         if (!nx_lut_validate_look(argv[2],path,&composed)) return 5;
-        return stage(path,strength);
+        result=nx_tune_cache(argv[2],&tune,strength,path);if(result)return result;
+        result=stage(path,strength);
+        /* A failed preview sync still leaves the Still selection staged. */
+        if((!result||result==6)&&!nx_tune_save(argv[2],&tune,strength))
+            fputs("PERSIST-WARNING per-look tuning was not saved\n",stderr);
+        return result;
     }
     return 2;
 }
 int main(int argc,char **argv) {
     setvbuf(stdout,NULL,_IOLBF,0);
     char root[PATH_MAX];if (!nx_lut_root(root)) { fputs("Invalid or missing NX300M_MOD_ROOT\n",stderr);return 2; }
+    /* This preference has its own single writer: the serialized preview
+     * wrapper. Do not acquire engine -> preview locks in the inverse order. */
+    if(argc==3&&!strcmp(argv[1],"save-preview")) {
+        if(strcmp(argv[2],"0")&&strcmp(argv[2],"1"))return 2;
+        return nx_lut_preview_preference((unsigned)(argv[2][0]-'0'))?0:4;
+    }
     if (argc>=2 && !strcmp(argv[1],"ready")) return action(argc,argv);
     if (argc>=2 && !strcmp(argv[1],"stage-state")) return stage_state();
     /* Panel and HTTP requests share the same private runtime state. */

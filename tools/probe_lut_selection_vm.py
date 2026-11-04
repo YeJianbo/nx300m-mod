@@ -14,6 +14,18 @@ from probe_menu_entry_vm import collect
 
 ROOT = Path(__file__).resolve().parents[1]
 TAP_DRIVER = r'''
+    if(argc==6 && !strcmp(argv[1],"drag")) {
+        XWindowAttributes a;if(!XGetWindowAttributes(d,w,&a))return 6;
+        XEvent e={0};e.xbutton.display=d;e.xbutton.window=w;e.xbutton.button=Button1;
+        e.xbutton.x=a.width-1-atoi(argv[3]);e.xbutton.y=atoi(argv[2]);
+        e.type=ButtonPress;XSendEvent(d,w,False,ButtonPressMask,&e);XSync(d,False);usleep(120000);
+        e.type=MotionNotify;e.xmotion.state=Button1Mask;
+        e.xmotion.x=a.width-1-atoi(argv[5]);e.xmotion.y=atoi(argv[4]);
+        XSendEvent(d,w,False,Button1MotionMask,&e);XSync(d,False);usleep(120000);
+        e.type=ButtonRelease;e.xbutton.button=Button1;e.xbutton.state=Button1Mask;
+        XSendEvent(d,w,False,ButtonReleaseMask,&e);XSync(d,False);
+        XCloseDisplay(d);return 0;
+    }
     if(argc==4 && !strcmp(argv[1],"tap")) {
         XWindowAttributes a;if(!XGetWindowAttributes(d,w,&a))return 6;
         XEvent e={0};e.xbutton.display=d;e.xbutton.window=w;e.xbutton.button=Button1;
@@ -51,6 +63,13 @@ printf '%s %s\n' "$1" "${2:-}" >> /perf/actions.txt
 printf 'STAGED %s\n' "${2:-off}"
 ENGINE
 chmod 700 /perf/engine.sh
+wait_backend() {
+    attempt=0
+    until grep -q '^BACKEND kind=1 ok=1' "$1"; do
+        kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+    done
+    kill -0 "$panel" # Save must keep the panel open.
+}
 for variant in saved-mono keys-from-off tap-from-off browse-mono; do
     rm -f /var/run/nx300m-lut-selection
     case $variant in saved-mono|browse-mono)
@@ -71,7 +90,7 @@ for variant in saved-mono keys-from-off tap-from-off browse-mono; do
             /perf/close.arm key KP_Left
             /perf/close.arm key KP_Right ;;
         keys-from-off) /perf/close.arm key KP_Right ;;
-        tap-from-off) /perf/close.arm tap 215 80 ;;
+        tap-from-off) /perf/close.arm tap 540 166 ;;
         browse-mono)
             /perf/close.arm key KP_Left
             /rescue/busybox usleep 500000
@@ -79,13 +98,11 @@ for variant in saved-mono keys-from-off tap-from-off browse-mono; do
             /perf/close.arm key KP_Right ;;
     esac
     /rescue/busybox usleep 300000
-    [ ! -s /perf/actions.txt ]
+    if [ "$variant" != tap-from-off ]; then [ ! -s /perf/actions.txt ]; fi
     /perf/close.arm snapshot /perf/$variant-picked.ppm
-    /perf/close.arm key KP_Enter
-    if [ "$variant" = browse-mono ]; then
-        /rescue/busybox usleep 150000
-        /perf/close.arm key Menu
-    fi
+    if [ "$variant" != tap-from-off ]; then /perf/close.arm key KP_Enter; fi
+    wait_backend /perf/$variant.log
+    /perf/close.arm key Menu
     wait "$panel"
     cp /perf/actions.txt /perf/$variant-actions.txt
     cat /perf/$variant-actions.txt
@@ -134,6 +151,80 @@ until grep -q '^BACKEND ' /perf/off-preview.log; do
 done
 /perf/close.arm key Menu
 wait "$panel"
+# Real ARM staging engine, with only the camera-ready gate replaced. Validate
+# inline key adjustments, reference pixels, saved preferences and favourites.
+/perf/tune-engine.arm apply nx300-hard-mono 100 0 0 0 0 0 0 0 > /perf/tune-setup.log 2>&1
+NX_STATE_DIR=/tmp/select-tune /rescue/busybox timeout 20 /perf/mod/bin/nxui.arm --live --lut \
+    --root /perf/mod --recipes /perf/mod/looks.txt --engine /perf/tune-engine.arm \
+    --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
+    --font-metadata /perf/mod/fonts/mfw-font.charset > /perf/tune.log 2>&1 &
+panel=$!
+attempt=0
+until grep -q '^FIRST_FRAME ' /perf/tune.log; do
+    kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+done
+# Wrap above the first parameter, then use the wheel. It must stay in tuning.
+for key in XF86HomePage Up XF86ScrollDown XF86ScrollUp Down XF86ScrollUp Down XF86ScrollDown; do /perf/close.arm key "$key"; done
+# A reference-image tap must not switch wheel ownership back to LUT selection.
+/perf/close.arm tap 120 180
+for key in XF86ScrollUp XF86ScrollDown; do /perf/close.arm key "$key"; done
+# Black-and-white has no saturation to amplify. Touch must leave it at zero.
+/perf/close.arm drag 596 208 714 208
+/perf/close.arm tap 90 418
+/rescue/busybox usleep 300000
+/perf/close.arm snapshot /perf/tune-inline.ppm
+/perf/close.arm key XF86HomePage
+wait_backend /perf/tune.log
+grep -q '^LUT_VIEW list=0 key=nx300-hard-mono' /perf/tune.log
+grep -q '^LUT_VIEW list=1 key=nx300-hard-mono saving=1' /perf/tune.log
+/perf/close.arm key Menu
+wait "$panel"
+cp /perf/mod/.state/lut-tune-nx300-hard-mono /perf/tune-state.txt
+IFS= read -r saved_tune < /perf/tune-state.txt
+[ "$saved_tune" = '1 nx300-hard-mono 1 -1 0 0 0 0 0 100' ]
+grep -q '^nx300-hard-mono$' /perf/mod/.state/lut-favorites
+grep -q '/looks/nx-tune-' /var/run/nx300m-lut-selection
+NX_STATE_DIR=/tmp/select-tune-reopen /rescue/busybox timeout 15 /perf/mod/bin/nxui.arm --dry-run --lut \
+    --root /perf/mod --recipes /perf/mod/looks.txt --engine /perf/tune-engine.arm \
+    --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
+    --font-metadata /perf/mod/fonts/mfw-font.charset > /perf/tune-reopen.log 2>&1 &
+panel=$!
+attempt=0
+until grep -q '^FIRST_FRAME ' /perf/tune-reopen.log; do
+    kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+done
+grep -q 'LUT_TUNE key=nx300-hard-mono values=1,-1,0,0,0,0,0' /perf/tune-reopen.log
+/rescue/busybox usleep 300000
+/perf/close.arm snapshot /perf/tune-favorites.ppm
+/perf/close.arm key XF86HomePage
+/rescue/busybox usleep 300000
+/perf/close.arm snapshot /perf/tune-color.ppm
+/perf/close.arm key Menu
+wait "$panel"
+gzip /perf/tune-inline.ppm /perf/tune-favorites.ppm /perf/tune-color.ppm
+# Without a film style, Fn enters the identity preset; its adjustments still
+# use the production ARM engine and are distinct from the red Off action.
+printf '0\n' > /var/run/nx300m-lut-selection
+rm -f /perf/mod/.state/lut-category
+NX_STATE_DIR=/tmp/select-original /rescue/busybox timeout 20 /perf/mod/bin/nxui.arm --live --lut \
+    --root /perf/mod --recipes /perf/mod/looks.txt --engine /perf/tune-engine.arm \
+    --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
+    --font-metadata /perf/mod/fonts/mfw-font.charset > /perf/original.log 2>&1 &
+panel=$!
+attempt=0
+until grep -q '^FIRST_FRAME ' /perf/original.log; do
+    kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+done
+for key in Up XF86HomePage XF86ScrollUp XF86HomePage; do /perf/close.arm key "$key"; done
+wait_backend /perf/original.log
+grep -q '^1 nx300-adjust-base 1 0 0 0 0 0 0 100$' /perf/mod/.state/lut-tune-nx300-adjust-base
+/perf/close.arm key Menu
+wait "$panel"
+printf 'nx300-hard-mono\nnx300-fuji-classic-chrome\n' > /perf/mod/.state/lut-favorites
+/perf/tune-engine.arm apply nx300-hard-mono 100 > /perf/cycle-setup.log 2>&1
+cp /perf/tune-engine.arm /perf/mod/bin/lut_engine.arm
+NX300M_MOD_SOURCE_ROOT=/perf/mod /bin/sh /perf/mod/lut-cycle.sh > /perf/cycle-tuned.log 2>&1
+grep -q '/looks/nx300-fuji-classic-chrome/table.d4lut' /var/run/nx300m-lut-selection
 kill "$stock"
 trap - EXIT
 '''
@@ -146,7 +237,7 @@ def main():
     out = args.output_dir.resolve()
     if (out/'report.json').exists():
         raise RuntimeError('Preserve the recorded selection run')
-    archive = ROOT/'outputs/deployment/smartfilter-session/diagnostic-card/nx300m-ipcs-open-diagnostic.zip'
+    archive = ROOT/'outputs/looks/lightroom-import/on-camera-test/nx300m-lut-color-test.zip'
     with ZipFile(archive) as package:
         catalogue = package.read('nx300m-mod/looks.txt').decode().rstrip()
     vm.OUT = out
@@ -157,8 +248,13 @@ def main():
     launcher = ROOT/'mod/deployment/mfw/lut-panel.sh'
     vm.EXTRA_FILES = {
         'perf/mod/lut-panel.sh': launcher.read_bytes(),
+        'perf/mod/lut-cycle.sh': (ROOT/'mod/deployment/mfw/lut-cycle.sh').read_bytes(),
         'perf/mod/bin/lut_engine.arm': b'#!/bin/sh\nprintf "%s\\n" "$*" >> /perf/actions.txt\nexit 0\n',
     }
+    vm.EXTRA_FILES['perf/tune-engine.arm']=(ROOT/'outputs/review/menu-toggle-width/tuning-arm/engine.arm').read_bytes()
+    with ZipFile(archive) as package:
+        vm.EXTRA_FILES.update({'perf/mod/'+name.removeprefix('nx300m-mod/'):package.read(name)
+                               for name in package.namelist() if '/looks/' in name and name.endswith('.d4lut')})
     vm.prepare()
     report = dict(passed=False, hardware_pixels_verified=False,
                   scope='Native ARM nxui, real catalogue and X11 key/tap input; engine action recorder',
@@ -177,8 +273,12 @@ def main():
         execution = vm.call('exec', '/bin/sh /perf/probe.sh')
         arm_vm.write_json(out/'execution.json', execution)
         variants = ('saved-mono', 'keys-from-off', 'tap-from-off', 'browse-mono')
+        if execution['exit_code']:
+            for name in ('tune.log','tune-state.txt'):
+                collect(out,name)
+            raise RuntimeError('Selection probe failed: '+execution['output'])
         for variant in variants:
-            for suffix in ('.log', '-actions.txt', '-before.ppm.gz', '-picked.ppm.gz'):
+            for suffix in ('.log', '-actions.txt'):
                 collect(out, variant+suffix)
                 if suffix.endswith('.gz'):
                     packed=out/(variant+suffix)
@@ -189,6 +289,13 @@ def main():
         actions = {v: (out/(v+'-actions.txt')).read_text().splitlines()
                    for v in variants}
         collect(out, 'off-preview.log')
+        for name in ('tune.log','tune-reopen.log','original.log','tune-inline.ppm.gz','cycle-tuned.log'):
+            collect(out,name)
+        report['inline_tuning_persistence_favorites_and_reference_checked']=True
+        report['fn_saves_without_exit_and_wheel_adjusts']=True
+        report['identity_preset_tuning_saved_without_film']=True
+        report['tuned_zero_ui_cycle_and_favorites_checked']=True
+        report['lut_cycle_sha256']=hashlib.sha256((ROOT/'mod/deployment/mfw/lut-cycle.sh').read_bytes()).hexdigest()
         off_preview=(out/'off-preview.log').read_text()
         for variant in ('direct-saved', 'direct-off'):
             collect(out, variant+'.log')

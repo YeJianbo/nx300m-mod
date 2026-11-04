@@ -20,7 +20,7 @@ def build(*, method=DEFAULT_METHOD):
             raise ValueError('Unexpected catalogue staging path: '+str(root))
         shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)
-    ids = bundle_looks(root, method=method)
+    ids = bundle_looks(root, method=method, complete=True)
     shutil.copyfile(ROOT/'docs/LUT_ON_CAMERA_TEST.md', root/'LUT-TEST.md')
     if 'nx300-hard-mono' not in ids or any(key.startswith(('native-', 'test-fit-')) for key in ids):
         raise ValueError('Expected Hard Mono plus the formal style library')

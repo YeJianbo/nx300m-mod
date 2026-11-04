@@ -396,7 +396,7 @@ def _stats(values):
     def percentile(percent):
         return ordered[max(0, (len(ordered) * percent + 99) // 100 - 1)]
     return {"n": len(ordered), "p50_ns": percentile(50), "p90_ns": percentile(90),
-            "p95_ns": percentile(95), "max_ns": ordered[-1]}
+            "p95_ns": percentile(95), "p99_ns": percentile(99), "max_ns": ordered[-1]}
 
 
 def _key(meta, record, cohort):
@@ -716,7 +716,7 @@ def _label(key):
 
 
 def _row(label, metric, stats):
-    return f"| {label} | {_escape(metric)} | {stats['n']} | {stats['p50_ns']} | {stats['p90_ns']} | {stats['p95_ns']} | {stats['max_ns']} |"
+    return f"| {label} | {_escape(metric)} | {stats['n']} | {stats['p50_ns']} | {stats['p90_ns']} | {stats['p95_ns']} | {stats['p99_ns']} | {stats['max_ns']} |"
 
 
 def to_markdown(report: dict) -> str:
@@ -730,8 +730,8 @@ def to_markdown(report: dict) -> str:
             lines.append(f"  - ERROR: {_escape(error)}")
         for warning in dump.get("warnings", []):
             lines.append(f"  - WARNING: {_escape(warning)}")
-    header = ["| 分组 | 指标 | n | p50 ns | p90 ns | p95 ns | max ns |",
-              "|---|---|---:|---:|---:|---:|---:|"]
+    header = ["| 分组 | 指标 | n | p50 ns | p90 ns | p95 ns | p99 ns | max ns |",
+              "|---|---|---:|---:|---:|---:|---:|---:|"]
     lines += ["", "## 1. Frame totals（cold / steady、path 独立）", ""] + header
     for group in report["frame_groups"]:
         for metric in ("wall", "preview", "effect", "entry_interval"):

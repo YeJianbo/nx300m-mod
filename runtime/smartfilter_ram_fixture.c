@@ -478,15 +478,11 @@ int main(void) {
 #endif
             if(command==120) ram_refresh();
             else if(command==124) {
-                filter_mode=15;
-                unsigned frames=ram_stock_callback_done,before=ram_topology_rebuilds;
-                REQUIRE(ram_runtime->refresh_queued==1);
-                pthread_t controller; REQUIRE(!pthread_create(&controller,NULL,ram_refresh_controller,NULL));
-                REQUIRE(!pthread_join(controller,NULL));
-                REQUIRE(ram_stock_callback_done==frames&&ram_topology_rebuilds==before+1&&
-                        ram_runtime->s2_path==1&&!ram_runtime->refresh_pending);
-                printf("{\"type\":\"fixture_refresh_without_frame\",\"frame_callbacks\":%u,\"rebuilds\":%u}\n",
-                       frames,ram_topology_rebuilds);
+                unsigned message[4]; errno=0;
+                REQUIRE(msgrcv(ram_capture_queue,message,12,0,IPC_NOWAIT)==-1&&errno==ENOMSG);
+                REQUIRE(!ram_runtime->refresh_queued&&!ram_runtime->refresh_requests&&
+                        !ram_runtime->s2_path&&!ram_runtime->refresh_pending);
+                puts("{\"type\":\"fixture_loader_no_forced_refresh\",\"passed\":true}");
             }
             else if(command==121) {
                 /* Replace the queued control wake with a capture boundary;

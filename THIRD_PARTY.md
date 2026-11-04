@@ -13,6 +13,8 @@
 
 Nuklear 相关声明见其源文件及 Metol 上游。Cargo / Gradle 依赖按各自许可证获取，不随本仓库打包依赖缓存。
 
+LUT 面板的三张低分辨率参考样图来自 NASA、danielbuechele 和 SpaceX。风景图采用 CC BY 2.0，人像与发射照片为公共领域；裁剪、缩放说明及原始链接见 [素材来源](mod/metol/assets/README.md)。这些样图和生成的 RGB 头文件随源码提供。
+
 
 Samsung 固件、SDK、工厂标定、Adobe / 第三方相机配置及由其导出的风格数据不在源码快照中。App 中相机产品图仅用于说明兼容机型，原始权利不因放入仓库而改变，公开前需另核实图片授权或换成自绘素材。
 
