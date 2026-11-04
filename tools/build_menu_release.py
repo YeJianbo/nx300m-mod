@@ -1,4 +1,4 @@
-"""Publishable menu-only upgrade, bound to the checked RAM/LUT service ABI."""
+"""Publishable menu/control upgrade, bound to the checked RAM/LUT service ABI."""
 from __future__ import annotations
 
 import argparse
@@ -21,13 +21,30 @@ def build(version: str) -> Path:
     output.mkdir(parents=True, exist_ok=True)
     menu = (ROOT/'outputs/metol/nxui.arm').read_bytes()
     menu_hash = hashlib.sha256(menu).hexdigest()
-    evidence = json.loads((ROOT/'outputs/performance/lut-menu-entry/apply-final-wait-vm/report.json').read_text())
+    evidence = json.loads((ROOT/'outputs/performance/lut-menu-entry/list-up-navigation-vm/report.json').read_text())
     if (not all(evidence.get(k) is True for k in ('passed', 'private_vm_stopped',
-            'apply_viewfinder_waits_for_backend', 'failed_apply_retains_panel',
-            'unchanged_saved_look_explicitly_submitted',
-            'normal_menu_debug_navigation_and_preview_stop'))
+            'list_up_moves_previous_before_entering_groups',
+            'first_row_up_enters_group_and_down_returns',
+            'lut_header_preview_dispatches_ram_service_with_data_identity'))
             or evidence['candidate_sha256'] != menu_hash):
         raise ValueError('Menu does not match its successful ARM evidence')
+    session_run=ROOT/'outputs/deployment/smartfilter-session/preview-navigation-vm'
+    session=json.loads((session_run/'report.json').read_text())
+    if not all(session.get(k) is True for k in ('passed','private_vm_stopped',
+            'normal_wrapper_stop_releases_session','current_preview_installs_still_before_first_frame')):
+        raise ValueError('Session/control checks did not pass')
+    payload={
+        'bin/nxui.arm':menu,
+        'lut-panel.sh':(ROOT/'mod/deployment/mfw/lut-panel.sh').read_bytes(),
+        'smartfilter-preview.sh':(ROOT/'mod/deployment/mfw/smartfilter-live-preview.sh').read_bytes(),
+        'bin/smartfilter_probe_launcher.arm':(ROOT/'outputs/deployment/smartfilter-session/smartfilter_probe_launcher.arm').read_bytes(),
+    }
+    payload['ipcs-diagnostic/bin/smartfilter_probe_launcher.arm']=payload['bin/smartfilter_probe_launcher.arm']
+    for name, staged in [('lut-panel.sh','lut-panel.sh'),('smartfilter-preview.sh','smartfilter-live-preview.sh'),
+                         ('bin/smartfilter_probe_launcher.arm','bin/smartfilter_probe_launcher.arm')]:
+        if payload[name] != (session_run/'source-files'/staged).read_bytes():
+            raise ValueError('Control payload differs from ARM checked files: '+name)
+    payload={name:data.replace(b'\r\n',b'\n') if name.endswith('.sh') else data for name,data in payload.items()}
     base = ROOT/'outputs/deployment/smartfilter-session/diagnostic-card'
     record = json.loads((base/'package-report.json').read_text())
     if record['abi'] != 7 or record['diagnostics_enabled_by_default'] is not False:
@@ -35,14 +52,14 @@ def build(version: str) -> Path:
     required = (
         'bin/lut_engine.arm', 'bin/lut_live_loader.arm', 'bin/nx-remote-controller.arm',
         'lib/lut_ram_blob.bin', 'ipcs-diagnostic/bin/smartfilter_loader.arm',
-        'ipcs-diagnostic/bin/smartfilter_probe_launcher.arm',
         'ipcs-diagnostic/lib/smartfilter_ram.bin',
-        'lut-boot.sh', 'lut-panel.sh', 'lut-load.sh', 'mfw-panel.sh',
-        'mfw-services.sh', 'smartfilter-preview.sh', 'fn-panel/mfw-panel-actions.sh',
+        'lut-boot.sh', 'lut-load.sh', 'mfw-panel.sh',
+        'mfw-services.sh', 'fn-panel/mfw-panel-actions.sh',
         'fn-panel/gui_mfw.NX300M', 'gui_mfw.NX300M',
     )
     expected = {r['path']: r['sha256'] for r in record['files']}
     requires = {}
+    replaces = {}
     with zipfile.ZipFile(base/'nx300m-ipcs-open-diagnostic.zip') as archive:
         for name in required:
             key = 'nx300m-mod/'+name
@@ -50,15 +67,29 @@ def build(version: str) -> Path:
             if hashlib.sha256(data).hexdigest() != expected[key]:
                 raise ValueError('Checked backend package changed: '+key)
             requires[key] = expected[key]
+        for name,data in payload.items():
+            if name=='bin/nxui.arm':continue
+            key='nx300m-mod/'+name
+            baseline_key=key
+            if key not in expected:
+                if name!='bin/smartfilter_probe_launcher.arm':
+                    raise ValueError('Missing checked control baseline: '+key)
+                baseline_key='nx300m-mod/ipcs-diagnostic/bin/smartfilter_probe_launcher.arm'
+            old=archive.read(baseline_key)
+            if hashlib.sha256(old).hexdigest()!=expected[baseline_key]:
+                raise ValueError('Checked control baseline changed: '+key)
+            replaces[key]=sorted({expected[baseline_key],hashlib.sha256(data).hexdigest()})
     for name, source in {
         'mfw-ram-stage.sh': ROOT/'mod/deployment/mfw/ram-stage.sh',
         'fonts/mfw-font.charset': ROOT/'outputs/metol/mfw-font.charset',
     }.items():
         requires['nx300m-mod/'+name] = hashlib.sha256(source.read_bytes()).hexdigest()
-    manifest = dict(schema=1, kind='nx300m-menu-upgrade', version=version,
+    manifest = dict(schema=2, kind='nx300m-menu-upgrade', version=version,
                     model='NX300M', firmware='1.15', menu_sha256=menu_hash,
                     preview_abi=record['abi'], preview_build=record['build'],
-                    still_build=record['still_lut_build'], requires=requires,
+                    still_build=record['still_lut_build'], requires=requires, replaces=replaces,
+                    payload={'nx300m-mod/'+name:dict(asset='payload/'+name,sha256=hashlib.sha256(data).hexdigest())
+                             for name,data in payload.items()},
                     physical_transition_verified=False)
     guide = (ROOT/'docs/USER_GUIDE.md').read_text(encoding='utf-8')
     rights = (ROOT/'docs/RISKS_AND_RIGHTS.md').read_text(encoding='utf-8')
@@ -71,14 +102,15 @@ def build(version: str) -> Path:
     for document in ('INSTALL.md', 'DELIVERY.md'):
         guide = guide.replace(']('+document+')', '](https://github.com/YeJianbo/nx300m-mod/blob/'+version+'/docs/'+document+')')
     files = {
-        'payload/nxui.arm': menu,
+        **{'payload/'+name:data for name,data in payload.items()},
         'update_card.py': (ROOT/'tools/update_release_card.py').read_bytes(),
         'manifest.json': (json.dumps(manifest, indent=2)+'\n').encode(),
         'USER_GUIDE.md': guide.encode('utf-8'),
         'RISKS_AND_RIGHTS.md': rights.encode('utf-8'),
-        'README.md': ('# NX300M 菜单升级包\n\n'
+        'README.md': ('# NX300M 菜单与预览控制升级包\n\n'
             '目前按已有匹配 RAM 服务、Still LUT 和 Session 预览后端的 NX300M 1.15 环境验证；'
             'NX300 可能兼容，但未验证，不保证其他机型或固件版本适用。'
+            '更新菜单、面板脚本与预览身份扫描启动器，保留现有 IPCS/Still 硬件后端。'
             '不是首装或刷机包，不包含风格库、固件、字体及个人配置。\n\n'
             '关机取卡，在电脑解压本包。先 `python update_card.py --card H:/` 检查，'
             '通过后加 `--apply` 写入。完整按键、触摸、保存及回退步骤见 '

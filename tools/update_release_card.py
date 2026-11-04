@@ -1,4 +1,4 @@
-"""Reader-side menu update; no camera shell, firmware flash or library changes."""
+"""Reader-side menu/control update; preserves firmware, libraries and user data."""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +13,12 @@ import uuid
 BASE = Path(__file__).resolve().parent
 MENU = 'nx300m-mod/bin/nxui.arm'
 RESTART = 'nx300m-mod/RESTART_SERVICE'
-TARGETS = {MENU, RESTART}
+LEGACY_TARGETS = {MENU, RESTART}
+TARGETS = LEGACY_TARGETS | {
+    'nx300m-mod/lut-panel.sh', 'nx300m-mod/smartfilter-preview.sh',
+    'nx300m-mod/bin/smartfilter_probe_launcher.arm',
+    'nx300m-mod/ipcs-diagnostic/bin/smartfilter_probe_launcher.arm',
+}
 
 
 def digest(data: bytes) -> str:
@@ -53,7 +58,7 @@ def replace_verified(target: Path, data: bytes) -> None:
 
 def load_update(card: Path) -> dict[str, bytes]:
     manifest = json.loads((BASE/'manifest.json').read_text(encoding='utf-8'))
-    if manifest['schema'] != 1 or manifest['kind'] != 'nx300m-menu-upgrade':
+    if manifest['schema'] not in (1, 2) or manifest['kind'] != 'nx300m-menu-upgrade':
         raise ValueError('Unsupported package')
     for name, expected in manifest['requires'].items():
         asset = card_file(card, name)
@@ -61,15 +66,40 @@ def load_update(card: Path) -> dict[str, bytes]:
             raise ValueError('版本不匹配或文件缺失：'+name+'；没有写卡。')
     if not card_file(card, MENU).is_file():
         raise ValueError('Existing menu is missing')
-    binary = (BASE/'payload/nxui.arm').read_bytes()
-    if digest(binary) != manifest['menu_sha256']:
-        raise ValueError('Package menu checksum differs')
-    return {MENU: binary, RESTART: ('release-'+manifest['version']+'-'+uuid.uuid4().hex+'\n').encode('ascii')}
+    if manifest['schema'] == 1:
+        binary = (BASE/'payload/nxui.arm').read_bytes()
+        if digest(binary) != manifest['menu_sha256']:
+            raise ValueError('Package menu checksum differs')
+        writes = {MENU: binary}
+    else:
+        payload = manifest['payload']
+        if set(payload) != TARGETS-{RESTART} or set(manifest['replaces']) != TARGETS-LEGACY_TARGETS:
+            raise ValueError('Unexpected update targets')
+        staged = set(card_file(card, 'nx300m-mod/runtime-files.list').read_text(encoding='ascii').splitlines())
+        if not {name.removeprefix('nx300m-mod/') for name in payload}.issubset(staged):
+            raise ValueError('RAM 资源清单不匹配；没有写卡。')
+        writes = {}
+        for name, record in payload.items():
+            if not record['asset'].startswith('payload/'):
+                raise ValueError('Invalid payload asset')
+            data = card_file(BASE, record['asset']).read_bytes()
+            if digest(data) != record['sha256']:
+                raise ValueError('Package checksum differs: '+name)
+            writes[name] = data
+        if digest(writes[MENU]) != manifest['menu_sha256']:
+            raise ValueError('Package menu checksum differs')
+        for name, accepted in manifest['replaces'].items():
+            asset = card_file(card, name)
+            if not isinstance(accepted, list) or not asset.is_file() or digest(asset.read_bytes()) not in accepted:
+                raise ValueError('控制文件版本不匹配：'+name+'；没有写卡。')
+    writes[RESTART] = ('release-'+manifest['version']+'-'+uuid.uuid4().hex+'\n').encode('ascii')
+    return writes
 
 
 def load_restore(card: Path, backup: Path) -> tuple[dict[str, bytes], set[str]]:
     info = json.loads((backup/'backup.json').read_text(encoding='utf-8'))
-    if info.get('schema') != 1 or set(info['files']) != TARGETS:
+    names = set(info['files'])
+    if info.get('schema') != 1 or not LEGACY_TARGETS.issubset(names) or not names.issubset(TARGETS):
         raise ValueError('Unsupported backup')
     writes: dict[str, bytes] = {}
     removes: set[str] = set()
