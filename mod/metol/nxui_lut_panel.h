@@ -20,20 +20,14 @@ static void lut_request_leave(int target) {
     if(target==2)mfw_return_requested=dirty=1;else queue.close_requested=1;
 }
 static void lut_leave_pick(int option) {
-    if(option==0){lut_leave_dialog=0;lut_exit_after_save=lut_leave_target;confirm_lut();}
+    if(option==0){lut_leave_dialog=0;confirm_lut(lut_leave_target);}
     else if(option==1){lut_draft=lut_leave_dialog=0;lut_save_navigation();if(lut_leave_target==2)mfw_return_requested=dirty=1;else queue.close_requested=1;}
     else {lut_leave_dialog=0;dirty=1;}
-}
-static void lut_apply_viewfinder(void) {
-    if(child || queue.commit_requested){lut_exit_after_save=1;return;}
-    /* A saved choice is not proof that boot restoration reached hardware.
-     * This explicit action must also submit an unchanged selected look. */
-    lut_exit_after_save=1;confirm_lut();
 }
 static void lut_toggle_view(void) {
     if(child||lut_leave_dialog)return;
     lut_category_focus=0;
-    if(!lut_list_open){lut_list_open=1;lut_edit=0;if(lut_has_changes())confirm_lut();}
+    if(!lut_list_open){lut_list_open=1;lut_edit=0;if(lut_has_changes())confirm_lut(0);}
     else {
         if(!selected)for(int i=1;i<count;i++)if(!strcmp(recipes[i].key,"nx300-adjust-base")){choose(i);break;}
         lut_list_open=0;lut_edit=selected!=0;lut_field=0;
@@ -98,7 +92,7 @@ static void lut_next_category(int delta) {
     int next=lut_category;
     for(int i=0;i<9;i++) {
         next=(next+delta+9)%9;
-        if(next<=1||lut_category_count[next]){lut_set_category(next);lut_category_focus=1;return;}
+        if(next<=1||lut_category_count[next]){lut_set_category(next);lut_category_focus=1;fprintf(stderr,"LUT_GROUP focus=1 group=%d\n",lut_category);return;}
     }
 }
 static void lut_adjust(int delta) {
@@ -123,15 +117,15 @@ static void lut_key(KeySym key) {
     }
     if(lut_category_focus){
         if(left||right)lut_next_category(right?1:-1);
-        if(down||ok)lut_category_focus=0;
+        if(down||ok){lut_category_focus=0;fprintf(stderr,"LUT_GROUP focus=0 group=%d\n",lut_category);}
         if(key==XK_Menu||key==XK_Escape)lut_request_leave(mfw_menu_root?2:1);
         dirty=1;return;
     }
     if(lut_list_open){
         int options[NXUI_MAX_RECIPES],n=0;for(int i=1;i<count;i++)if(lut_in_group(i))options[n++]=i;
-        if(up&&lut_list_cursor==0)lut_category_focus=1;
+        if(up&&lut_list_cursor==0){lut_category_focus=1;fprintf(stderr,"LUT_GROUP focus=1 group=%d\n",lut_category);}
         else if(n&&(left||right||up||down)){lut_list_cursor=(lut_list_cursor+(right||down?1:n-1))%n;choose(options[lut_list_cursor]);}
-        if(ok&&n){choose(options[lut_list_cursor%n]);confirm_lut();}
+        if(ok&&n){choose(options[lut_list_cursor%n]);confirm_lut(1);}
         if(key==XK_Menu||key==XK_Escape)lut_request_leave(mfw_menu_root?2:1);
         dirty=1;return;
     }
@@ -143,7 +137,7 @@ static void lut_key(KeySym key) {
     if(left||right)lut_adjust(right?1:-1);
     if(down){do{lut_field=(lut_field+1)%8;}while(!lut_field_supported(lut_field));}
     if(up){do{lut_field=(lut_field+7)%8;}while(!lut_field_supported(lut_field));}
-    if(ok)confirm_lut();
+    if(ok)confirm_lut(1);
     dirty=1;
 }
 static void lut_toggle_favorite(void) {
@@ -188,12 +182,8 @@ static void lut_update_reference(void) {
             unsigned pos[3],f[3];
             for(int c=0;c<3;c++){unsigned n=src[c]*8;pos[c]=n/255;f[c]=n%255;if(pos[c]==8){pos[c]=7;f[c]=255;}}
             for(int c=0;c<3;c++) {
-                uint64_t sum=0;
-                for(unsigned a=0;a<2;a++)for(unsigned b=0;b<2;b++)for(unsigned d=0;d<2;d++) {
-                    unsigned index=(pos[0]+a)*81+(pos[1]+b)*9+pos[2]+d;
-                    sum+=(uint64_t)tuned[c*730+index]*(a?f[0]:255-f[0])*(b?f[1]:255-f[1])*(d?f[2]:255-f[2]);
-                }
-                unsigned v=(unsigned)((sum+8290687)/16581375);
+                unsigned index=pos[0]*81+pos[1]*9+pos[2];
+                unsigned v=nx_ref_interpolate(tuned+c*730+index,f[0],f[1],f[2]);
                 unsigned color=(v*255+511)/1023;
                 output[c]=(color*lut_strength+src[c]*(100-lut_strength)+50)/100;
             }
@@ -227,7 +217,7 @@ static void lut_slider_row(int field,float x,float y,float w) {
     lut_place(x+10,y,112,42);
     if(nk_button_label(ctx,nx_tune_label(field))&&supported){lut_field=field;lut_edit=1;lut_category_focus=0;dirty=1;}
     ctx->style.button=button;
-    lut_place(x+124,y, w-194,42);
+    lut_place(x+124,y, w-210,42);
     nk_widget(&bounds,ctx);
     if(supported&&!lut_leave_dialog&&!child&&!queue.close_requested&&nk_input_is_mouse_down(&ctx->input,NK_BUTTON_LEFT)&&
        nk_input_has_mouse_click_down_in_rect(&ctx->input,NK_BUTTON_LEFT,bounds,1)) {
@@ -248,7 +238,7 @@ static void lut_slider_row(int field,float x,float y,float w) {
     if(!strength)nk_fill_rect(canvas,nk_rect(bounds.x+8+travel/2,bounds.y+15,1,12),0,nk_rgb(128,137,148));
     if(supported)nk_fill_rect(canvas,nk_rect(bounds.x+position+3,bounds.y+11,10,20),4,nk_rgb(219,234,249));
     char number[24];snprintf(number,sizeof number,strength?"%d%%":"%+d",value);
-    lut_place(x+w-66,y,58,42);nk_label_colored(ctx,supported?number:"—",NK_TEXT_RIGHT,nk_rgb(225,232,241));
+    lut_place(x+w-82,y,74,42);nk_label_colored(ctx,supported?number:"—",NK_TEXT_RIGHT,nk_rgb(225,232,241));
 }
 static void draw_lut_panel(void) {
     /* Keep a stable cover while the engine installs and synchronizes the new
@@ -270,21 +260,21 @@ static void draw_lut_panel(void) {
         if(lut_leave_dialog||child)nk_widget_disable_begin(ctx);
         nk_layout_space_begin(ctx,NK_STATIC,(float)height-18,100);
         float right=(float)width-24;
-        lut_place(4,0,92,42);nk_label(ctx,"LUT 滤镜",NK_TEXT_LEFT);
-        lut_place(100,0,122,42);
+        lut_place(4,0,100,42);nk_label(ctx,"LUT",NK_TEXT_LEFT);
+        lut_place(108,0,132,42);
         struct nk_style_button danger=ctx->style.button;
         ctx->style.button.normal=ctx->style.button.hover=nk_style_item_color(nk_rgb(116,48,48));
-        if(nk_button_label(ctx,selected?"关闭 LUT":"LUT 已关")&&!child){choose(0);confirm_lut();}
+        if(nk_button_label(ctx,selected?"关闭 LUT":"LUT 已关")&&!child){choose(0);confirm_lut(1);}
         ctx->style.button=danger;
         char backend[32]="";FILE *marker=fopen("/var/run/nx300m-preview-backend","r");
         if(marker){if(!fgets(backend,sizeof backend,marker))backend[0]=0;fclose(marker);}
-        snprintf(line,sizeof line,"实时预览 %s",!strncmp(backend,"smartfilter",11)?"开":"关");
-        lut_place(230,0,164,42);if(nk_button_label(ctx,line)&&live&&!child)start_mfw_action("preview-toggle");
-        lut_place(400,0,144,42);nk_label_colored(ctx,child?"正在提交":lut_submit_failed?"提交失败":lut_has_changes()?"已修改":lut_saved_config?"配置已保存":"当前会话",NK_TEXT_LEFT,nk_rgb(140,180,221));
-        lut_place(right-224,0,104,42);
-        if(nk_button_label(ctx,"应用取景"))lut_apply_viewfinder();
-        lut_place(right-112,0,112,42);
-        if(lut_button("保存",1)&&(!selected||lut_in_group(selected)))confirm_lut();
+        snprintf(line,sizeof line,"预览 %s",!strncmp(backend,"smartfilter",11)?"开":"关");
+        lut_place(248,0,130,42);if(nk_button_label(ctx,line)&&live&&!child)start_mfw_action("preview-toggle");
+        lut_place(390,0,140,42);nk_label_colored(ctx,lut_submit_failed?"保存失败":lut_has_changes()?"已修改":lut_saved_config?"已保存":"当前会话",NK_TEXT_LEFT,nk_rgb(140,180,221));
+        lut_place(right-240,0,112,42);
+        if(nk_button_label(ctx,"返回"))lut_request_leave(mfw_menu_root?2:1);
+        lut_place(right-120,0,120,42);
+        if(lut_button("保存",1))confirm_lut(1);
         int groups[9],ng=0;
         for(int g=0;g<9;g++)if(g<=1||lut_category_count[g])groups[ng++]=g;
         int visible=ng<6?ng:6,category_position=0;for(int j=0;j<ng;j++)if(groups[j]==lut_category)category_position=j;
@@ -294,15 +284,21 @@ static void draw_lut_panel(void) {
         for(int slot=0;slot<visible;slot++) {
             int j=lut_tab_start+slot;
             lut_place(44+slot*(tab+4),50,tab,38);
+            struct nk_style_button category_button=ctx->style.button;
+            if(lut_category_focus&&lut_category==groups[j]) {
+                ctx->style.button.border=3;
+                ctx->style.button.border_color=nk_rgb(191,224,255);
+            }
             if(lut_button(lut_categories[groups[j]],lut_category==groups[j]))lut_set_category(groups[j]);
+            ctx->style.button=category_button;
         }
         lut_place(right-40,50,40,38);if(nk_button_label(ctx,"›")){lut_tab_start+=visible;if(lut_tab_start>ng-visible)lut_tab_start=ng-visible;dirty=1;}
         lut_place(0,100,308,180);nk_image(ctx,nk_image_ptr(&lut_reference));
         lut_place(0,284,308,46);nk_label_wrap(ctx,selected?recipes[selected].label:"LUT 已关闭 · 原厂拍摄");
-        lut_place(0,336,88,44);if(nk_button_label(ctx,"上一款"))lut_step(-1);
-        lut_place(94,336,120,44);
-        if(lut_button(lut_list_open?"参数微调":"风格列表",lut_list_open))lut_toggle_view();
-        lut_place(220,336,88,44);if(nk_button_label(ctx,"下一款"))lut_step(1);
+        lut_place(0,336,100,44);if(nk_button_label(ctx,"上一款"))lut_step(-1);
+        lut_place(104,336,100,44);
+        if(lut_button(lut_list_open?"微调":"列表",lut_list_open))lut_toggle_view();
+        lut_place(208,336,100,44);if(nk_button_label(ctx,"下一款"))lut_step(1);
         lut_place(0,388,150,44);
         if(nk_button_label(ctx,selected?(lut_favorite[selected]?"已收藏":"收藏"):"原厂拍摄"))lut_toggle_favorite();
         lut_place(158,388,150,44);
@@ -314,17 +310,20 @@ static void draw_lut_panel(void) {
             for(int j=0;j<7&&first+j<total;j++){
                 int index=options[first+j];snprintf(line,sizeof line,"%s%s",lut_favorite[index]?"★ ":"",recipes[index].label);
                 lut_place(338,100+j*48,right-338,44);
-                if(lut_button(line,first+j==lut_list_cursor)){lut_list_cursor=first+j;choose(index);confirm_lut();dirty=1;}
+                if(lut_button(line,first+j==lut_list_cursor)){lut_list_cursor=first+j;choose(index);dirty=1;}
             }
             if(!total){lut_place(338,100,right-338,50);nk_label(ctx,"暂无收藏",NK_TEXT_LEFT);}
         }else{
             for(int i=0;i<8;i++)lut_slider_row(i,338,94+i*44,right-338);
         }
-        lut_place(338,448,right-338,22);
-        nk_label_colored(ctx,lut_submit_failed?status:child?"正在提交，完成后可继续选择":lut_list_open?"滚轮选风格  OK确认  Fn微调  MENU返回":"上下选项  滚轮调整  Fn保存返回",NK_TEXT_LEFT,nk_rgb(158,171,188));
+        const struct nk_user_font *main_font=ctx->style.font;
+        nk_style_set_font(ctx,panel_hint_font());
+        lut_place(338,444,right-338,30);
+        nk_label_colored(ctx,lut_submit_failed?status:lut_category_focus?"左右／转盘切组  OK回列表":lut_list_open?(lut_list_cursor?"↑↓选风格  OK保存  Fn微调":"↑选分组  OK保存  Fn微调"):"↑↓选项  转盘调整  Fn回列表",NK_TEXT_LEFT,nk_rgb(158,171,188));
         static const char *scenes[]={"人像","风景","夜景"};
-        snprintf(line,sizeof line,"%s · %s  点按换图／长按原图",lut_reference_original?"原图":"参考预览",scenes[lut_reference_scene]);
+        snprintf(line,sizeof line,"%s·%s  点按切图／按住原图",lut_reference_original?"原图":"参考",scenes[lut_reference_scene]);
         lut_place(0,436,308,32);nk_label_wrap(ctx,line);
+        nk_style_set_font(ctx,main_font);
         nk_layout_space_end(ctx);
         if(lut_leave_dialog||child)nk_widget_disable_end(ctx);
     }

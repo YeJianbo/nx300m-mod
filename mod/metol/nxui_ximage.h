@@ -14,20 +14,30 @@
 #include <stdlib.h>
 #include <string.h>
 
+struct nx_cpu_glyph {
+    nk_rune rune;
+    unsigned used;
+    int valid, advance, left, top;
+    unsigned w, h;
+    unsigned char *coverage;
+};
 typedef struct XFont {
     FT_Library library;
     FT_Face ft;
     int ascent, height;
     struct nk_user_font handle;
-    /* Nuklear measures the same labels several times at one fixed size. */
-    struct { nk_rune rune; int advance, valid; } advances[512];
+    /* Four-way bounded cache, shared by measurement and rasterization. */
+    unsigned clock;
+    struct nx_cpu_glyph glyphs[128][4];
 } XFont;
 typedef struct XSurface {
     Display *dpy;
     int screen, present_failed;
     GC gc;
     unsigned int w, h, presents;
-    int rotated_ready;
+    int rotated_ready, image_valid, force_full;
+    unsigned full_uploads, partial_uploads, skipped_uploads;
+    unsigned long long uploaded_pixels;
     uint32_t *pixels;
     XImage *image;
     int left, top, right, bottom;
@@ -40,27 +50,43 @@ static int nx_cpu_rune(const char *text, int size, nk_rune *rune) {
     if (length <= 0) { *rune = 0xfffd; return 1; }
     return length;
 }
+static struct nx_cpu_glyph *nx_cpu_get_glyph(XFont *font, nk_rune rune) {
+    struct nx_cpu_glyph *set=font->glyphs[(unsigned)rune%128],*slot=&set[0];
+    for(unsigned i=0;i<4;i++) {
+        if(set[i].valid&&set[i].rune==rune){set[i].used=++font->clock;return &set[i];}
+        if(!set[i].valid||(slot->valid&&set[i].used<slot->used))slot=&set[i];
+    }
+    free(slot->coverage);memset(slot,0,sizeof *slot);
+    slot->rune=rune;slot->used=++font->clock;slot->valid=1;
+    if(FT_Load_Char(font->ft,rune,FT_LOAD_RENDER|FT_LOAD_TARGET_NORMAL))return slot;
+    FT_GlyphSlot glyph=font->ft->glyph;FT_Bitmap *bitmap=&glyph->bitmap;
+    slot->advance=glyph->advance.x>>6;slot->left=glyph->bitmap_left;slot->top=glyph->bitmap_top;
+    slot->w=bitmap->width;slot->h=bitmap->rows;
+    if(!slot->w||!slot->h)return slot;
+    slot->coverage=malloc((size_t)slot->w*slot->h);
+    if(!slot->coverage)return slot;
+    for(unsigned y=0;y<slot->h;y++) {
+        const unsigned char *row=bitmap->buffer+(bitmap->pitch>=0?y:slot->h-1-y)*abs(bitmap->pitch);
+        for(unsigned x=0;x<slot->w;x++)
+            slot->coverage[(size_t)y*slot->w+x]=bitmap->pixel_mode==FT_PIXEL_MODE_MONO?
+                ((row[x>>3]&(0x80>>(x&7)))?255:0):row[x];
+    }
+    return slot;
+}
 static float nx_cpu_text_width(nk_handle handle, float height, const char *text, int length) {
     XFont *font = handle.ptr; int advance = 0, offset = 0; nk_rune rune;
     (void)height;
     while (text && offset < length) {
         offset += nx_cpu_rune(text + offset, length - offset, &rune);
-        unsigned slot = (unsigned)rune % NK_LEN(font->advances);
-        if (!font->advances[slot].valid || font->advances[slot].rune != rune) {
-            font->advances[slot].advance = FT_Load_Char(font->ft, rune, FT_LOAD_DEFAULT)
-                ? 0 : (int)(font->ft->glyph->advance.x >> 6);
-            font->advances[slot].rune = rune;
-            font->advances[slot].valid = 1;
-        }
-        advance += font->advances[slot].advance;
+        advance += nx_cpu_get_glyph(font,rune)->advance;
     }
     return (float)advance;
 }
-static XFont *nx_cpu_font(const char *path) {
+static XFont *nx_cpu_font_sized(const char *path, unsigned pixels) {
     XFont *font = calloc(1, sizeof *font);
     if (!font) return NULL;
     if (FT_Init_FreeType(&font->library) || FT_New_Face(font->library, path, 0, &font->ft) ||
-        FT_Set_Pixel_Sizes(font->ft, 0, 19)) {
+        FT_Set_Pixel_Sizes(font->ft, 0, pixels)) {
         if (font->ft) FT_Done_Face(font->ft);
         if (font->library) FT_Done_FreeType(font->library);
         free(font); return NULL;
@@ -72,6 +98,7 @@ static XFont *nx_cpu_font(const char *path) {
     font->handle.width = nx_cpu_text_width;
     return font;
 }
+static XFont *nx_cpu_font(const char *path) {return nx_cpu_font_sized(path,28);}
 static XFont *nk_xfont_create(Display *dpy, const char *name) {
     (void)dpy; (void)name;
     return nx_cpu_font("/usr/share/fonts/SDIC_GP_US_20120720.ttf");
@@ -79,6 +106,7 @@ static XFont *nk_xfont_create(Display *dpy, const char *name) {
 static void nk_xfont_del(Display *dpy, XFont *font) {
     (void)dpy;
     if (!font) return;
+    for(unsigned i=0;i<128;i++)for(unsigned j=0;j<4;j++)free(font->glyphs[i][j].coverage);
     FT_Done_Face(font->ft); FT_Done_FreeType(font->library); free(font);
 }
 static void nk_xsurf_resize(XSurface *s, unsigned int w, unsigned int h) {
@@ -86,7 +114,7 @@ static void nk_xsurf_resize(XSurface *s, unsigned int w, unsigned int h) {
     if (!w || !h || w > 800 || h > 800) { s->present_failed = 1; return; }
     if (s->image) XDestroyImage(s->image);
     free(s->pixels); s->pixels = NULL; s->image = NULL;
-    s->w = w; s->h = h; s->rotated_ready = 0;
+    s->w = w; s->h = h; s->rotated_ready = s->image_valid = 0;
     s->pixels = calloc((size_t)w * h, sizeof *s->pixels);
     s->image = XCreateImage(s->dpy, DefaultVisual(s->dpy, s->screen),
         DefaultDepth(s->dpy, s->screen), ZPixmap, 0, NULL, h, w, 32, 0);
@@ -154,28 +182,48 @@ static void nx_cpu_text(XSurface *s, const struct nk_command_text *t) {
     XFont *font=t->font->userdata.ptr; int pen=t->x, offset=0; nk_rune rune;
     while (offset<t->length) {
         offset+=nx_cpu_rune(t->string+offset,t->length-offset,&rune);
-        if (FT_Load_Char(font->ft,rune,FT_LOAD_RENDER|FT_LOAD_TARGET_NORMAL)) continue;
-        FT_GlyphSlot glyph=font->ft->glyph; FT_Bitmap *bitmap=&glyph->bitmap;
-        for (unsigned y=0;y<bitmap->rows;y++) for (unsigned x=0;x<bitmap->width;x++) {
-            const unsigned char *row=bitmap->buffer+(bitmap->pitch>=0?y:bitmap->rows-1-y)*abs(bitmap->pitch);
-            unsigned cover=bitmap->pixel_mode==FT_PIXEL_MODE_MONO ? ((row[x>>3]&(0x80>>(x&7)))?255:0) : row[x];
-            nx_cpu_pixel(s,pen+glyph->bitmap_left+x,t->y+font->ascent-glyph->bitmap_top+y,t->foreground,cover);
+        struct nx_cpu_glyph *glyph=nx_cpu_get_glyph(font,rune);
+        if(glyph->coverage)for (unsigned y=0;y<glyph->h;y++)for (unsigned x=0;x<glyph->w;x++) {
+            unsigned cover=glyph->coverage[(size_t)y*glyph->w+x];
+            if(cover)nx_cpu_pixel(s,pen+glyph->left+x,t->y+font->ascent-glyph->top+y,t->foreground,cover);
         }
-        pen+=glyph->advance.x>>6;
+        pen+=glyph->advance;
     }
 }
-static void nk_xsurf_blit(Drawable target, XSurface *s, unsigned int w, unsigned int h) {
+static void nx_cpu_upload(Drawable target, XSurface *s, unsigned int w, unsigned int h, int changes_only) {
     if (s->present_failed) return;
     if (w!=s->w || h!=s->h) {s->present_failed=1;return;}
+    int left=0,top=0,right=(int)h,bottom=(int)w;
+    int partial=changes_only&&s->image_valid&&!s->force_full;
     if (!s->rotated_ready) {
         /* A tiled transpose keeps both buffers local on the camera's CPU. */
+        if(partial){left=(int)h;top=(int)w;right=bottom=0;}
         for (unsigned by=0;by<h;by+=16) for (unsigned bx=0;bx<w;bx+=16)
-            for (unsigned y=by;y<NK_MIN(by+16,h);y++) for (unsigned x=bx;x<NK_MIN(bx+16,w);x++)
-                ((uint32_t *)(s->image->data+(size_t)x*s->image->bytes_per_line))[h-1-y]=s->pixels[(size_t)y*w+x];
+            for (unsigned y=by;y<NK_MIN(by+16,h);y++) for (unsigned x=bx;x<NK_MIN(bx+16,w);x++) {
+                uint32_t value=s->pixels[(size_t)y*w+x];
+                uint32_t *destination=(uint32_t *)(s->image->data+(size_t)x*s->image->bytes_per_line)+h-1-y;
+                if(partial) {
+                    if(*destination==value)continue;
+                    int rx=(int)(h-1-y),ry=(int)x;
+                    if(rx<left)left=rx;
+                    if(ry<top)top=ry;
+                    if(rx+1>right)right=rx+1;
+                    if(ry+1>bottom)bottom=ry+1;
+                }
+                *destination=value;
+            }
         s->rotated_ready=1;
     }
-    XPutImage(s->dpy,target,s->gc,s->image,0,0,0,0,h,w);
+    s->image_valid=1;s->force_full=0;
+    if(right<=left||bottom<=top){s->skipped_uploads++;return;}
+    if(left||top||right!=(int)h||bottom!=(int)w)s->partial_uploads++;else s->full_uploads++;
+    s->uploaded_pixels+=(unsigned)(right-left)*(unsigned)(bottom-top);
+    XPutImage(s->dpy,target,s->gc,s->image,left,top,left,top,(unsigned)(right-left),(unsigned)(bottom-top));
     if (!s->presents++) fprintf(stderr,"PANEL_PRESENT mode=cpu-ximage raw=%ux%u alpha=255\n",h,w);
+}
+static void nk_xsurf_blit(Drawable target, XSurface *s, unsigned int w, unsigned int h) {
+    /* Expose/map must repaint even unchanged pixels of the retained image. */
+    nx_cpu_upload(target,s,w,h,0);
 }
 static struct nk_context *nk_xlib_init(XFont *font, Display *dpy, int screen, Window window,
     Visual *visual, Colormap colormap, unsigned w, unsigned h) {
@@ -221,16 +269,23 @@ static void nk_xlib_render(Drawable target, struct nk_color clear) {
         const struct nk_command_image *c=(const void *)cmd;
         const struct nx_cpu_image *im=c->img.handle.ptr;
         if(!im||!im->pixels||!im->w||!im->h||im->w>800||im->h>800)break;
-        for(unsigned y=0;y<c->h;y++)for(unsigned x=0;x<c->w;x++) {
-            int dx=c->x+(int)x,dy=c->y+(int)y;
-            if(dx<s->left||dy<s->top||dx>=s->right||dy>=s->bottom)continue;
-            s->pixels[(size_t)dy*s->w+dx]=im->pixels[(size_t)(y*im->h/c->h)*im->w+x*im->w/c->w];
+        int left=NK_MAX(c->x,s->left),right=NK_MIN(c->x+c->w,s->right);
+        int top=NK_MAX(c->y,s->top),bottom=NK_MIN(c->y+c->h,s->bottom);
+        if(left>=right||top>=bottom)break;
+        /* Keep the same nearest-neighbour pixels. Divide once per column and
+         * row, rather than twice for every output pixel on the ARM CPU. */
+        unsigned source_x[800];
+        for(int x=left;x<right;x++)source_x[x-left]=(unsigned)(x-c->x)*im->w/c->w;
+        for(int y=top;y<bottom;y++) {
+            const uint32_t *row=im->pixels+(size_t)((unsigned)(y-c->y)*im->h/c->h)*im->w;
+            uint32_t *out=s->pixels+(size_t)y*s->w+left;
+            for(int x=0;x<right-left;x++)out[x]=row[source_x[x]];
         }
     } break;
     default:
         fprintf(stderr,"PANEL_PRESENT unsupported_command=%d\n",cmd->type);s->present_failed=1;break;
     }
-    nk_clear(&xlib.ctx);nk_xsurf_blit(target,s,s->w,s->h);
+    nk_clear(&xlib.ctx);nx_cpu_upload(target,s,s->w,s->h,1);
 }
 static void nk_xlib_handle_event(Display *dpy, int screen, Window window, XEvent *event) {
     struct nk_context *ctx=&xlib.ctx;(void)dpy;(void)screen;(void)window;

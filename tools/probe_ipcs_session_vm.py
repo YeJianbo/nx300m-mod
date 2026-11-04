@@ -16,6 +16,12 @@ BUILD=ROOT/'outputs/deployment/smartfilter-session'
 OUT=BUILD/'arm-vm'
 PROBE=ram.PROBE[:ram.PROBE.index('request original-mode 2')]+r'''
 set -x
+# The new scanner preserves exact PID/starttime and rejects a missing stock
+# executable. It performs no ptrace, IPCS or selection operation.
+/mnt/mmc/bin/smartfilter_probe_launcher.arm --camera-identity --fixture > native-camera-identity.txt 2> native-camera-identity.stderr
+read found_pid found_start < native-camera-identity.txt
+[ "$found_pid" = "$pid" ] && [ "$found_start" -gt 0 ]
+if /mnt/mmc/bin/smartfilter_probe_launcher.arm --camera-identity > missing-camera-identity.txt 2> missing-camera-identity.stderr; then exit 1; fi
 operation binding-libc-apply apply --s2 --session 0 --calltrace 0 --table /mnt/mmc/identity.d4lut --look identity --strength 100
 request loader-no-forced-refresh 124
 request automatic-insert 121
@@ -99,6 +105,28 @@ cp /mnt/mmc/lut-boot.sh "$RUNTIME/lut-boot.sh"
 /bin/sh -n /mnt/mmc/mfw-services.sh
 /bin/sh -n /mnt/mmc/lut-load.sh
 /bin/sh -n /mnt/mmc/lut-panel.sh
+# Exercise the actual panel launcher with a non-UI executable: a private link
+# must keep the old generation available after the resident pathname changes.
+pin_base=/tmp/panel-asset-pin
+pin_source=/perf/panel-source
+mkdir -p "$pin_base/runtime/bin" "$pin_base/runtime/fonts" "$pin_source"
+cp /mnt/mmc/lut-panel.sh "$pin_base/runtime/lut-panel.sh"
+printf '#!/bin/sh\nexit 0\n' > "$pin_base/runtime/bin/nxui.arm"
+cp "$pin_base/runtime/bin/nxui.arm" "$pin_base/runtime/bin/lut_engine.arm"
+chmod 500 "$pin_base/runtime/bin/nxui.arm" "$pin_base/runtime/bin/lut_engine.arm"
+printf 'coverage\n' > "$pin_base/runtime/fonts/mfw-font.charset"
+printf 'fixture\n' > "$pin_source/looks.txt"
+NX300M_MFW_RAM_BASE="$pin_base" NX300M_MOD_SOURCE_ROOT="$pin_source" \
+  NX300M_MOD_SOURCE_ID=$(stat -c '%d:%i' "$pin_source") \
+  /bin/sh "$pin_base/runtime/lut-panel.sh" --dry-run > panel-asset-pin.log 2>&1
+pin_runtime=$(sed -n 's/^panel_runtime=//p' panel-asset-pin.log)
+for pair in bin/nxui.arm:nxui.arm bin/lut_engine.arm:lut_engine.arm fonts/mfw-font.charset:mfw-font.charset; do
+    [ "$(stat -c '%d:%i' "$pin_base/runtime/${pair%:*}")" = "$(stat -c '%d:%i' "$pin_runtime/${pair#*:}")" ]
+done
+mv "$pin_base/runtime/bin/nxui.arm" "$pin_base/runtime/bin/nxui.old"
+printf 'replacement\n' > "$pin_base/runtime/bin/nxui.arm"
+cmp -s "$pin_runtime/nxui.arm" "$pin_base/runtime/bin/nxui.old"
+printf 'private_ram_inodes_pinned_across_replacement\n' >> panel-asset-pin.log
 /bin/sh -n /mnt/mmc/lut-cycle.sh
 /bin/sh -n /mnt/mmc/fn-panel.sh
 ! grep -q 'preview-softstop.sh.*--auto' /mnt/mmc/fn-panel.sh
@@ -106,6 +134,11 @@ cp /mnt/mmc/smartfilter-probe-collector.sh "$RUNTIME/smartfilter-probe-collector
 cp /mnt/mmc/ipcs-kdd-collector.sh "$RUNTIME/ipcs-kdd-collector.sh"
 cp /mnt/mmc/bin/smartfilter_loader.arm "$RUNTIME/ipcs-diagnostic/bin/"
 cp /mnt/mmc/bin/smartfilter_probe_launcher.arm "$RUNTIME/ipcs-diagnostic/bin/"
+cp /mnt/mmc/bin/smartfilter_probe_launcher.arm "$RUNTIME/bin/"
+chmod 500 "$RUNTIME/bin/smartfilter_probe_launcher.arm"
+# Match ram-stage.sh: nested diagnostic assets are read-only until copied to
+# the private job; only the normal bin scanner is resident-executable.
+chmod 400 "$RUNTIME/ipcs-diagnostic/bin/smartfilter_probe_launcher.arm"
 cp /mnt/mmc/bin/lut_engine.arm "$RUNTIME/bin/"
 cp /mnt/mmc/bin/lut_engine_switch_fixture.arm "$RUNTIME/bin/lut_engine.arm"
 cp /mnt/mmc/bin/lut_live_loader.arm "$RUNTIME/bin/"
@@ -437,7 +470,7 @@ def call(action,command='',vm_timeout=360):
     # The guest probe now includes the demand-retry recovery scenarios; give
     # the exec step a bounded but larger window than the old 360s default.
     args=['wsl.exe','-d','Debian','-u','root','-e','python3',arm_vm.wsl_path(__file__),
-          '--linux',action,'--timeout',str(vm_timeout),
+          '--output-dir',arm_vm.wsl_path(OUT),'--linux',action,'--timeout',str(vm_timeout),
           base64.b64encode(command.encode()).decode()]
     r=subprocess.run(args,capture_output=True,text=True,encoding='utf-8',
                      errors='replace',timeout=vm_timeout+60)
@@ -798,6 +831,12 @@ def verify(guest):
 
 
 if __name__=='__main__':
+    import argparse, sys
+    parser=argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--output-dir',type=Path,default=OUT)
+    args,remaining=parser.parse_known_args()
+    OUT=args.output_dir.resolve()
+    sys.argv=[sys.argv[0],*remaining]
     boundary.OUT=OUT; boundary.SOCKET='/tmp/nx300m-ipcs-session-private'
     boundary.MARKER='IPCS_SESSION_PRIVATE_VM_READY'; boundary.PROBE=PROBE
     boundary.prepare_original=boundary.prepare

@@ -255,3 +255,29 @@ Metol UI/后端最终构建退出 0，Quick Share 面板的共享 X11 后端重�
 当前模拟器入口优化已完成本次配对测量；仍未改动的后端输出读取预算和备用关闭标记见上文。后续按具体慢段选择，不统一增加 sleep 或为此反复重启相机。
 
 参考本地固定 Metol `ddbe8b119e046798e557add13837834f5e8d90ac` 的 [NXUI 说明](../work/reference/metol/test_server/nxui/README.md)，复用事件驱动、Expose 缓冲、任务串行、配置惰性生成经验。未采用 NX500 ISP 地址、capdtm 命令或 DRIMe V 控制逻辑；其中真机数据属于 NX500 作者记录。
+
+## 2026-11-04 菜单绘制与切换准备
+
+本次实体卡日志的两次 LUT 面板首帧绘制为 564／881 ms，风格提交总耗时 6817／7255 ms，其中预览同步为 6152／5935 ms。这是优化前的实机记录，不是新版性能。
+
+本轮改动集中在菜单和控制事件：
+
+- CPU 菜单保留完整绘制缓冲，仅将变化像素的包围矩形上传到 X11。首帧、尺寸变化和 Expose 仍完整上传；原厂取景缓冲不变。
+- 菜单使用 ARMv7 VFPv3-D16 的 softfp 构建，保留原有软浮点参数传递 ABI，不启用 fast-math。单独更换该选项的 VM 对照没有显示整体绘制收益，不以此声称实机提速。
+- 从只读发布的 RAM 资源创建面板私有硬链接，代替每次打开时复制并回读。引用保留原 inode，运行目录替换后仍有效；直接从卡启动或跨文件系统时保留原复制校验。
+- 预览控制由现有 launcher 一次原生遍历 `/proc`，替代对每个进程分别启动 `readlink`。仍校验完整可执行文件路径、唯一进程和启动时间，loader 原有身份校验不变。IPCS RAM blob、loader、Reset、IQ 恢复及拍照仲裁均未修改。
+
+同一 ARM guest、同一输入序列各取 50 个操作帧，改动前后 P50 为 **94.5 → 62.5 ms**，P95 为 **120 → 93 ms**；同一序列上传像素减少 **59.4%**。局部上传前后的微调界面截图逐像素一致。该耗时为输入出队至绘制请求提交，不包含实体按键链路和 LCD 扫描。
+
+按键、触摸、滚轮、Fn 保存留在列表、OK 保存退出、原图微调及预览／Still 控制回归通过。独立检查还确认私有 RAM 引用在路径替换后仍有效、缺失目标进程被拒绝；模拟器中原生扫描 67 个进程耗时 36 ms。原生扫描没有与实机旧扫描配对计时，不能将该数值折算为实际保存节省量。
+
+证据见 [本轮汇总](../outputs/review/menu-toggle-width/performance-pass/result.json)、[菜单 ARM 检查](../outputs/performance/lut-menu-entry/damage-selection-vm/report.json) 和 [Session 控制检查](../outputs/deployment/smartfilter-session/arm-vm/report.json)。新版实体菜单手感、LUT 保存总耗时及拍照写卡耗时尚未测量。
+# 2026-11-04 预览入口、分组导航与字号修复
+
+实体 `fn-key.log` 显示 LUT 页预览按钮执行了 SD 副本，被 RAM 运行检查拒绝；关闭 LUT 的恢复还报 `camera identity scanner unavailable`。前者来自面板把 LUT 数据根当成服务根，后者来自直接执行被 `ram-stage.sh` 设为 0400 的诊断 launcher。
+
+面板动作现在优先绑定 `NX300M_MFW_RAM_BASE/runtime` 和同代 state，子进程保留原 SD 数据身份。只读进程身份扫描固定使用正常 `bin/` 下的可执行 launcher；诊断 loader、blob 仍按原机制复制到私有 RAM 作业。没有绕过 RAM／身份检查，也没有改变硬件处理后端。
+
+主字体由 22 增到 28，辅助字体由 18 增到 22，并扩大上一款／下一款和百分比数值区域。列表上下键移动风格，第一项再按上进入分组，左右键／转盘切组，OK 或下键回列表；分组焦点有浅蓝边框。Fn 微调和保存回列表、OK 保存退出、MENU 返回保持既有行为。
+
+针对性 ARM X11 检查使用真实菜单程序、触摸坐标与按键，验证直接 LUT 入口和继承 Fn 环境时均转发到 RAM 服务；服务调用在该检查中为记录器。列表中上键不能直接跳分组的回归检查位于 `outputs/performance/lut-menu-entry/list-up-navigation-vm/`，同时检查首项边界和下键／OK 回列表。Session 检查按生产布局把诊断 scanner 设为 0400，运行真实 wrapper、ARM loader 和模拟硬件后端，启停、选择同步、拍照让路和异常恢复通过，Open／Close 为 218／218、残留引用为 0。完整交互与 Session 报告分别位于 `outputs/performance/lut-menu-entry/preview-navigation-validated-vm/` 与 `outputs/deployment/smartfilter-session/preview-navigation-vm/`。这些检查不测量实体 LCD FPS 或实体色彩。

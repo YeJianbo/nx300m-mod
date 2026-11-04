@@ -4,6 +4,7 @@
  * --ready JOB NONCE                 (caller must be the collector shell)
  * --run SECONDS STDOUT STDERR GUARD PROGRAM [ARG...]
  * --prepare SOURCE DEV:INO NONCE    (exclusive, empty probe target)
+ * --camera-identity [--fixture]     (read-only executable/PID/starttime scan)
  */
 #define _GNU_SOURCE
 #include <sys/types.h>
@@ -27,6 +28,8 @@
 #if defined(__arm__)
 extern unsigned long long old_strtoull(const char *, char **, int) __asm__("strtoull");
 #define strtoull old_strtoull
+extern unsigned long old_strtoul(const char *, char **, int) __asm__("strtoul");
+#define strtoul old_strtoul
 extern int old_sscanf(const char *, const char *, ...) __asm__("sscanf");
 #define sscanf old_sscanf
 extern int __fxstat64(int, int, struct stat64 *);
@@ -79,6 +82,35 @@ static unsigned long long starttime(pid_t pid) {
         if (n==22) return strtoull(field,NULL,10);
     }
     return 0;
+}
+static int camera_identity(int fixture) {
+    /* One native scan replaces one shell/readlink process per /proc entry.
+     * Keep exact executable paths and uniqueness, not a comm/pidof match.
+     * The loader independently authenticates this process before any change. */
+    DIR *directory=opendir("/proc");
+    if(!directory) die("camera process directory");
+    struct dirent *entry;unsigned matches=0,scanned=0;pid_t camera=0;
+    unsigned long long started=0;long long began=now_ms();
+    while((entry=readdir(directory))) {
+        if(!decimal(entry->d_name)) continue;
+        char *end;unsigned long number=strtoul(entry->d_name,&end,10);
+        if(*end||number<=1||number>0x7fffffffUL)continue;
+        char path[80],target[512];
+        snprintf(path,sizeof path,"/proc/%lu/exe",number);
+        ssize_t bytes=readlink(path,target,sizeof target-1);scanned++;
+        if(bytes<=0||bytes>=(ssize_t)sizeof target-1)continue;
+        target[bytes]=0;
+        int match=fixture?(!strcmp(target,"/mnt/mmc/bin/smartfilter_fixture.arm")||
+                          !strcmp(target,"/perf/smartfilter_fixture.arm")):
+                         !strcmp(target,"/usr/bin/di-camera-app-nx300");
+        if(match){matches++;camera=(pid_t)number;started=starttime(camera);}
+    }
+    closedir(directory);
+    fprintf(stderr,"Control process scan: processes=%u elapsed_ms=%lld\n",scanned,now_ms()-began);
+    if(matches!=1||!started||starttime(camera)!=started){
+        errno=ESRCH;die("expected one live original camera process");
+    }
+    printf("%ld %llu\n",(long)camera,started);return 0;
 }
 static void detach_signals(void) {
     sigset_t empty;
@@ -289,6 +321,8 @@ failed:
 }
 int main(int argc,char **argv) {
     umask(077);
+    if(argc==2&&!strcmp(argv[1],"--camera-identity"))return camera_identity(0);
+    if(argc==3&&!strcmp(argv[1],"--camera-identity")&&!strcmp(argv[2],"--fixture"))return camera_identity(1);
     if (argc==9 && !strcmp(argv[1],"--launch")) return launch(argc,argv);
     if (argc==4 && !strcmp(argv[1],"--ready")) return ready(argv[2],argv[3]);
     if (argc>=7 && !strcmp(argv[1],"--run")) return run(argc,argv);

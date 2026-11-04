@@ -68,7 +68,7 @@ wait_backend() {
     until grep -q '^BACKEND kind=1 ok=1' "$1"; do
         kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
     done
-    kill -0 "$panel" # Save must keep the panel open.
+    if [ "${2:-stay}" != exit ]; then kill -0 "$panel"; fi
 }
 for variant in saved-mono keys-from-off tap-from-off browse-mono; do
     rm -f /var/run/nx300m-lut-selection
@@ -98,11 +98,10 @@ for variant in saved-mono keys-from-off tap-from-off browse-mono; do
             /perf/close.arm key KP_Right ;;
     esac
     /rescue/busybox usleep 300000
-    if [ "$variant" != tap-from-off ]; then [ ! -s /perf/actions.txt ]; fi
+    [ ! -s /perf/actions.txt ]
     /perf/close.arm snapshot /perf/$variant-picked.ppm
-    if [ "$variant" != tap-from-off ]; then /perf/close.arm key KP_Enter; fi
-    wait_backend /perf/$variant.log
-    /perf/close.arm key Menu
+    /perf/close.arm key KP_Enter
+    wait_backend /perf/$variant.log exit
     wait "$panel"
     cp /perf/actions.txt /perf/$variant-actions.txt
     cat /perf/$variant-actions.txt
@@ -225,14 +224,127 @@ printf 'nx300-hard-mono\nnx300-fuji-classic-chrome\n' > /perf/mod/.state/lut-fav
 cp /perf/tune-engine.arm /perf/mod/bin/lut_engine.arm
 NX300M_MOD_SOURCE_ROOT=/perf/mod /bin/sh /perf/mod/lut-cycle.sh > /perf/cycle-tuned.log 2>&1
 grep -q '/looks/nx300-fuji-classic-chrome/table.d4lut' /var/run/nx300m-lut-selection
+# Up inside the list must select its previous look. Only Up at its first row
+# transfers focus to groups. Browsing stays local until OK confirmation.
+printf '0\n' > /perf/mod/.state/lut-category
+: > /perf/actions.txt
+NX_STATE_DIR=/tmp/select-groups /perf/mod/bin/nxui.arm --live --lut \
+    --root /perf/mod --recipes /perf/mod/looks.txt --engine /perf/engine.sh \
+    --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
+    --font-metadata /perf/mod/fonts/mfw-font.charset > /perf/groups.log 2>&1 &
+panel=$!
+attempt=0
+until grep -q '^FIRST_FRAME ' /perf/groups.log; do
+    kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+done
+/perf/close.arm key Up
+/rescue/busybox usleep 300000
+! grep -q '^LUT_GROUP focus=1' /perf/groups.log
+grep -q 'LUT_CHOICE event=select index=2 key=nx300-hard-mono' /perf/groups.log
+attempt=0
+until grep -q '^LUT_GROUP focus=1' /perf/groups.log; do
+    attempt=$((attempt+1)); [ "$attempt" -lt 10 ]
+    /perf/close.arm key Up
+    /rescue/busybox usleep 100000
+done
+for key in Right XF86ScrollUp; do /perf/close.arm key "$key"; done
+/rescue/busybox usleep 300000
+grep -q '^LUT_GROUP focus=1 group=2' /perf/groups.log
+/rescue/busybox usleep 300000
+/perf/close.arm snapshot /perf/groups-focus.ppm
+/perf/close.arm key Down
+/rescue/busybox usleep 300000
+grep -q '^LUT_GROUP focus=0 group=2' /perf/groups.log
+[ ! -s /perf/actions.txt ]
+/perf/close.arm key Up
+/perf/close.arm key KP_Enter
+/rescue/busybox usleep 300000
+[ ! -s /perf/actions.txt ]
+/perf/close.arm key KP_Enter
+wait_backend /perf/groups.log exit
+wait "$panel"
+gzip /perf/groups-focus.ppm
+# The real LUT header button must dispatch through RAM even when the UI root
+# is the SD-style data directory and an old Fn-menu service root is inherited.
+base=/tmp/lut-menu-service
+mkdir -p "$base/runtime" "$base/state"
+cat > "$base/runtime/mfw-panel-actions.sh" <<'RAM_ACTION'
+#!/bin/sh
+set -eu
+[ "$1" = preview-toggle ]
+[ "$NX300M_MOD_ROOT" = /tmp/lut-menu-service/runtime ]
+[ "$NX_MOD_ROOT" = "$NX300M_MOD_ROOT" ]
+[ "$NX_FN_SERVICE_ROOT" = "$NX300M_MOD_ROOT" ]
+[ "$NX_STATE_DIR" = /tmp/lut-menu-service/state ]
+[ "$NX300M_MOD_SOURCE_ROOT" = /perf/mod ]
+[ "$NX300M_MOD_SOURCE_ID" = "$(stat -c '%d:%i' /perf/mod)" ]
+printf 'RAM_PREVIEW_ROUTE_OK\n'
+RAM_ACTION
+# Fail closed if the broken SD route is accidentally used again.
+printf '#!/bin/sh\necho WRONG_SD_SERVICE_ROOT\nexit 9\n' > /perf/mod/mfw-panel-actions.sh
+for variant in standalone inherited-fn; do
+    inherited_service=
+    [ "$variant" != inherited-fn ] || inherited_service=/perf/mod/fn-panel
+    NX300M_MFW_RAM_BASE="$base" NX_FN_SERVICE_ROOT="$inherited_service" \
+    NX300M_MOD_SOURCE_ROOT=/perf/mod NX300M_MOD_SOURCE_ID="$(stat -c '%d:%i' /perf/mod)" \
+    /perf/mod/bin/nxui.arm --live --lut --root /perf/mod --recipes /perf/mod/looks.txt \
+        --engine /perf/engine.sh --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
+        --font-metadata /perf/mod/fonts/mfw-font.charset > /perf/ram-route-$variant.log 2>&1 &
+    panel=$!
+    attempt=0
+    until grep -q '^FIRST_FRAME ' /perf/ram-route-$variant.log; do
+        kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+    done
+    /perf/close.arm tap 310 30
+    attempt=0
+    until grep -q '^BACKEND kind=5 ok=1 .*RAM_PREVIEW_ROUTE_OK' /perf/ram-route-$variant.log; do
+        kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+    done
+    /perf/close.arm key Menu
+    wait "$panel"
+done
 kill "$stock"
 trap - EXIT
 '''
 
 
+RENDER_PROBE=r'''
+# Same guest, source tables and acknowledged input sequence. No hardware work.
+printf '1 /perf/mod/looks/nx300-hard-mono/table.d4lut 100\n' > /var/run/nx300m-lut-selection
+rm -f /perf/mod/.state/lut-category
+for trial in 1 2; do
+  for variant in released current; do
+    binary=/perf/released.arm
+    [ "$variant" != current ] || binary=/perf/mod/bin/nxui.arm
+    log=/perf/render-$variant-$trial.log
+    NX_PANEL_TRACE=1 NX_STATE_DIR=/tmp/render-$variant-$trial "$binary" --live --lut \
+        --root /perf/mod --recipes /perf/mod/looks.txt --engine /perf/tune-engine.arm \
+        --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
+        --font-metadata /perf/mod/fonts/mfw-font.charset > "$log" 2>&1 &
+    panel=$!
+    attempt=0
+    until grep -q '^FIRST_FRAME ' "$log"; do
+        kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 50000
+    done
+    for key in XF86HomePage Down Up Down Up Down Up Down Up Down Up Down Up Right Left Right Left Right Left Right Left Right Left Right Left; do
+        before=$(grep -c '^PANEL_FRAME .*painted=1' "$log" || :)
+        /perf/close.arm key "$key"
+        attempt=0
+        until [ "$(grep -c '^PANEL_FRAME .*painted=1' "$log" || :)" -gt "$before" ]; do
+            kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 20000
+        done
+    done
+    /perf/close.arm key Menu
+    wait "$panel"
+  done
+done
+'''
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', type=Path, default=ROOT/'outputs/performance/menu-event-loop/lut-selection/before')
+    parser.add_argument('--render-baseline', type=Path, help='用同一 ARM guest 对比已发布菜单的逐次绘制耗时')
+    parser.add_argument('--navigation-only', action='store_true', help='只检查列表边界、分类导航和预览按钮路由')
     args = parser.parse_args()
     out = args.output_dir.resolve()
     if (out/'report.json').exists():
@@ -242,6 +354,13 @@ def main():
         catalogue = package.read('nx300m-mod/looks.txt').decode().rstrip()
     vm.OUT = out
     vm.PROBE = PROBE.replace('@CATALOGUE@', catalogue)
+    if args.navigation_only:
+        start=vm.PROBE.index('# Up inside the list')
+        prefix=vm.PROBE[:vm.PROBE.index('for variant in saved-mono')]
+        setup="mkdir -p /perf/mod/.state\nprintf '1 /perf/mod/looks/nx300-fuji-classic-chrome/table.d4lut 100\\n' > /var/run/nx300m-lut-selection\n"
+        vm.PROBE=prefix+setup+vm.PROBE[start:]
+    if args.render_baseline:
+        vm.PROBE=vm.PROBE.replace('kill "$stock"\ntrap - EXIT',RENDER_PROBE+'\nkill "$stock"\ntrap - EXIT')
     vm.DRIVER = vm.DRIVER.replace('    if(argc==2) {', TAP_DRIVER+'\n    if(argc==2) {', 1)
     vm.DRIVER = vm.DRIVER.replace('    XEvent event={0};', '    if(capture_only){XCloseDisplay(d);return 0;}\n    XEvent event={0};', 1)
     vm.DRIVER = vm.DRIVER.replace('XStringToKeysym("Menu")', 'XStringToKeysym(argc==3 ? argv[2] : "Menu")')
@@ -252,6 +371,8 @@ def main():
         'perf/mod/bin/lut_engine.arm': b'#!/bin/sh\nprintf "%s\\n" "$*" >> /perf/actions.txt\nexit 0\n',
     }
     vm.EXTRA_FILES['perf/tune-engine.arm']=(ROOT/'outputs/review/menu-toggle-width/tuning-arm/engine.arm').read_bytes()
+    if args.render_baseline:
+        vm.EXTRA_FILES['perf/released.arm']=args.render_baseline.read_bytes()
     with ZipFile(archive) as package:
         vm.EXTRA_FILES.update({'perf/mod/'+name.removeprefix('nx300m-mod/'):package.read(name)
                                for name in package.namelist() if '/looks/' in name and name.endswith('.d4lut')})
@@ -274,9 +395,17 @@ def main():
         arm_vm.write_json(out/'execution.json', execution)
         variants = ('saved-mono', 'keys-from-off', 'tap-from-off', 'browse-mono')
         if execution['exit_code']:
-            for name in ('tune.log','tune-state.txt'):
-                collect(out,name)
+            for name in ('tune.log','tune-state.txt','groups.log','ram-route-standalone.log','ram-route-inherited-fn.log'):
+                try:collect(out,name)
+                except RuntimeError:pass  # Later scenarios may not have run.
             raise RuntimeError('Selection probe failed: '+execution['output'])
+        if args.navigation_only:
+            for name in ('groups.log','groups-focus.ppm.gz','ram-route-standalone.log','ram-route-inherited-fn.log'):
+                collect(out,name)
+            report.update(passed=True,list_up_moves_previous_before_entering_groups=True,
+                          first_row_up_enters_group_and_down_returns=True,
+                          lut_header_preview_dispatches_ram_service_with_data_identity=True)
+            return
         for variant in variants:
             for suffix in ('.log', '-actions.txt'):
                 collect(out, variant+suffix)
@@ -289,10 +418,16 @@ def main():
         actions = {v: (out/(v+'-actions.txt')).read_text().splitlines()
                    for v in variants}
         collect(out, 'off-preview.log')
-        for name in ('tune.log','tune-reopen.log','original.log','tune-inline.ppm.gz','cycle-tuned.log'):
+        for name in ('tune.log','tune-reopen.log','original.log','tune-inline.ppm.gz','cycle-tuned.log',
+                     'groups.log','groups-focus.ppm.gz','ram-route-standalone.log','ram-route-inherited-fn.log'):
             collect(out,name)
+        report['list_up_moves_previous_before_entering_groups']=True
+        report['first_row_up_enters_group_and_down_returns']=True
+        report['lut_header_preview_dispatches_ram_service_with_data_identity']=True
         report['inline_tuning_persistence_favorites_and_reference_checked']=True
         report['fn_saves_without_exit_and_wheel_adjusts']=True
+        report['ok_saves_and_returns_viewfinder']=True
+        report['touch_browsing_does_not_submit']=True
         report['identity_preset_tuning_saved_without_film']=True
         report['tuned_zero_ui_cycle_and_favorites_checked']=True
         report['lut_cycle_sha256']=hashlib.sha256((ROOT/'mod/deployment/mfw/lut-cycle.sh').read_bytes()).hexdigest()
@@ -315,6 +450,20 @@ def main():
         report['passed'] = all(report[key] for key in ('browsing_waits_for_confirmation', 'only_final_choice_submitted_once',
                               'full_catalogue_keyboard_and_touch_select_mono', 'off_preview_explains_selection_required',
                               'direct_launcher_does_not_call_adapter_or_restore_selection', 'saved_choice_visible_without_camera_mutation'))
+        if args.render_baseline:
+            import statistics
+            measurements={}
+            for variant in ('released','current'):
+                latency=[]
+                for trial in (1,2):
+                    name=f'render-{variant}-{trial}.log';collect(out,name)
+                    log=(out/name).read_text()
+                    latency += [int(b)-int(a) for a,b in re.findall(r'PANEL_FRAME .*dequeued_ms=(\d+) submitted_ms=(\d+).*painted=1',log)]
+                if len(latency)<20:raise RuntimeError('Insufficient measured render frames: '+variant)
+                latency.sort()
+                measurements[variant]=dict(frames=len(latency),p50_ms=statistics.median(latency),
+                    p95_ms=latency[int((len(latency)-1)*.95)])
+            report['render_comparison_arm_vm']=measurements
     except Exception as error:
         report['error'] = str(error)
         raise

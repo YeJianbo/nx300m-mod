@@ -30,6 +30,7 @@
 #include "nxui_services.h"
 #include "mod_paths.h"
 #include "lut_tune.h"
+#include "lut_reference_interp.h"
 extern Bool XTestFakeKeyEvent(Display *, unsigned int, Bool, unsigned long);
 /* glibc 2.13 exposes the versioned ARM stat64 entry points. */
 extern int __xstat64(int, const char *, struct stat64 *);
@@ -69,7 +70,7 @@ static int lut_category_count[9];
 static void lut_load_tune(void);
 static void lut_init_groups(void);
 static void lut_step(int delta);
-static void confirm_lut(void);
+static void confirm_lut(int target);
 static void lut_request_leave(int target);
 static void lut_save_navigation(void);
 static int lut_field_supported(int field);
@@ -103,6 +104,10 @@ static Display *display;
 static Window window, panel_parent;
 static int screen, width, height, panel_parent_height, panel_focus_revert = RevertToPointerRoot;
 static struct nk_context *ctx;
+static XFont *hint_font;
+static const struct nk_user_font *panel_hint_font(void) {
+    return hint_font?&hint_font->handle:ctx->style.font;
+}
 static int panel_visibility = VisibilityFullyObscured, panel_raise_retry, panel_yielded;
 /* Do not rely on a window manager to restore input after this panel closes.
  * Stock windows can also raise themselves or reclaim focus during a transition.
@@ -506,8 +511,9 @@ static void choose(int index) {
     nx_queue_select(&queue, selected, now_ms());
     preview_status();
 }
-static void confirm_lut(void) {
+static void confirm_lut(int target) {
     if (count <= 0 || queue.close_requested) return;
+    lut_exit_after_save=target;
     fprintf(stderr, "LUT_CHOICE event=confirm index=%d key=%s running=%d desired=%d\n",
             selected, recipes[selected].key, queue.running, queue.desired);
     /* OK confirms the displayed choice even while an earlier control drains.
@@ -643,10 +649,19 @@ static void mfw_child_close_fds(void) {
     closedir(directory);
 }
 static int start_mfw_action(const char *action) {
-    int pipefd[2]; pid_t pid; char launcher[NXUI_PATH];
+    int pipefd[2]; pid_t pid; char launcher[NXUI_PATH], runtime[NXUI_PATH], state_dir[NXUI_PATH];
+    const char *base=getenv("NX300M_MFW_RAM_BASE"), *service=getenv("NX_FN_SERVICE_ROOT");
     int readonly = !strcmp(action, "status") || !strcmp(action, "network-info") || !strcmp(action, "preview-status");
     if (child || mfw_retired_child || !mfw_action_allowed(action)) return 0;
-    if (snprintf(launcher, sizeof launcher, "%s/mfw-panel-actions.sh", root) >= (int)sizeof launcher || pipe(pipefd) < 0) return 0;
+    /* The LUT root is SD data, while actions belong to the verified RAM
+     * service generation. Never run the data directory's preview wrapper. */
+    if(base&&*base) {
+        if(!nx_mod_root_valid(base)||snprintf(runtime,sizeof runtime,"%s/runtime",base)>=(int)sizeof runtime||
+           snprintf(state_dir,sizeof state_dir,"%s/state",base)>=(int)sizeof state_dir)return 0;
+        service=runtime;
+    }
+    if(!service||!*service)service=root;
+    if (snprintf(launcher, sizeof launcher, "%s/mfw-panel-actions.sh", service) >= (int)sizeof launcher || pipe(pipefd) < 0) return 0;
     pid_t parent = getpid();
     pid = fork();
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return 0; }
@@ -657,6 +672,9 @@ static int start_mfw_action(const char *action) {
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO); dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]); mfw_child_close_fds();
+        if(setenv("NX300M_MOD_ROOT",service,1)||setenv("NX_MOD_ROOT",service,1)||
+           setenv("NX_FN_SERVICE_ROOT",service,1)||
+           (base&&*base&&setenv("NX_STATE_DIR",state_dir,1)))_exit(126);
         execl("/bin/sh", "sh", launcher, action, (char *)0);
         _exit(127);
     }
@@ -1082,7 +1100,7 @@ static void draw(void) {
             if (nk_button_label(ctx, "‹ 上一个")) choose(selected-1);
             if (nk_button_label(ctx, lut_mode ? "确定" : (live ? "应用并关闭" : "选择并关闭")) && !queue.close_requested) {
                 if (lut_mode) {
-                    confirm_lut();
+                    confirm_lut(1);
                 } else {
                 /* Confirm the selected recipe through the same batch path,
                  * including after a previous preview. No flash save occurs. */
@@ -1127,7 +1145,7 @@ static XFont *panel_font_file(const char *path, const char *metadata) {
 int main(int argc, char **argv) {
     const char *recipe_path = NULL, *initial_menu = NULL, *shot = NULL;
     char default_recipes[NXUI_PATH], default_engine[NXUI_PATH];
-    const char *font_name = "SDIC_GP_US:pixelsize=19";
+    const char *font_name = "SDIC_GP_US:pixelsize=28";
     const char *font_file = NULL;
     const char *font_metadata = NULL;
     XSetWindowAttributes attr; XFont *font; Atom wm_delete; int i, lockfd, render_count = 0;
@@ -1257,6 +1275,7 @@ int main(int argc, char **argv) {
     window_ready = now_ms();
     font = font_file ? panel_font_file(font_file, font_metadata) : nk_xfont_create(display, font_name);
     if (!font || !font->ft) { fprintf(stderr, "font unavailable\n"); return 5; }
+    hint_font=nx_cpu_font_sized(font_file?font_file:"/usr/share/fonts/SDIC_GP_US_20120720.ttf",22);
     font_ready = now_ms();
     fprintf(stderr, "PANEL_FONT mode=%s source=%s\n",
         font_file ? "file" : "match", font_file ? font_file : font_name);
@@ -1292,7 +1311,7 @@ int main(int argc, char **argv) {
     draw();
     if (xlib.surf->present_failed) {
         fprintf(stderr, "Panel image unavailable; stock focus was not changed\n");
-        nk_xlib_shutdown(); nk_xfont_del(display, font);
+        nk_xlib_shutdown(); nk_xfont_del(display, font);nk_xfont_del(display,hint_font);
         XDestroyWindow(display, window); XCloseDisplay(display); return 5;
     }
     /* Prove the hidden image completed before exposing a window or taking
@@ -1305,7 +1324,7 @@ int main(int argc, char **argv) {
     if (!panel_show()) {
         panel_stage("entry-not-visible");
         nx_panel_input_hide(&panel_input);
-        nk_xlib_shutdown(); nk_xfont_del(display, font);
+        nk_xlib_shutdown(); nk_xfont_del(display, font);nk_xfont_del(display,hint_font);
         XDestroyWindow(display, window); XCloseDisplay(display); alarm(0); return 5;
     }
     dirty = 0; render_count = 1;
@@ -1447,7 +1466,7 @@ int main(int argc, char **argv) {
                 else if (!menu && (key == XK_Right || key == XK_Down || key == XK_KP_Right || key == XK_KP_Down)) choose(selected+1);
                 else if (!menu && (key == XK_Left || key == XK_Up || key == XK_KP_Left || key == XK_KP_Up)) choose(selected-1);
                 else if (!menu && (key == XK_Return || key == XK_KP_Enter) && (lut_mode || !child) && count > 0) {
-                    if (lut_mode) confirm_lut();
+                    if (lut_mode) confirm_lut(1);
                     else {
                         nx_queue_select(&queue, selected, now_ms()-NXUI_DEBOUNCE_MS);
                         queue.commit_requested = 1; queue.close_requested = 1;
@@ -1530,6 +1549,7 @@ int main(int argc, char **argv) {
         if (tick >= next_frame && !quit && !queue.close_requested) {
             if (dirty) {
                 long long draw_started = now_ms(), elapsed;
+                if(refresh)xlib.surf->force_full=1;
                 dirty = 0; draw(); render_count++; painted = 1;
                 if (lut_mode && lut_page_requested) {
                     XSync(display, False);
@@ -1587,11 +1607,13 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr, "EXIT renders=%d elapsed_ms=%lld wakeups=%d blits=%d max_draw_ms=%lld\n",
         render_count, now_ms()-started, wakeups, blits, max_draw_ms);
+    fprintf(stderr,"PANEL_UPLOAD full=%u partial=%u skipped=%u pixels=%llu\n",xlib.surf->full_uploads,
+        xlib.surf->partial_uploads,xlib.surf->skipped_uploads,xlib.surf->uploaded_pixels);
     log_resources("exit");
     alarm(5);
     nx_panel_input_restore_focus(&panel_input);
     nx_panel_input_drain_s1(&panel_input, request_s1_close);
-    nk_xlib_shutdown(); nk_xfont_del(display, font);
+    nk_xlib_shutdown(); nk_xfont_del(display, font);nk_xfont_del(display,hint_font);
     alarm(0);
     nx_panel_input_close_evdev(&panel_input);
     alarm(5);

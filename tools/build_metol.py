@@ -35,7 +35,7 @@ ref=work/reference/metol/test_server/nxui
  -std=c99 -O2 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
  -I"$tc/include" -I"$tc/include/freetype2" -I"$ref" \
  -U_TIME_BITS -D_TIME_BITS=32 -U_FILE_OFFSET_BITS -D_FILE_OFFSET_BITS=32 \
- -mfloat-abi=soft -fno-pic -no-pie -fno-stack-protector \
+ -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=softfp -fno-pic -no-pie -fno-stack-protector \
  -nostdlib -nostartfiles -Wl,-e,_start -Wl,--dynamic-linker=/lib/ld-linux.so.3 \
  -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$rf/usr/lib" -Wl,-rpath-link,"$rf/lib" \
  mod/metol/nxui.c "$ref/nxui_model.c" "$ref/nxui_services.c" \

@@ -61,28 +61,17 @@ backend_value
 if [ "$command" = sync ]; then
     [ "$value" = smartfilter ] || fail 'continuous S2 is not enabled; sync does not enable it'
 fi
-pids=
-set +f
-for entry in /proc/[0-9]*/exe; do
-    target=$(readlink "$entry" 2>/dev/null) || continue
-    matched=0
-    if [ "$fixture" = 1 ]; then
-        case $target in /mnt/mmc/bin/smartfilter_fixture.arm|/perf/smartfilter_fixture.arm) matched=1 ;; esac
-    else
-        [ "$target" != /usr/bin/di-camera-app-nx300 ] || matched=1
-    fi
-    if [ "$matched" = 1 ]; then value=${entry#/proc/}; pids="$pids ${value%/exe}"; fi
-done
-set -f
-set -- $pids
-[ "$#" -eq 1 ] || fail 'expected one original camera process'
+identity_launcher=$HERE/bin/smartfilter_probe_launcher.arm
+# The read-only scanner is independent of the session ABI. Diagnostic assets
+# are staged as 0400 and become executable only in the private job below.
+[ -f "$identity_launcher" ] && [ ! -L "$identity_launcher" ] && [ -x "$identity_launcher" ] || fail 'camera identity scanner unavailable'
+set -- --camera-identity
+[ "$fixture" != 1 ] || set -- "$@" --fixture
+camera_identity=$("$identity_launcher" "$@") || fail 'expected one live original camera process'
+set -- $camera_identity
+[ "$#" -eq 2 ] || fail 'camera identity unavailable'
 camera_pid=$1
-IFS= read -r camera_fields < "/proc/$camera_pid/stat" || fail 'camera identity unavailable'
-camera_fields=${camera_fields##*) }
-set -- $camera_fields
-[ "$#" -ge 20 ] && [ "$1" != Z ] || fail 'camera process is not live'
-shift 19
-camera_start=$1
+camera_start=$2
 job=$(mktemp -d /tmp/nx300m-sf-job.XXXXXX) || fail 'cannot allocate private RAM job'
 case $(stat -f -c '%T' "$job") in tmpfs|ramfs) ;; *) rmdir "$job"; fail 'job must be RAM backed' ;; esac
 for pair in bin/smartfilter_probe_launcher.arm:launcher bin/smartfilter_loader.arm:loader.arm lib/smartfilter_ram.bin:blob.bin smartfilter-probe-collector.sh:collector.sh; do

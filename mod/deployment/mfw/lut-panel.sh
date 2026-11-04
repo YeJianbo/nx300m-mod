@@ -49,12 +49,27 @@ awk -v path="$ram_tmp" '
 exec 8>"$ram_tmp/nx300m-panel-launch${NXUI_LOCK_TAG:-}.lock"
 flock -n 8 || fail 'a native panel is already open'
 runtime=$(mktemp -d "$ram_tmp/nx300m-lut-panel.XXXXXX") || fail 'cannot allocate RAM panel directory'
+ram_assets=0
+if [ -n "${NX300M_MFW_RAM_BASE:-}" ] && [ "$CODE" = "$NX300M_MFW_RAM_BASE/runtime" ]; then
+    case $(stat -f -c '%T' "$CODE") in tmpfs|ramfs) ram_assets=1 ;; esac
+fi
 for asset in nxui.arm lut_engine.arm; do
-    cp "$CODE/bin/$asset" "$runtime/$asset" && cmp -s "$CODE/bin/$asset" "$runtime/$asset" || fail "RAM copy differs: $asset"
-    chmod 500 "$runtime/$asset"
+    # Staged generations are published read-only and replaced by rename, never
+    # edited in place. A private hard link pins the same inode across service
+    # replacement, without copying and rereading the executable on every open.
+    if [ "$ram_assets" = 1 ] && [ -x "$CODE/bin/$asset" ] && ln "$CODE/bin/$asset" "$runtime/$asset"; then
+        :
+    else
+        cp "$CODE/bin/$asset" "$runtime/$asset" && cmp -s "$CODE/bin/$asset" "$runtime/$asset" || fail "RAM copy differs: $asset"
+        chmod 500 "$runtime/$asset"
+    fi
 done
-cp "$CODE/fonts/mfw-font.charset" "$runtime/mfw-font.charset" && \
-    cmp -s "$CODE/fonts/mfw-font.charset" "$runtime/mfw-font.charset" || fail 'RAM font coverage copy differs'
+if [ "$ram_assets" = 1 ] && ln "$CODE/fonts/mfw-font.charset" "$runtime/mfw-font.charset"; then
+    :
+else
+    cp "$CODE/fonts/mfw-font.charset" "$runtime/mfw-font.charset" && \
+        cmp -s "$CODE/fonts/mfw-font.charset" "$runtime/mfw-font.charset" || fail 'RAM font coverage copy differs'
+fi
 export DISPLAY=${DISPLAY:-:0}
 export NX300M_MOD_ROOT="$ROOT" NX300M_MOD_SOURCE_ROOT="$ROOT" NX300M_MOD_SOURCE_ID="$source_id"
 export NX_STATE_DIR="$runtime"
