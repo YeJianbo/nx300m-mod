@@ -4,6 +4,8 @@
 
 **开始使用：**[中文使用指南](docs/USER_GUIDE.md) · [下载测试版](https://github.com/YeJianbo/nx300m-mod/releases) · [安装与回退](docs/INSTALL.md)。当前 Release 提供匹配现有后端的菜单升级包，完整首装及 Android APK 不在本次附件中。
 
+**使用前请读：**本项目非三星官方项目，测试版可能出现拍摄中断、异常退出或文件损坏，请先备份并在重要拍摄前验证。NX300 可能兼容但尚未验证，不保证其他机型或固件版本适用。详见 [使用风险与版权说明](docs/RISKS_AND_RIGHTS.md)；第三方代码和素材继续遵守各自许可证。
+
 ## 我们改了什么
 
 ### 相机端

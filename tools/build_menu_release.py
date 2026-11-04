@@ -61,6 +61,13 @@ def build(version: str) -> Path:
                     still_build=record['still_lut_build'], requires=requires,
                     physical_transition_verified=False)
     guide = (ROOT/'docs/USER_GUIDE.md').read_text(encoding='utf-8')
+    rights = (ROOT/'docs/RISKS_AND_RIGHTS.md').read_text(encoding='utf-8')
+    for relative, destination in {
+        '../THIRD_PARTY.md': 'THIRD_PARTY.md',
+        '../mod/metol/assets/README.md': 'mod/metol/assets/README.md',
+    }.items():
+        rights = rights.replace(']('+relative+')',
+            '](https://github.com/YeJianbo/nx300m-mod/blob/'+version+'/'+destination+')')
     for document in ('INSTALL.md', 'DELIVERY.md'):
         guide = guide.replace(']('+document+')', '](https://github.com/YeJianbo/nx300m-mod/blob/'+version+'/docs/'+document+')')
     files = {
@@ -68,12 +75,18 @@ def build(version: str) -> Path:
         'update_card.py': (ROOT/'tools/update_release_card.py').read_bytes(),
         'manifest.json': (json.dumps(manifest, indent=2)+'\n').encode(),
         'USER_GUIDE.md': guide.encode('utf-8'),
+        'RISKS_AND_RIGHTS.md': rights.encode('utf-8'),
         'README.md': ('# NX300M 菜单升级包\n\n'
-            '只供已有匹配 RAM 服务、Still LUT 和 Session 预览后端的 NX300M 1.15 使用。'
+            '目前按已有匹配 RAM 服务、Still LUT 和 Session 预览后端的 NX300M 1.15 环境验证；'
+            'NX300 可能兼容，但未验证，不保证其他机型或固件版本适用。'
             '不是首装或刷机包，不包含风格库、固件、字体及个人配置。\n\n'
             '关机取卡，在电脑解压本包。先 `python update_card.py --card H:/` 检查，'
             '通过后加 `--apply` 写入。完整按键、触摸、保存及回退步骤见 '
             '[使用指南](USER_GUIDE.md)。盘符请按实际修改。\n\n'
+            '本项目非三星官方项目。测试版可能导致拍摄中断、异常退出或文件损坏，'
+            '使用前先备份，重要拍摄前验证。第三方代码与素材沿用各自许可证；'
+            '风格数据的格式转换不代表再分发授权。'
+            '详见 [使用风险与版权说明](RISKS_AND_RIGHTS.md)。\n\n'
             '需要完整文档时查看 '
             'https://github.com/YeJianbo/nx300m-mod/blob/'+version+'/docs/USER_GUIDE.md\n').encode(),
         'LICENSES/Metol-AGPL-3.0.txt': (ROOT/'mod/metol/LICENSE').read_bytes(),
