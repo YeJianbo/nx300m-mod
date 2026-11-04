@@ -38,6 +38,7 @@ if [ "$1" = apply ]; then
     printf '%s\n' "$2" > /perf/backend-started.txt
     trap 'printf terminated > /perf/backend-terminated.txt; exit 88' TERM INT
     sleep "${NX_TEST_CONTROL_DELAY:-2}"
+    [ "${NX_TEST_FAIL:-0}" != 1 ] || exit 9
     printf '%s\n' "$2" > /perf/chosen.txt
     printf 'STAGED test selection\n'
 elif [ "$1" = off ]; then
@@ -67,6 +68,45 @@ for variant in baseline current dry; do
     if [ "$variant" != baseline ]; then /perf/close.arm key Menu; fi
     wait "$panel"
     grep '^EXIT ' /perf/$variant.log
+done
+# Apply-to-viewfinder must keep its cover until the child succeeds. On an
+# explicit backend failure it must retain the draft and offer a retry.
+for variant in apply-viewfinder apply-failure; do
+    rm -f /perf/backend-started.txt
+    fail=0; [ "$variant" != apply-failure ] || fail=1
+    NX_TEST_FAIL=$fail NX_STATE_DIR=/tmp/$variant /perf/mod/bin/nxui.arm --live --lut \
+        --root /perf/mod --recipes /perf/mod/looks.txt --engine /perf/engine.sh \
+        --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
+        --font-metadata /perf/mod/fonts/mfw-font.charset > /perf/$variant.log 2>&1 &
+    panel=$!
+    attempt=0
+    until grep -q '^FIRST_FRAME ' /perf/$variant.log; do
+        kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+    done
+    if [ "$fail" = 1 ]; then
+        for key in XF86HomePage Right; do /perf/close.arm key "$key"; done
+    fi
+    /perf/close.arm tap 586 26
+    attempt=0
+    until [ -s /perf/backend-started.txt ]; do
+        kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+    done
+    /rescue/busybox usleep 350000
+    kill -0 "$panel"
+    ! grep -q '^EXIT ' /perf/$variant.log
+    /perf/close.arm snapshot /perf/$variant.ppm
+    if [ "$fail" = 1 ]; then
+        attempt=0
+        until grep -q '^BACKEND kind=1 ok=0' /perf/$variant.log; do
+            kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+        done
+        kill -0 "$panel"
+        /perf/close.arm key Menu
+        /perf/close.arm key Left
+        /perf/close.arm key Return
+    fi
+    wait "$panel"
+    gzip /perf/$variant.ppm
 done
 rm -f /var/run/nx300m-lut-selection
 NX_STATE_DIR=/tmp/panel-off /rescue/busybox timeout 12 /perf/mod/bin/nxui.arm --live --lut \
@@ -260,12 +300,16 @@ def main():
         arm_vm.write_json(OUT/'execution.json', execution)
         if execution['exit_code']:
             raise RuntimeError('Panel wait probe exit '+str(execution['exit_code'])+': '+execution['output'])
-        for variant in ('baseline', 'current', 'dry', 'off', 'retain', 'long', 'normal-menu'):
+        for variant in ('baseline', 'current', 'dry', 'off', 'retain', 'long', 'normal-menu', 'apply-viewfinder', 'apply-failure'):
             collect(OUT, variant+'.log')
+        for variant in ('apply-viewfinder', 'apply-failure'):
+            collect(OUT, variant+'.ppm.gz')
         collect(OUT, 'off-action.txt')
         collect(OUT, 'retain-actions.txt')
         collect(OUT, 'menu-actions.txt')
         report.update(verify(OUT))
+        report.update(apply_viewfinder_waits_for_backend=True, failed_apply_retains_panel=True,
+                      unchanged_saved_look_explicitly_submitted=True)
     except Exception as error:
         report['error'] = str(error)
         raise

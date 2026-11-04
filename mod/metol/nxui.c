@@ -53,6 +53,7 @@ static int lut_strength = 100;
 static int lut_draft;
 static int lut_leave_dialog,lut_leave_target,lut_leave_option,lut_submit_failed,lut_saved_config;
 static int lut_exit_after_save;
+static long long lut_apply_tick;
 static int lut_origin_selected,lut_origin_strength;
 static struct nx_lut_tune lut_origin_tune;
 static int lut_reference_scene,lut_reference_original,lut_reference_press,lut_list_open,lut_list_cursor;
@@ -1510,6 +1511,11 @@ int main(int argc, char **argv) {
         panel_check_visibility();
         poll_child();
         refresh_services(0);
+        /* Animate only an active control transaction, never the idle panel.
+         * Completion comes from the backend, not a cosmetic timer. */
+        if (lut_mode && (child || queue.commit_requested) && tick >= lut_apply_tick) {
+            lut_apply_tick = tick + 250; dirty = 1;
+        }
         /* Unmap as soon as a close is requested: while the backend finishes
          * its control transaction the panel must not keep covering the frame
          * or hold the keyboard focus away from the camera UI. */
@@ -1549,6 +1555,8 @@ int main(int argc, char **argv) {
         if (quit) break;
         tick = now_ms(); pending = XPending(display);
         if (child) delay = 100; /* only a running backend needs periodic reaping */
+        if (lut_mode && (child || queue.commit_requested) && lut_apply_tick-tick < delay)
+            delay = lut_apply_tick-tick;
         if(lut_mode&&lut_reference_press&&!lut_reference_original&&lut_reference_pressed_at+300-tick<delay)
             delay=lut_reference_pressed_at+300-tick;
         if (services_visible() && service_due - tick < delay) delay = service_due - tick;

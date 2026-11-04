@@ -2,6 +2,8 @@
 
 为三星 NX300M 增加机内 LUT、手机相册与遥控、拍摄参数扩展和 Quick Share 分享。相机端通过 NX300M 1.15 / MFW 的脚本入口加载，手机端基于 NXConnectForNX500 适配。
 
+**开始使用：**[中文使用指南](docs/USER_GUIDE.md) · [下载测试版](https://github.com/YeJianbo/nx300m-mod/releases) · [安装与回退](docs/INSTALL.md)。当前 Release 提供匹配现有后端的菜单升级包，完整首装及 Android APK 不在本次附件中。
+
 ## 我们改了什么
 
 ### 相机端

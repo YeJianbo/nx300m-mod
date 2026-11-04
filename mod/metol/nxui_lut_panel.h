@@ -24,6 +24,12 @@ static void lut_leave_pick(int option) {
     else if(option==1){lut_draft=lut_leave_dialog=0;lut_save_navigation();if(lut_leave_target==2)mfw_return_requested=dirty=1;else queue.close_requested=1;}
     else {lut_leave_dialog=0;dirty=1;}
 }
+static void lut_apply_viewfinder(void) {
+    if(child || queue.commit_requested){lut_exit_after_save=1;return;}
+    /* A saved choice is not proof that boot restoration reached hardware.
+     * This explicit action must also submit an unchanged selected look. */
+    lut_exit_after_save=1;confirm_lut();
+}
 static void lut_toggle_view(void) {
     if(child||lut_leave_dialog)return;
     lut_category_focus=0;
@@ -245,6 +251,18 @@ static void lut_slider_row(int field,float x,float y,float w) {
     lut_place(x+w-66,y,58,42);nk_label_colored(ctx,supported?number:"—",NK_TEXT_RIGHT,nk_rgb(225,232,241));
 }
 static void draw_lut_panel(void) {
+    /* Keep a stable cover while the engine installs and synchronizes the new
+     * choice. Do not expose the old look or rebuild the reference each tick. */
+    if(child || queue.commit_requested) {
+        if(nk_begin(ctx,"LUT-applying",nk_rect(0,0,(float)width,(float)height),NK_WINDOW_NO_SCROLLBAR)) {
+            const char *dots[]={"·", "·  ·", "·  ·  ·", "·  ·"};
+            nk_layout_row_dynamic(ctx,138,1);nk_spacing(ctx,1);
+            nk_layout_row_dynamic(ctx,48,1);nk_label_colored(ctx,"正在应用",NK_TEXT_CENTERED,nk_rgb(226,235,247));
+            nk_layout_row_dynamic(ctx,42,1);nk_label(ctx,selected?recipes[selected].label:"关闭 LUT",NK_TEXT_CENTERED);
+            nk_layout_row_dynamic(ctx,40,1);nk_label_colored(ctx,dots[(now_ms()/250)%4],NK_TEXT_CENTERED,nk_rgb(76,154,232));
+        }
+        nk_end(ctx);nk_xlib_render(window,nk_rgb(23,24,26));XFlush(display);return;
+    }
     lut_update_reference();char line[256];
     struct nk_style_button saved_button=ctx->style.button;
     ctx->style.button.rounding=7;ctx->style.button.border=0;
@@ -264,9 +282,7 @@ static void draw_lut_panel(void) {
         lut_place(230,0,164,42);if(nk_button_label(ctx,line)&&live&&!child)start_mfw_action("preview-toggle");
         lut_place(400,0,144,42);nk_label_colored(ctx,child?"正在提交":lut_submit_failed?"提交失败":lut_has_changes()?"已修改":lut_saved_config?"配置已保存":"当前会话",NK_TEXT_LEFT,nk_rgb(140,180,221));
         lut_place(right-224,0,104,42);
-        if(nk_button_label(ctx,mfw_menu_root?"返回":"关闭")) {
-            lut_request_leave(mfw_menu_root?2:1);
-        }
+        if(nk_button_label(ctx,"应用取景"))lut_apply_viewfinder();
         lut_place(right-112,0,112,42);
         if(lut_button("保存",1)&&(!selected||lut_in_group(selected)))confirm_lut();
         int groups[9],ng=0;

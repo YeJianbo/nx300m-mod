@@ -83,6 +83,9 @@ def private_values() -> list[str]:
 
 
 def sanitize(text: str, identifiers: list[str], *, preserve_patterns: bool = False) -> str:
+    # The public repository owner is also the local Windows username. Keep
+    # working documentation/source links while still redacting local paths.
+    text = text.replace('https://github.com/YeJianbo/nx300m-mod', 'https://github.com/YeJianbo/nx300m-mod')
     # Keep project-relative examples and remove the developer's directory tree.
     for root in {str(ROOT), ROOT.as_posix(), str(ROOT).replace('\\', '\\\\')}:
         text = text.replace(root, '.')
@@ -116,7 +119,7 @@ def sanitize(text: str, identifiers: list[str], *, preserve_patterns: bool = Fal
         text = re.sub(r'<img\b[^>]*>', '', text, flags=re.I)
         text = re.sub(r'!\[[^\]]*\]\([^\n)]*\)', '', text)
         text = re.sub(r'https://github\.com/user-attachments/[^\s)\"<>]+', '[image omitted]', text)
-    return text
+    return text.replace('https://github.com/YeJianbo/nx300m-mod', 'https://github.com/YeJianbo/nx300m-mod')
 
 
 def image_without_metadata(data: bytes, suffix: str) -> bytes:
@@ -167,7 +170,8 @@ def audit(directory: Path, identifiers: list[str]) -> dict:
             issues.append({'file': rel, 'kind': 'unexpected-binary'}); continue
         if SECRETS.search(text):
             issues.append({'file': rel, 'kind': 'secret-pattern'})
-        if any(v.lower() in text.lower() for v in identifiers):
+        private_text = text.replace('https://github.com/YeJianbo/nx300m-mod', '')
+        if any(v.lower() in private_text.lower() for v in identifiers):
             issues.append({'file': rel, 'kind': 'local-identifier'})
         private_session_pattern = r'\.' + 'codex-' + r'mobile-control|codex[/\\]+sessions'
         if re.search(private_session_pattern, text, re.I):
