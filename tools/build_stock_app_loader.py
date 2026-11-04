@@ -1,4 +1,5 @@
 """Derive review-only app launch scripts; never install or run stock boot scripts."""
+from wsl_paths import wsl_path
 import difflib
 import json
 from pathlib import Path
@@ -236,8 +237,8 @@ def main():
     # Syntax only: no boot commands, app, guest rootfs or existing namespace run.
     checks = []
     for script in [FRAGMENT] + [OUT / 'candidate-rootfs' / p for p in ('usr/bin/go.sh', 'usr/bin/hib2.sh')]:
-        wsl_path = '/mnt/' + script.drive[0].lower() + script.as_posix()[2:]
-        result = subprocess.run(['wsl.exe', '-d', 'Debian', '-e', '/bin/sh', '-n', wsl_path],
+        linux_script = wsl_path(script)
+        result = subprocess.run(['wsl.exe', '-d', 'Debian', '-e', '/bin/sh', '-n', linux_script],
                                 capture_output=True, encoding='utf-8', errors='replace')
         checks.append({'file': script.relative_to(ROOT).as_posix(), 'exit_code': result.returncode,
                        'stderr': result.stderr.strip()})

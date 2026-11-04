@@ -12,7 +12,7 @@ import struct
 import numpy as np
 from PIL import Image, ImageCms, ImageDraw, ImageFont
 
-from cube_to_d4 import load_cube
+from cube_to_d4 import compile_cube, load_cube
 from evaluate_d4_quality import (SOURCES, byte_output, metrics, region_metrics,
                                  save_png, transitions, write_index)
 from import_lightroom_rgb_tables import (CreativeRgbTable, DLL, PROFILES,
@@ -129,7 +129,9 @@ def run(output=OUT, resume=False):
                'scenes': [], 'transitions': {}, 'compiler': {}, 'composed': {}}
         destination = output/'profiles'/key
         destination.mkdir(parents=True, exist_ok=True)
-        variants = {'legacy': (directory/'table.d4lut').read_bytes()}
+        # The installed library can now use fit. Baselines must come from the
+        # named compiler, rather than whatever is currently installed.
+        variants = {'legacy': compile_cube(cube, method='legacy')}
         unpack(variants['legacy'])
         for name, method in METHODS.items():
             data, detail = compile_table(cube, method=method)
@@ -158,7 +160,7 @@ def run(output=OUT, resume=False):
         native = CreativeRgbTable(raw)
         row['source_bake'] = region_metrics(continuous, native.apply(continuous), continuous_goal)
         composed_goal = target(cube, continuous, stock)
-        old_composed = (directory/'table-stock3d.d4lut').read_bytes()
+        old_composed = compile_cube(cube, stock_words, method='legacy')
         row['composed']['legacy'] = region_metrics(continuous, composed_goal, sample_table(old_composed, continuous))
         for name, method in METHODS.items():
             data, detail = compile_table(cube, stock_words, method=method)

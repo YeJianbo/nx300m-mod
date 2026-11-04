@@ -1,4 +1,5 @@
 """Call only stock RVF URL and SOAP formatters; no wireless application or session."""
+from wsl_paths import wsl_path as wsl
 import json
 from pathlib import Path
 import shlex
@@ -61,9 +62,7 @@ int main(void) {
 '''
 
 
-def wsl(path):
-    path = path.resolve()
-    return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def main():

@@ -1,4 +1,5 @@
 """Read live stock pipeline objects without writing memory or calling callbacks."""
+from wsl_paths import wsl_path
 import argparse
 import json
 import os
@@ -275,7 +276,7 @@ def main():
     args = parser.parse_args()
     if not 0 <= args.wait_ipcm <= 30: parser.error('--wait-ipcm must be 0..30')
     if os.name == 'nt':
-        script = '/mnt/'+PROJECT.drive[0].lower()+PROJECT.as_posix()[2:]+'/tools/pipeline_state.py'
+        script = wsl_path(PROJECT)+'/tools/pipeline_state.py'
         result = subprocess.run(['wsl.exe', '-u', 'root', '-e', *wsl_session_environment(), 'python3', script, '--layout', json.dumps(stock_layout()), '--wait-ipcm', str(args.wait_ipcm)],
                                 capture_output=True, timeout=args.wait_ipcm+20)
         if result.returncode: raise RuntimeError(result.stderr.decode('utf-8', 'replace').strip())

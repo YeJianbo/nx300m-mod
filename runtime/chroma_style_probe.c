@@ -103,6 +103,8 @@ static int check_both(const char *phase, const int *capture, const int *preview)
 }
 
 static int submit(int operation, int hue, int sat, const char *tail, int expected_rc) {
+    unsigned char before[2][0x2000];
+    for(int p=0;p<2;++p) memcpy(before[p],ram[p],sizes[p]);
     FILE *file = fopen("/var/run/nx300m-chroma-style-request", "w");
     if (!file) return 0;
     fprintf(file, "%u %u %d %d %d%s\n", ++request_id,
@@ -119,6 +121,7 @@ static int submit(int operation, int hue, int sat, const char *tail, int expecte
     fclose(file);
     int pass = fields == 16 && extra != 1 && response[0] == (int)request_id &&
         response[1] == expected_rc && response[15] == getpid();
+    for(int p=0;p<2;++p) if(memcmp(before[p],ram[p],sizes[p])) pass=0;
     printf("CHROMA_REQUEST op=%d hue=%d sat=%d rc=%d expected_rc=%d fields=%d pass=%d\n",
            operation, hue, sat, response[1], expected_rc, fields, pass);
     return pass;
@@ -184,18 +187,18 @@ int main(void) {
     if (!forward(identity, identity) || !check_both("neutral", identity, identity)) return 10;
     prepare();
     if (!submit(1,0,10,"",0) || response[2] != 0 || response[3] != 10 ||
-        response[4] != 1 || !check_both("hue0_cached", hue0_identity, hue0_identity)) return 11;
+        response[4] != 1 || !forward(identity,identity) || !check_both("hue0_native_update", hue0_identity, hue0_identity)) return 11;
     prepare();
     if (!forward(identity,identity) || !check_both("repeat_no_accumulation", hue0_identity,hue0_identity)) return 12;
     prepare();
     if (!forward(cap,prev) || !check_both("fresh_stock_base_signed_rounding",cap0,prev0)) return 13;
     prepare();
-    if (!submit(0,10,10,"",0) || response[4] || !check_both("reset_latest_base",cap,prev)) return 14;
+    if (!submit(0,10,10,"",0) || response[4] || !forward(cap,prev) || !check_both("reset_latest_base",cap,prev)) return 14;
     prepare();
-    if (!forward(identity,identity) || !submit(1,2,10,"",0) ||
+    if (!forward(identity,identity) || !submit(1,2,10,"",0) || !forward(identity,identity) ||
         !check_both("source_table_index2",hue2_identity,hue2_identity)) return 15;
     prepare();
-    if (!submit(1,18,10,"",0) || !check_both("source_table_index18",hue18_identity,hue18_identity)) return 16;
+    if (!submit(1,18,10,"",0) || !forward(identity,identity) || !check_both("source_table_index18",hue18_identity,hue18_identity)) return 16;
     if (!submit(1,0,9,"",-110) || response[2] != 18 || response[3] != 10) return 17;
     if (!submit(1,21,10,"",-102) || response[2] != 18) return 18;
     if (!submit(1,0,10," extra",-100) || response[2] != 18) return 19;
@@ -210,11 +213,11 @@ int main(void) {
     invalid.sel = IPCS_CHM_MAT; invalid.chm_mat[0] = 1024;
     if (ipcs_rgb2ycc_param(&invalid) != 2 || !submit(2,10,10,"",0) || response[9] != 2) return 22;
     prepare();
-    if (!forward(cap,prev) || !submit(0,10,10,"",0) || !check_both("final_restore",cap,prev)) return 23;
+    if (!forward(cap,prev) || !submit(0,10,10,"",0) || !forward(cap,prev) || !check_both("final_restore",cap,prev)) return 23;
     const int ycc[9] = {77,150,29,-47,-91,138,138,-115,-23};
     const int fresh[9] = {77,150,29,-43,-85,128,128,-107,-21};
     prepare();
-    if (!forward(identity,identity) || !forward_ycc(ycc) || !submit(1,2,14,"",0) ||
+    if (!forward(identity,identity) || !forward_ycc(ycc) || !submit(1,2,14,"",0) || !forward_ycc(ycc) ||
         !complete_ram("complete_source_operator", ycc, 1, 44)) return 24;
     prepare();
     if (!forward_ycc(fresh) || !complete_ram("new_ycc_no_accumulation", fresh, 1, 44)) return 25;
@@ -225,14 +228,14 @@ int main(void) {
     if (!submit(0,10,10,"",0)) return 27;
     fixture_3d = 0;
     prepare();
-    if (!forward_ycc(fresh) || !submit(1,2,14,"",0) || !submit(0,10,10,"",0) ||
+    if (!forward_ycc(fresh) || !submit(1,2,14,"",0) || !forward_ycc(fresh) || !submit(0,10,10,"",0) || !forward_ycc(fresh) ||
         !complete_ram("complete_reset", fresh, 0, 32)) return 28;
     fixture_pw = 16;
     prepare();
-    if (!forward(identity,identity) || !forward_ycc(fresh) || !submit(1,2,14,"",0) ||
+    if (!forward(identity,identity) || !forward_ycc(fresh) || !submit(1,2,14,"",0) || !forward_ycc(fresh) ||
         !complete_ram("custom1_source_operator", fresh, 1, 44)) return 29;
     prepare();
-    if (!submit(1,2,10,"",0) || !complete_ram("neutral_sat_keeps_source_order", fresh, 1, 32) ||
+    if (!submit(1,2,10,"",0) || !forward_ycc(fresh) || !complete_ram("neutral_sat_keeps_source_order", fresh, 1, 32) ||
         !submit(0,10,10,"",0)) return 30;
     puts("CHROMA_BRIDGE_PROBE=PASS; bridge=production-color-style.so; setters=stock-libudd; backend=synthetic-RAM; mode_fixture=standard-P; camera_started=0; image_verified=0");
     return 0;

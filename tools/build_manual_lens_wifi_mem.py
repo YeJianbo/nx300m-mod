@@ -1,4 +1,5 @@
 """Build the bounded external Wi-Fi byte tool and its isolated QEMU fixture."""
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import shlex
@@ -79,7 +80,7 @@ def main():
             '-fno-pie', '-ffunction-sections', '-fdata-sections', '-I.', '-I' + str(OUT),
             '-c', source, '-o', str(OUT / (label + '.o')),
         ], cwd=PROJECT, check=True)
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 guest=/opt/nx300m-lab/stock-1.15

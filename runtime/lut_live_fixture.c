@@ -54,7 +54,7 @@ int main(void) {
         void *request=fopen("/var/run/lut-live-request","r");
         if(!request){usleep(10000);continue;}
         int parsed=fscanf(request,"%u %u %u %63s %u",&seq,&mode,&reset,tag,&repeats);fclose(request);
-        if((parsed!=4&&parsed!=5)||seq<=last||mode>2||reset>1||!repeats||repeats>4096||!tag_valid(tag)){usleep(10000);continue;}
+        if((parsed!=4&&parsed!=5)||seq<=last||mode>2||reset>2||!repeats||repeats>4096||!tag_valid(tag)){usleep(10000);continue;}
         last=seq;
         if(mode==2) {running=0;break;}
         ((unsigned char *)params)[0x83]=(unsigned char)mode;
@@ -63,18 +63,27 @@ int main(void) {
         unsigned update_tid=(unsigned)syscall(224);
         memset(registers+0x9000,0,0x1600);
         void (**vtable)(void *,void *)=*(void (***)(void *,void *))node;
-        unsigned before[2],after[2];
+        unsigned before[2],after[2],cpu_before[2],cpu_after[2];
+        if(syscall(263,3,cpu_before))return 13; /* CLOCK_THREAD_CPUTIME_ID */
         if(syscall(263,1,before))return 13; /* ARM EABI clock_gettime, CLOCK_MONOTONIC */
-        for(unsigned repeat=0;repeat<repeats;++repeat)vtable[0](node,params);
+        for(unsigned repeat=0;repeat<repeats;++repeat) {
+            /* Mode 2 gives every measured update the stock Reset a fresh
+             * capture uses. Otherwise the unhooked baseline would skip 255
+             * writes while the adapter correctly submits the selected LUT. */
+            if(repeat && reset==2)node_reset(node);
+            vtable[0](node,params);
+        }
         if(syscall(263,1,after))return 13;
+        if(syscall(263,3,cpu_after))return 13;
         unsigned long long elapsed=(unsigned long long)(after[0]-before[0])*1000000000ULL+after[1]-before[1];
+        unsigned long long cpu=(unsigned long long)(cpu_after[0]-cpu_before[0])*1000000000ULL+cpu_after[1]-cpu_before[1];
         char path[256];snprintf(path,sizeof path,"%s/%s.bin",out,tag);
         void *dump=fopen(path,"wb");if(!dump)return 5;
         for(unsigned c=0;c<3;c++)if(fwrite(registers+0x9000+c*0x700,1,1460,dump)!=1460)return 6;
         if(fclose(dump))return 7;
         snprintf(path,sizeof path,"%s/%s.fixture.json",out,tag);
         void *observation=fopen(path,"w");if(!observation)return 10;
-        fprintf(observation,"{\"mode\":%u,\"update_tid\":%u,\"repeats\":%u,\"update_wall_ns\":%llu}\n",mode,update_tid,repeats,elapsed);
+        fprintf(observation,"{\"mode\":%u,\"update_tid\":%u,\"repeats\":%u,\"reset_each\":%s,\"update_wall_ns\":%llu,\"update_cpu_ns\":%llu}\n",mode,update_tid,repeats,reset==2?"true":"false",elapsed,cpu);
         if(fclose(observation))return 11;
         void *response=fopen("/var/run/lut-live-response.tmp","w");if(!response)return 8;
         fprintf(response,"%u %u %u %u %u %u %s\n",seq,mode,cache_before,node[1],beat_before,heartbeat,tag);

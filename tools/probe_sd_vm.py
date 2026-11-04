@@ -1,4 +1,5 @@
 """Prepare unchanged SD services for a real ARM Linux VM, without identity shims."""
+from wsl_paths import wsl_path
 import argparse
 import base64
 import gzip
@@ -272,7 +273,7 @@ def update_delivery(resume=False):
                    ' | /rescue/busybox base64 -d > /arm-vm/sd-update/probe.sh && /bin/sh /arm-vm/sd-update/probe.sh')
     else:
         archive.write_bytes(gzip.compress(payload.getvalue(), mtime=0))
-        wsl_project = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+        wsl_project = wsl_path(PROJECT)
         result = subprocess.run(['wsl.exe', '-u', 'root', '-e', 'python3',
                                  wsl_project + '/tools/probe_sd_vm.py', 'upload-worker',
                                  wsl_project + '/' + archive.relative_to(PROJECT).as_posix()],

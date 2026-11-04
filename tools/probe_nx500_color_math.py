@@ -6,7 +6,7 @@ from pathlib import Path
 import shlex
 import subprocess
 
-from build_ycc_probe import wsl_path
+from wsl_paths import wsl_path
 from inspect_nx500_pw import multiply_q8, chroma_mix_and_saturation, decode_span
 
 PROJECT = Path(__file__).resolve().parents[1]

@@ -3,6 +3,7 @@
 No camera access, USB requests, shell execution, or running stock rootfs changes.
 The private probe root contains only a harness, original loader/libc, and input blobs.
 """
+from wsl_paths import wsl_path as wsl
 import io
 import json
 import os
@@ -137,8 +138,7 @@ _start:
 '''
 
 
-def wsl(path):
-    return "/mnt/" + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def branch(source, target):

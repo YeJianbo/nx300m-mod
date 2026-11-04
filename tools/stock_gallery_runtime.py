@@ -5,7 +5,8 @@ BusyBox applets. It does not emulate a gallery callback or replace ARM panels.
 """
 import argparse
 import json
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
+from wsl_paths import wsl_path
 import shutil
 import subprocess
 
@@ -51,10 +52,7 @@ def install_busybox_bridge(guest):
 
 
 def linux_source(value):
-    path=PureWindowsPath(value)
-    if path.drive:
-        return Path('/mnt')/path.drive[0].lower()/Path(*path.parts[1:])
-    return Path(value)
+    return Path(wsl_path(value)) if value else Path('')
 
 
 def seed_card(guest, photo=None):

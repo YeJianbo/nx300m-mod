@@ -2,6 +2,7 @@
 
 Uses synthetic mappings and the stock ELF segment metadata; no camera access.
 """
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import shlex
@@ -47,7 +48,7 @@ int main(void) {
 def main():
     fixture = OUT / 'observer-bss-fixture.c'
     fixture.write_text(FIXTURE, encoding='ascii')
-    base = '/mnt/' + ROOT.drive[0].lower() + ROOT.as_posix()[2:]
+    base = wsl_path(ROOT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 cc -std=c99 -O2 -Wall -Wextra -Werror -fno-builtin -I. \\

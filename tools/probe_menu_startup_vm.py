@@ -3,6 +3,7 @@
 Uses cached stock libraries and an ARM Xvfb server. Does not start the stock
 camera, deploy a package, or touch the main emulator. Run with Conda Python.
 """
+from wsl_paths import wsl_path as linux_path
 import argparse
 import base64
 import gzip
@@ -24,6 +25,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 OUT = PROJECT / 'outputs/performance/menu-startup-vm'
 SOCKET = '/tmp/nx300m-menu-perf-private'
 BASELINE_OVERLAY = None
+EXTRA_FILES = {}
 
 DRIVER = r'''
 #include <X11/Xlib.h>
@@ -119,9 +121,7 @@ trap - EXIT
 '''
 
 
-def linux_path(path):
-    path = Path(path).resolve()
-    return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def prepare():
@@ -168,6 +168,7 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
         'perf/mod/fonts/fonts.conf.in': (PROJECT / 'mod/deployment/mfw/fonts.conf.in').read_bytes(),
         'perf/mod/fonts/mfw-font.charset': (PROJECT / 'outputs/metol/mfw-font.charset').read_bytes(),
     }
+    files.update(EXTRA_FILES)
     if BASELINE_OVERLAY:
         from build_stock_app_loader import read_cpio
         baseline = read_cpio(gzip.decompress(BASELINE_OVERLAY.read_bytes()))

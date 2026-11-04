@@ -1,4 +1,5 @@
 """Build then run the stock YCC setters once against synthetic register RAM."""
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import shlex
@@ -8,16 +9,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 OUTPUT = PROJECT / 'outputs/metol'
 
 
-def wsl_path(path):
-    value = str(path).replace('\\', '/')
-    prefix = '//wsl.localhost/Debian/'
-    if value.startswith(prefix):
-        return '/' + value[len(prefix):]
-    if len(value) > 2 and value[1] == ':':
-        return '/mnt/' + value[0].lower() + value[2:]
-    if value.startswith('/'):
-        return value
-    raise ValueError(f'Cannot map to WSL: {path}')
+
 
 
 def main():

@@ -1,4 +1,5 @@
 """Cross-build the adapted upstream Metol UI against NX300M's own libraries."""
+from wsl_paths import wsl_path
 import json
 import argparse
 from pathlib import Path
@@ -23,7 +24,7 @@ def main():
     fields = ('R_COLOR', 'G_COLOR', 'B_COLOR', 'HUE', 'SATURATION', 'SHARPNESS', 'CONTRAST')
     if not args.ui_only and not args.menu_only:
         (output / 'recipes.txt').write_text(''.join('|'.join([key, recipe['label'], *[str(recipe[f]) for f in fields]])+'\n' for key, recipe in source.items()), encoding='utf-8')
-    project = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    project = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(project)}
 tc=/opt/nx300m-toolchain/usr

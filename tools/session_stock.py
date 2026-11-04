@@ -1,4 +1,5 @@
 """Inspect the private runtime's actual camera process, not just its supervisor."""
+from wsl_paths import wsl_path
 import json
 import os
 from pathlib import Path
@@ -34,7 +35,7 @@ def session_output():
 
 def wsl_session_environment():
     selected = session_file()
-    linux_selected = '/mnt/' + selected.drive[0].lower() + selected.as_posix()[2:]
+    linux_selected = wsl_path(selected)
     return ['env', 'NX300M_SESSION_FILE='+linux_selected]
 
 def empty_state():
@@ -75,7 +76,7 @@ def _run_windows_inspection():
         except subprocess.TimeoutExpired:
             return unavailable_state('WSL 查询客户端尚未退出，相机状态未知；等待后重试。', 'cleanup-pending')
         _pending_inspection = None
-    script = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:] + '/tools/session_stock.py'
+    script = wsl_path(PROJECT) + '/tools/session_stock.py'
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
     process = subprocess.Popen(['wsl.exe', '-u', 'root', '-e', *wsl_session_environment(), 'python3', script],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags)

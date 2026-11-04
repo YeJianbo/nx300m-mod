@@ -3,6 +3,7 @@
 A new mount/network/IPC/PID namespace runs Xvfb, the built remote, and a no-network
 ARM argv recorder instead of Quick Share. No main camera is entered or restarted.
 """
+from wsl_paths import wsl_path
 import argparse
 import http.client
 import json
@@ -145,8 +146,8 @@ def main():
     if args.worker: worker(output);return
     output.mkdir(parents=True,exist_ok=True)
     (output/'argv-recorder.c').write_text(FIXTURE,encoding='utf-8')
-    base='/mnt/'+ROOT.drive[0].lower()+ROOT.as_posix()[2:]
-    target='/mnt/'+output.drive[0].lower()+output.as_posix()[2:]
+    base=wsl_path(ROOT)
+    target=wsl_path(output)
     script=f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

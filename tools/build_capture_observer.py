@@ -3,6 +3,7 @@
 No camera is started or existing namespace entered. The stock case executes
 only original libsif WriteChunks' empty-path branch on allocated layout RAM.
 """
+from wsl_paths import wsl_path
 import argparse
 import json
 import os
@@ -60,7 +61,7 @@ def abi_evidence():
 def probe_save():
     output = OUT/'capture-save/probe'
     output.mkdir(parents=True, exist_ok=True)
-    base = '/mnt/'+ROOT.drive[0].lower()+ROOT.as_posix()[2:]
+    base = wsl_path(ROOT)
     destination = base+'/outputs/firmware-runtime/capture-save/probe'
     script = f'''set -eu
 cd {shlex.quote(base)}
@@ -137,7 +138,7 @@ def compile_module(source, target):
 def probe():
     PROBE.mkdir(parents=True, exist_ok=True)
     fixture = compile_module('runtime/capture_observer_fixture.c', PROBE/'capture-observer-fixture.so')
-    base = '/mnt/'+ROOT.drive[0].lower()+ROOT.as_posix()[2:]
+    base = wsl_path(ROOT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

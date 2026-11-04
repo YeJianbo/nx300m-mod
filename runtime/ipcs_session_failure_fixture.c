@@ -37,7 +37,7 @@ static int give(void *p) {
 static int open_ref(void) {
     CHECK(held==5&&state.active==0); ++opens; ++refs;
     if(!owner) owner=thread_id();
-    CHECK(owner==thread_id()); return fail_open?-77:0;
+    CHECK(owner==thread_id()); return fail_open;
 }
 static int close_ref(void) {
     CHECK(held==5&&state.active==0&&refs==1&&owner==thread_id()); ++closes;
@@ -69,11 +69,60 @@ static void free_locks(void) {
     for(unsigned i=0;i<5;++i) { int v=0; CHECK(!sem_getvalue(&leases[i],&v)&&v==1); }
 }
 static void scenario(unsigned test) {
-    if(test==1) fail_open=1;
+    if(test==1||test==8||test==10||test==11) fail_open=NX_IPS_OPEN_IRQ_ERROR;
+    if(test==9) fail_open=-1;
     setup();
+    if(test>=9) {
+        CHECK(enter_frame()==-1&&state.held==2&&opens==1&&refs==1);
+        if(test==9) {
+            for(unsigned i=0;i<50;++i) { CHECK(enter_frame()==-1); usleep(50000); }
+            CHECK(opens==1&&closes==0&&state.error==-1&&state.recoveries==0);
+        } else if(test==10) {
+            fail_close=1; fail_open=0;
+            unsigned guard=0;
+            while(!closes) { enter_frame(); usleep(50000); CHECK(++guard<120); }
+            for(unsigned i=0;i<50;++i) { CHECK(enter_frame()==-1); usleep(50000); }
+            CHECK(opens==1&&closes==1&&state.held==2&&state.error==-78&&state.recoveries==1);
+        } else {
+            CHECK(!sem_wait(&leases[0]));
+            for(unsigned i=0;i<50;++i) { CHECK(enter_frame()==-1); usleep(50000); }
+            CHECK(closes==0&&opens==1&&state.lock_busy>0);
+            CHECK(!sem_post(&leases[0])); fail_open=0;
+            unsigned guard=0;
+            while(enter_frame()) { CHECK(++guard<60); usleep(50000); }
+            nx_ips_frame_leave(&state); nx_ips_hold(&state,NX_IPS_CONTROL);
+            CHECK(!nx_ips_drain(&state,1000)&&opens==closes&&!refs);
+        }
+        free_locks(); return;
+    }
     if(test==1) {
+        /* Demand-driven retry: no demand, no retry; renewed demand retries
+         * close-then-open until the bounded limit, then stays blocked. */
         CHECK(enter_frame()==-1); CHECK(state.state==NX_IPS_FAILED&&state.held==2&&opens==1&&closes==0);
-        usleep(200000); CHECK(opens==1&&closes==0&&refs==1); free_locks(); return;
+        usleep(200000); CHECK(opens==1&&closes==0&&refs==1);
+        unsigned guard=0;
+        while(opens<4) { enter_frame(); usleep(50000); CHECK(++guard<200); }
+        CHECK(opens==4&&closes==3&&refs==1&&state.held==2&&state.state==NX_IPS_FAILED);
+        unsigned settled=opens;
+        usleep(300000); CHECK(opens==settled&&state.recoveries==NX_IPS_RECOVERY_LIMIT);
+        free_locks(); return;
+    }
+    if(test==8) {
+        /* A renewed frame demand recovers the open failure through one
+         * close-then-open retry on the fixed owner thread; the fresh open
+         * reruns the full stock path, and the frame keeps its arbitration. */
+        CHECK(enter_frame()==-1);
+        CHECK(state.state==NX_IPS_FAILED&&state.held==2&&opens==1&&closes==0&&refs==1);
+        fail_open=0;
+        unsigned guard=0;
+        while(enter_frame()) { CHECK(++guard<30); usleep(200000); }
+        CHECK(opens==2&&closes==1&&refs==1&&state.held==1&&state.state==NX_IPS_READY&&state.active==1);
+        /* A successful recovery opens a new epoch: the retry budget resets,
+         * while recovery_closes keeps the total close attempts for diagnosis. */
+        CHECK(state.recoveries==0&&state.recovery_closes==1&&state.error==0);
+        nx_ips_frame_leave(&state);
+        CHECK(!nx_ips_drain(&state,1000));
+        CHECK(!refs&&opens==closes&&owner==state.owner_tid&&owner!=thread_id()); free_locks(); return;
     }
     CHECK(!enter_frame()); CHECK(state.active==1&&refs==1); free_locks();
     if(test==2) {
@@ -117,10 +166,12 @@ static void scenario(unsigned test) {
 }
 int main(void) {
     setbuf(stdout,NULL);
-    static const char *names[]={"open_failure_no_retry","close_failure_no_retry","capture_drain_and_nested_admission",
+    static const char *names[]={"open_failure_demand_retry_capped","close_failure_no_retry","capture_drain_and_nested_admission",
         "render_fault_releases_healthy_reference","control_drain_before_snapshot","stream_stop_and_resume",
-        "stream_drain_timeout_keeps_admission_closed"};
-    for(unsigned i=1;i<=7;++i) {
+        "stream_drain_timeout_keeps_admission_closed","open_failure_recovers_on_demand",
+        "ambiguous_open_failure_no_cleanup","recovery_close_failure_stays_blocked",
+        "recovery_waits_for_lifecycle_lock"};
+    for(unsigned i=1;i<=11;++i) {
         pid_t p=fork(); CHECK(p>=0);
         if(!p) { scenario(i); exit(0); }
         int result; CHECK(waitpid(p,&result,0)==p&&WIFEXITED(result)&&WEXITSTATUS(result)==0);

@@ -1,4 +1,5 @@
 """Build and run a private ARM mapping probe, without touching the camera shim."""
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import shlex
@@ -20,7 +21,7 @@ def main():
                     '-fno-builtin', '-fno-stack-protector', '-nostdlib', '-shared', '-fuse-ld=lld',
                     '-Wl,-z,nocombreloc', 'runtime/device_preview.c', '-o', str(OUT / 'device.so')],
                    cwd=ROOT, check=True)
-    base = '/mnt/' + ROOT.drive[0].lower() + ROOT.as_posix()[2:]
+    base = wsl_path(ROOT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

@@ -1,4 +1,5 @@
 """Extract an isolated Debian ARM build toolchain, with apt package checksums."""
+from wsl_paths import wsl_path
 import concurrent.futures
 import hashlib
 import json
@@ -28,7 +29,7 @@ def main():
         print(package['name'], flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool: list(pool.map(fetch, packages))
     (output / 'SOURCE.json').write_text(json.dumps({'apt_metadata': True, 'mirror': 'https://mirrors.tuna.tsinghua.edu.cn/debian/', 'packages': packages}, indent=2), encoding='utf-8')
-    source = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:] + '/work/metol-deps'
+    source = wsl_path(PROJECT) + '/work/metol-deps'
     for package in packages:
         subprocess.run(['wsl.exe', '-u', 'root', '-e', 'dpkg-deb', '-x', source + '/' + package['name'], '/opt/nx300m-toolchain'], check=True)
     print('Isolated toolchain: /opt/nx300m-toolchain', flush=True)

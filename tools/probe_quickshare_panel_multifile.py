@@ -4,6 +4,7 @@ A loopback HTTP recorder checks that invalid argv and local error pages cause no
 no-network CLI fixture records successful ordered file handoff. The main camera
 namespace is never entered; this does not test phone interoperability.
 """
+from wsl_paths import wsl_path
 import argparse
 import ast
 import http.client
@@ -336,8 +337,8 @@ def main():
     args=parser.parse_args();output=args.output.resolve()
     if args.worker: worker(output);return
     output.mkdir(parents=True,exist_ok=True)
-    project='/mnt/'+ROOT.drive[0].lower()+ROOT.as_posix()[2:]
-    folder='/mnt/'+output.drive[0].lower()+output.as_posix()[2:]
+    project=wsl_path(ROOT)
+    folder=wsl_path(output)
     result=subprocess.run(['wsl.exe','-d','Debian','-u','root','-e','unshare','--mount','--net','--ipc','--pid','--fork','--mount-proc','--kill-child',
                            'python3',project+'/tools/probe_quickshare_panel_multifile.py','--worker','--output',folder],capture_output=True,timeout=120)
     (output/'stdout.log').write_bytes(result.stdout);(output/'stderr.log').write_bytes(result.stderr)

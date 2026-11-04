@@ -5,7 +5,7 @@ from pathlib import Path
 import shlex
 import subprocess
 
-from build_ycc_probe import wsl_path
+from wsl_paths import wsl_path
 from inspect_nx500_pw import decode_span
 
 ROOT=Path(__file__).resolve().parents[1]

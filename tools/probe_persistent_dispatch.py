@@ -1,4 +1,5 @@
 """Run only persistent launch dispatch with stock ARM BusyBox and an honest host recorder."""
+from wsl_paths import wsl_path as wsl
 import json
 from pathlib import Path
 import shlex
@@ -41,8 +42,7 @@ int main(int argc, char **argv) {
 '''
 
 
-def wsl(path):
-    return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def main():

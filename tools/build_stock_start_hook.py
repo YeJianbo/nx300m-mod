@@ -3,6 +3,7 @@
 Writes only outputs/deployment/start-hook. Never replaces the running rootfs or
 creates an SLP firmware package.
 """
+from wsl_paths import wsl_path
 import argparse
 import hashlib
 import io
@@ -132,8 +133,7 @@ probe_abi:
 '''
 
 
-def wsl_path(path):
-    return "/mnt/" + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def elf_symbols(raw):

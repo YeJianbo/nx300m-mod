@@ -3,6 +3,7 @@
 Lens-state and PP submission are fixtures. This verifies registers, flags,
 fallback and rebuild decisions, not sensor color or the real hardware pipeline.
 """
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import shlex
@@ -156,7 +157,7 @@ int probe_main(void) {
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / 'cs-gate-fixture.c').write_text(FIXTURE, encoding='ascii')
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     compiler = shutil_which_clang()
     subprocess.run([
         compiler, '--target=arm-linux-gnueabi', '-march=armv7-a', '-mfloat-abi=soft',

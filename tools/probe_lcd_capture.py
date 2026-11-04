@@ -1,4 +1,5 @@
 """Isolated ARM forwarding fixture for the native LCD observer."""
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import shlex
@@ -19,7 +20,7 @@ def main():
                     '-fPIC', '-ffreestanding', '-fno-builtin', '-fno-stack-protector',
                     '-nostdlib', '-shared', '-fuse-ld=lld', 'runtime/lcd_capture_fixture.c',
                     '-o', str(OUTPUT/'lcd-capture-fixture.so')], cwd=PROJECT, check=True)
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

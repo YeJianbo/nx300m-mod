@@ -3,6 +3,7 @@
 Runs the same C pixel core natively using observed stock CCM/Gamma/YCC and
 factory LUT data. This is a model diagnostic, not an original capture proof.
 """
+from wsl_paths import wsl_path as linux
 import argparse
 import io
 import json
@@ -18,9 +19,7 @@ from stock_lut import factory_3d_lut
 ROOT=Path(__file__).resolve().parents[1]
 
 
-def linux(path):
-    path=path.resolve()
-    return '/mnt/'+path.drive[0].lower()+path.as_posix()[2:]
+
 
 
 def main():

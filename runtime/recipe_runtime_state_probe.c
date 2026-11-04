@@ -6,13 +6,24 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <pthread.h>
 #include "chroma_pair.h"
 typedef unsigned int u32;
 typedef signed int i32;
 enum { MATRIX_MIN=-1024,MATRIX_MAX=1023 };
-static volatile int color_lock;
-static void lock_color(void) { while(__sync_lock_test_and_set(&color_lock,1)) {} }
-static void unlock_color(void) { __sync_lock_release(&color_lock); }
+static pthread_mutex_t color_lock=PTHREAD_MUTEX_INITIALIZER;
+static void lock_color(void) { pthread_mutex_lock(&color_lock); }
+static void unlock_color(void) { pthread_mutex_unlock(&color_lock); }
+enum { COLOR_CHROMA, COLOR_TONE };
+static pthread_mutex_t io[2][2]={{PTHREAD_MUTEX_INITIALIZER,PTHREAD_MUTEX_INITIALIZER},
+                               {PTHREAD_MUTEX_INITIALIZER,PTHREAD_MUTEX_INITIALIZER}};
+static void color_io_enter(int capture,int kind) { pthread_mutex_lock(&io[!!capture][kind]); }
+static void color_io_leave(int capture,int kind) { pthread_mutex_unlock(&io[!!capture][kind]); }
+static int color_process_current(void) { return 1; }
+static int bridge_write_ready(const char *path) { (void)path;return 1; }
+static void bridge_cleanup(const char *stem) { (void)stem; }
+static void source_rgb_invalidate_native_locked(void) {}
+#define color_time time
 static int failures,tone_calls,sdk_calls,sdk_fail_at,supported=1;
 static nx_chroma_parameter last_chm;
 static const int native_x[7]={0,32,64,128,192,224,255};
@@ -99,7 +110,7 @@ static void init_chroma(void) {
 }
 static void strict_chroma_case(void) {
     init_chroma();
-    lock_color();int result=chroma_replay(&chroma_preview);unlock_color();
+    int result=chroma_execute(&chroma_preview,0,1);
     CHECK(!result && sdk_calls==2 && chroma_preview.state_known && chroma_preview.hardware_modified);
     nx_chroma_parameter nonunit=chroma_preview.base;
     nonunit.chm_mat[0]=120;nonunit.chm_mat[1]=8;
@@ -117,10 +128,10 @@ static void strict_chroma_case(void) {
      * second write cannot retain the preceding successful pair marker. */
     supported=1;chroma_hue=chroma_saturation=10;chroma_complete_required=0;chroma_enabled=0;++chroma_generation;
     sdk_fail_at=sdk_calls+2;
-    lock_color();result=chroma_replay(&chroma_preview);unlock_color();
+    result=chroma_execute(&chroma_preview,0,1);
     CHECK(result==2 && !chroma_preview.state_known && chroma_preview.hardware_error==2);
     sdk_fail_at=0;
-    lock_color();result=chroma_replay(&chroma_preview);unlock_color();
+    result=chroma_execute(&chroma_preview,0,1);
     CHECK(!result && chroma_preview.state_known && !chroma_preview.hardware_modified && !chroma_preview.hardware_error);
     printf("RECIPE_STATE_CASE name=strict_chroma_no_fallback_and_true_pair_restore failures=%d\n",failures);
 }

@@ -3,6 +3,7 @@
 Windows entrypoints use the project Conda interpreter. The internal Linux staging
 entrypoint uses Debian's Python; it does not need ubi-reader or a virtualenv.
 """
+from wsl_paths import wsl_path
 
 import argparse
 import base64
@@ -69,9 +70,7 @@ def safe_path(name):
     return p.as_posix()
 
 
-def wsl_path(path):
-    p = str(Path(path).resolve())
-    return "/mnt/" + p[0].lower() + p[2:].replace("\\", "/")
+
 
 
 class Image:

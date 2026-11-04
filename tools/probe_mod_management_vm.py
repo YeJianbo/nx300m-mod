@@ -1,4 +1,5 @@
 """Check read-only Mod APIs in the existing disposable ARM VM, without reboot."""
+from wsl_paths import wsl_path
 import gzip
 import io
 import json
@@ -23,7 +24,7 @@ def main():
         package.addfile(member, io.BytesIO(binary))
     archive = OUT / 'remote-update.tar.gz'
     archive.write_bytes(gzip.compress(body.getvalue(), mtime=0))
-    guest = '/mnt/' + ROOT.drive[0].lower() + ROOT.as_posix()[2:]
+    guest = wsl_path(ROOT)
     transfer = subprocess.run(['wsl.exe', '-d', 'Debian', '-u', 'root', '-e', 'python3',
                                guest + '/tools/probe_sd_vm.py', 'upload-worker',
                                guest + '/' + archive.relative_to(ROOT).as_posix()], capture_output=True, timeout=80)

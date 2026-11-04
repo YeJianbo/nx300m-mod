@@ -3,6 +3,7 @@
 The custom-panel probe uses explicit QEMU interpreter bridges only inside that
 camera's mount namespace. It does not alter production scripts or global binfmt.
 """
+from wsl_paths import wsl_path as linux
 import argparse
 import json
 import os
@@ -16,8 +17,7 @@ GUEST = Path('/opt/nx300m-lab/stock-1.15')
 DEFAULT = ROOT/'outputs/firmware-runtime/firmware-mod-runtime'
 
 
-def linux(path):
-    return '/mnt/'+path.drive[0].lower()+path.as_posix()[2:]
+
 
 
 def worker(output, bundle):

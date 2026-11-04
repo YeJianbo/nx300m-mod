@@ -1,4 +1,5 @@
 """Exercise the read-only bridge in an independent genuine stock camera session."""
+from wsl_paths import wsl_path as linux
 import argparse
 import http.client
 import json
@@ -14,8 +15,7 @@ GUEST = Path('/opt/nx300m-lab/stock-1.15')
 OUT = ROOT / 'outputs/deployment/mfw-exposure-test/runtime'
 
 
-def linux(path):
-    return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def worker(output):

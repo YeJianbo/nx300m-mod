@@ -1,4 +1,5 @@
 """Package the manual RAM LUT candidate without changing a camera."""
+from wsl_paths import wsl_path
 import argparse
 import json
 from pathlib import Path
@@ -113,7 +114,7 @@ def build(include_diagnostics=False):
     (root / 'runtime-files.list').write_text(''.join(name + '\n' for name in sorted(runtime_files)), encoding='ascii', newline='\n')
     syntax_checks = []
     for name in ('lut-load.sh', 'lut-panel.sh', 'lut-cycle.sh', 'mfw-panel.sh'):
-        guest_script = '/mnt/' + root.drive[0].lower() + (root / name).as_posix()[2:]
+        guest_script = wsl_path(root / name)
         syntax = subprocess.run(['wsl.exe', '-d', 'Debian', '-e', '/bin/sh', '-n', guest_script], capture_output=True)
         if syntax.returncode:
             raise RuntimeError(f'{name} shell syntax exited {syntax.returncode}: {syntax.stderr.decode("utf-8", "replace")}')

@@ -1,4 +1,5 @@
 """Deploy/run the native remote module in the existing isolated stock session."""
+from wsl_paths import wsl_path
 import json
 import http.client
 from pathlib import Path
@@ -29,7 +30,7 @@ def stop_proxy(namespace):
     if not state_file.exists(): return
     state = json.loads(state_file.read_text(encoding='utf-8'))
     if state.get('namespace_pid') != namespace: return
-    expected = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:] + '/tools/remote_proxy.py'
+    expected = wsl_path(PROJECT) + '/tools/remote_proxy.py'
     code = '''import os,pathlib,signal,sys
 pid=int(sys.argv[1]); target=pathlib.Path('/proc')/str(pid)
 try:
@@ -46,7 +47,7 @@ def start_proxy(namespace):
     try: health = proxy_health()
     except OSError: health = None
     if health:
-        if health.get('namespace_pid') == namespace: return
+        if health.get('namespace_pid') == namespace and health.get('expected_namespace') is True: return
         stop_proxy(health['namespace_pid'])
         deadline = time.monotonic()+5
         while time.monotonic() < deadline:
@@ -56,7 +57,7 @@ def start_proxy(namespace):
         else: raise RuntimeError('Previous loopback proxy is still running')
     elif (OUTPUT/'proxy.json').exists():
         state = json.loads((OUTPUT/'proxy.json').read_text(encoding='utf-8'))
-        expected = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:] + '/tools/remote_proxy.py'
+        expected = wsl_path(PROJECT) + '/tools/remote_proxy.py'
         code = '''import pathlib,sys
 p=pathlib.Path('/proc')/sys.argv[1]
 try:
@@ -67,21 +68,22 @@ except FileNotFoundError: print(0)
         result = subprocess.run(['wsl.exe', '-u', 'root', '-e', 'python3', '-c', code, str(state['pid']), expected], capture_output=True, text=True, check=True, timeout=10)
         if result.stdout.strip() == '1': raise RuntimeError('现有本机代理仍在运行，健康检查暂未返回；保留当前进程')
         (OUTPUT/'proxy.json').unlink(missing_ok=True)
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'exec >{shlex.quote(base+"/outputs/metol/remote/proxy.log")} 2>&1\nexec python3 {shlex.quote(base+"/tools/remote_proxy.py")} --namespace {namespace} --state {shlex.quote(base+"/outputs/metol/remote/proxy.json")}'
     process = subprocess.Popen(['wsl.exe', '-u', 'root', '-e', 'sh', '-c', script], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic()+15
     while time.monotonic() < deadline:
         if process.poll() is not None: break
         try:
-            if proxy_health().get('namespace_pid') == namespace: return
+            health = proxy_health()
+            if health.get('namespace_pid') == namespace and health.get('expected_namespace') is True: return
         except OSError: pass
         time.sleep(.2)
     raise RuntimeError('本机遥控代理未就绪，请查看 outputs/metol/remote/proxy.log')
 
 
 def request_command(pid, method, path, headers=None):
-    script = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:] + '/tools/remote_request.py'
+    script = wsl_path(PROJECT) + '/tools/remote_request.py'
     return ['wsl.exe', '-u', 'root', '-e', 'nsenter', '-t', str(pid), '--net',
             '/usr/bin/python3', script, method, path, json.dumps(headers or {})]
 
@@ -144,7 +146,7 @@ def start():
     binary = PROJECT/'outputs/quickshare/gallery/nx-remote-controller.arm' if gallery else OUTPUT/'nx-remote-controller.arm'
     if not binary.is_file():
         raise RuntimeError('请先运行 tools/build_gallery_share.py' if gallery else '请先运行 tools/build_remote.py')
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     binary_source = base+'/'+binary.relative_to(PROJECT).as_posix()
     gallery_setup = ''
     if gallery:
@@ -179,13 +181,13 @@ cp {shlex.quote(base+'/outputs/looks/photo-reference.jpg')} {shlex.quote(GUEST+m
             metadata = json.loads(source_info.read_text(encoding='utf-8'))
             original_jpeg = Path(metadata.get('external_jpeg', {}).get('path', ''))
             if original_jpeg.is_file():
-                source = '/mnt/'+original_jpeg.drive[0].lower()+original_jpeg.as_posix()[2:]
+                source = wsl_path(original_jpeg)
                 copy_media += f'cp {shlex.quote(source)} {shlex.quote(GUEST+media+"/100PHOTO/SAM_4262.JPG")}\n'
                 fixture['jpeg'] = {'source': str(original_jpeg), 'kind': 'original camera JPEG with EXIF',
                                    'bytes': original_jpeg.stat().st_size}
             raw = Path(metadata['raw']['path'])
             if raw.is_file() and raw.suffix.lower() == '.srw':
-                source = '/mnt/'+raw.drive[0].lower()+raw.as_posix()[2:]
+                source = wsl_path(raw)
                 copy_media += f'cp {shlex.quote(source)} {shlex.quote(GUEST+media+"/100PHOTO/SAM_4262.SRW")}\n'
                 fixture['raw'] = {'source': str(raw), 'bytes': raw.stat().st_size,
                                   'destination': media+'/100PHOTO/SAM_4262.SRW'}
@@ -207,8 +209,10 @@ mv {shlex.quote(GUEST+'/mod/recipes.txt.tmp')} {shlex.quote(GUEST+'/mod/recipes.
     script = f'''exec >{shlex.quote(base+'/outputs/metol/remote/server.log')} 2>&1
 exec chroot --userspec=65534:65534 {shlex.quote(GUEST)} /qemu-arm-static -cpu cortex-a9 -L / /mod/remote/nx-remote-controller.arm --media-root {shlex.quote(media)} --quickshare-binary /mod/quickshare/nx-quickshare-armv7 --quickshare-runner /qemu-arm-static
 '''
+    # /proc is mounted for the camera PID namespace. Join it as well so the
+    # forked X11 worker can enumerate its own descriptors via /proc/self/fd.
     process = subprocess.Popen(['wsl.exe', '-u', 'root', '-e', 'nsenter', '-t', str(state['namespace_pid']),
-                                '--mount', '--net', '--ipc', 'env', 'DISPLAY=:99', 'sh', '-c', script],
+                                '--mount', '--net', '--ipc', '--pid', 'env', 'DISPLAY=:99', 'NX_REMOTE_LAB_INPUT=1', 'sh', '-c', script],
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic()+20
     error = None

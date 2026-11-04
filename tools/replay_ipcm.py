@@ -3,6 +3,7 @@
 This is an explicit input scenario for buffer/callback/display development.
 It does not run the sensor, Bayer ISP or still LUT processing.
 """
+from wsl_paths import wsl_path
 import argparse
 import json
 import itertools
@@ -319,7 +320,7 @@ def main():
         return
     if os.name != 'nt' or not args.image: parser.error('Run --image from the Windows Conda environment')
     layout = stock_layout()
-    script = '/mnt/'+PROJECT.drive[0].lower()+PROJECT.as_posix()[2:]+'/tools/pipeline_state.py'
+    script = wsl_path(PROJECT)+'/tools/pipeline_state.py'
     snapshot = subprocess.run(['wsl.exe', '-u', 'root', '-e', *wsl_session_environment(), 'python3', script, '--layout', json.dumps(layout), '--wait-ipcm', '10'],
                               capture_output=True, timeout=25)
     if snapshot.returncode: raise RuntimeError(snapshot.stderr.decode('utf-8', 'replace').strip())
@@ -329,8 +330,7 @@ def main():
     packet.with_suffix('.yuv').write_bytes(payload)
     packet.write_text(json.dumps({key: output[key] for key in ('width', 'height', 'ycc_type', 'reverse_cbcr')} | {'chroma_order': chroma_order(output), 'source': source},
                                  ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
-    linux = lambda path: '/mnt/'+path.drive[0].lower()+path.as_posix()[2:]
-    command = ['wsl.exe', '-u', 'root', '-e', *wsl_session_environment(), 'python3', linux(Path(__file__).resolve()), '--submit', linux(packet),
+    command = ['wsl.exe', '-u', 'root', '-e', *wsl_session_environment(), 'python3', wsl_path(Path(__file__).resolve()), '--submit', wsl_path(packet),
                '--layout', json.dumps(layout), '--frames', str(args.frames), '--fps', str(args.fps)]
     result = subprocess.run(command, capture_output=True, timeout=args.frames/args.fps+30)
     print(result.stdout.decode('utf-8', 'replace').strip())

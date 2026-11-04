@@ -1,4 +1,5 @@
 """Run the original libudd LUT writer in an isolated ARM register-memory fixture."""
+from wsl_paths import wsl_path
 import argparse
 import json
 import re
@@ -21,7 +22,7 @@ def main():
     library = LookLibrary()
     if args.look: library.get(args.look)
     table = 'looks/'+args.look+'/table.d4lut' if args.look else 'outputs/metol/identity.d4lut'
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     mod = GUEST+args.mod_root
     script = f'''set -eu
 cd {shlex.quote(base)}

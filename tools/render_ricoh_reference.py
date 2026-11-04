@@ -4,6 +4,7 @@ This is an offline diagnostic renderer, not the Samsung ISP or Lightroom.
 The CLI starts from neutral parameters; neither user defaults nor RAW sidecars
 are loaded. All effective parameters and renderer output are retained.
 """
+from wsl_paths import wsl_path as linux_path
 import argparse
 import configparser
 import io
@@ -20,11 +21,7 @@ from adobe_profiles import DcpProfile
 PROJECT = Path(__file__).resolve().parents[1]
 
 
-def linux_path(path):
-    path = Path(path).resolve()
-    if not path.drive or len(path.drive) != 2:
-        raise ValueError(f"Expected a local Windows drive: {path}")
-    return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def wsl(*args, **kwargs):

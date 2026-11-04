@@ -26,13 +26,24 @@ static u32 chroma_hue = 10, chroma_saturation = 10, chroma_last_request;
 static u32 chroma_generation=1,chroma_enabled;
 static int chroma_complete_required;
 static int chroma_ready_written;
+typedef struct {
+    chroma_path *path;
+    u32 generation,hue,saturation;
+    int complete_required,eligible;
+} chroma_transaction;
+static __thread chroma_transaction *chroma_current;
+static u32 chroma_write_generation(void) { return chroma_current?chroma_current->generation:chroma_generation; }
+static u32 chroma_write_hue(void) { return chroma_current?chroma_current->hue:chroma_hue; }
+static u32 chroma_write_saturation(void) { return chroma_current?chroma_current->saturation:chroma_saturation; }
+static int chroma_write_complete(void) { return chroma_current?chroma_current->complete_required:chroma_complete_required; }
 
-/* Every pair write, including recovery and cached replay, passes here while
- * color_lock is held. A source generation needs successful writes to both
+/* Every pair write, including recovery, uses a local transaction under the
+ * path's submission mutex, without the state mutex. A generation needs both
  * selectors; a failed first/second write cannot inherit an old success. */
 static int chroma_submit(chroma_path *path,chroma_param *parameter) {
-    if(path->generation!=chroma_generation) {
-        path->generation=chroma_generation;path->successful_mask=0;
+    u32 generation=chroma_write_generation();
+    if(path->generation!=generation) {
+        path->generation=generation;path->successful_mask=0;
     }
     int result=path->setter?path->setter(parameter):-120;
     if(path->setter) {
@@ -45,14 +56,16 @@ static int chroma_submit(chroma_path *path,chroma_param *parameter) {
     if(result && !path->operation_error) path->operation_error=result;
     return result;
 }
-static int chroma_capture_submit(chroma_param *parameter) { return chroma_submit(&chroma_capture,parameter); }
-static int chroma_preview_submit(chroma_param *parameter) { return chroma_submit(&chroma_preview,parameter); }
+static int chroma_transaction_submit(chroma_param *parameter) {
+    return chroma_current?chroma_submit(chroma_current->path,parameter):-120;
+}
 static chroma_setter chroma_submitter(chroma_path *path) {
-    return path==&chroma_capture?chroma_capture_submit:chroma_preview_submit;
+    (void)path;return chroma_transaction_submit;
 }
 static void chroma_begin_write(chroma_path *path) {
-    if(path->generation!=chroma_generation) {
-        path->generation=chroma_generation;path->successful_mask=0;
+    u32 generation=chroma_write_generation();
+    if(path->generation!=generation) {
+        path->generation=generation;path->successful_mask=0;
     }
     path->operation_calls=0;path->operation_error=0;
 }
@@ -112,7 +125,8 @@ static int chroma_complete_coefficients_for_mode(chroma_path *path, u32 hue, u32
 }
 
 static int chroma_complete_coefficients(chroma_path *path,u32 hue,u32 sat,int16_t out[9]) {
-    return chroma_complete_coefficients_for_mode(path,hue,sat,out,chroma_supported_pasm());
+    return chroma_complete_coefficients_for_mode(path,hue,sat,out,
+        chroma_current?chroma_current->eligible:chroma_supported_pasm());
 }
 
 static int chroma_restore_complete(chroma_path *path) {
@@ -131,10 +145,10 @@ static chroma_setter chroma_resolve(chroma_path *path, const char *name) {
     return __atomic_load_n(&path->setter, __ATOMIC_ACQUIRE);
 }
 
-static int chroma_neutral(void) { return chroma_hue == 10 && chroma_saturation == 10; }
+static int chroma_neutral(void) { return chroma_write_hue() == 10 && chroma_write_saturation() == 10; }
 
 static int chroma_transform(const chroma_param *base, chroma_param *styled) {
-    const short *hue = chroma_hue_q8[chroma_hue];
+    const short *hue = chroma_hue_q8[chroma_write_hue()];
     *styled = *base;
     /* A malformed/out-of-range stock word must not enter signed multiply. */
     for (int index = 0; index < 4; ++index) {
@@ -159,12 +173,12 @@ static int chroma_forward_impl(chroma_path *path, chroma_param *original) {
     chroma_param styled;
     int result;
     int16_t coefficients[9];
-    int complete_result = chroma_neutral() && !chroma_complete_required ? -110 :
-        chroma_complete_coefficients(path, chroma_hue, chroma_saturation, coefficients);
+    int complete_result = chroma_neutral() && !chroma_write_complete() ? -110 :
+        chroma_complete_coefficients(path, chroma_write_hue(), chroma_write_saturation(), coefficients);
     /* Keep the source matrix order as SAT crosses its neutral step. Legacy
      * HUE-only CHM composition remains available when complete bases or mode
      * mapping are unavailable, but is not used to quantize a supported path. */
-    if (chroma_complete_required || chroma_saturation != 10 || complete_result == 0) {
+    if (chroma_write_complete() || chroma_write_saturation() != 10 || complete_result == 0) {
         result = complete_result;
         path->complete_error = result;
         if (!result) {
@@ -214,7 +228,7 @@ static int chroma_forward(chroma_path *path,chroma_param *original) {
     return result;
 }
 static int chroma_replay(chroma_path *path) {
-    if(chroma_neutral() && !chroma_complete_required && path->stock_inputs.have_chm && path->stock_inputs.have_ycc) {
+    if(chroma_neutral() && !chroma_write_complete() && path->stock_inputs.have_chm && path->stock_inputs.have_ycc) {
         chroma_begin_write(path);path->complete_error=0;
         int result=nx_chroma_restore(&path->stock_inputs,chroma_submitter(path));
         if(!result) { path->modified=0;path->complete_touched=0; }
@@ -223,28 +237,44 @@ static int chroma_replay(chroma_path *path) {
     return chroma_forward(path,&path->base);
 }
 
+static int chroma_execute(chroma_path *path,chroma_param *param,int replay) {
+    int capture=path==&chroma_capture;
+    color_io_enter(capture,COLOR_CHROMA);
+    lock_color();
+    chroma_path work=*path;
+    chroma_transaction transaction={&work,chroma_generation,chroma_hue,chroma_saturation,chroma_complete_required,0};
+    unlock_color();
+    if(replay && !work.base_valid) { color_io_leave(capture,COLOR_CHROMA);return 0; }
+    transaction.eligible=transaction.hue==10 && transaction.saturation==10 && !transaction.complete_required ?
+        1 : chroma_supported_pasm();
+    chroma_transaction *previous=chroma_current;
+    chroma_current=&transaction;
+    int result;
+    if(replay) result=chroma_replay(&work);
+    else if(!param || (param->sel!=1u && param->sel!=3u)) {
+        result=work.setter(param);
+        work.state_known=0;work.successful_mask=0;work.hardware_error=result?result:-124;
+    } else {
+        /* Cache only the incoming stock value; complete transforms never feed
+         * their own output back into this cache. */
+        nx_chroma_remember(&work.stock_inputs,param);
+        if(param->sel==3u) ++work.ycc_calls;
+        else { work.base=*param;work.base_valid=1;++work.calls; }
+        result=chroma_forward(&work,param);
+        if(param->sel==3u) work.ycc_last_rc=result;
+    }
+    chroma_current=previous;
+    lock_color();
+    *path=work;
+    unlock_color();
+    color_io_leave(capture,COLOR_CHROMA);
+    return result;
+}
 static int chroma_hook(chroma_path *path, const char *name, chroma_param *param) {
     chroma_setter setter = chroma_resolve(path, name);
     if (!setter) return 1;
     if(!color_process_current()) return setter(param);
-    if (!param || (param->sel != 1u && param->sel != 3u)) return setter(param);
-    lock_color();
-    nx_chroma_remember(&path->stock_inputs, param);
-    if (param->sel == 3u) {
-        /* Cache only the incoming stock value; complete transforms never feed
-         * their own output back into this cache. */
-        ++path->ycc_calls;
-        int result = chroma_forward(path, param);
-        path->ycc_last_rc = result;
-        unlock_color();
-        return result;
-    }
-    path->base = *param;
-    path->base_valid = 1;
-    ++path->calls;
-    int result = chroma_forward(path, param);
-    unlock_color();
-    return result;
+    return chroma_execute(path,param,0);
 }
 
 int ipcs_rgb2ycc_param(chroma_param *param) {
@@ -255,11 +285,10 @@ int ipcm_rgb2ycc_param(chroma_param *param) {
 }
 
 static int chroma_apply_cached(void) {
-    if (chroma_capture.base_valid && chroma_resolve(&chroma_capture, "ipcs_rgb2ycc_param"))
-        chroma_replay(&chroma_capture);
-    if (chroma_preview.base_valid && chroma_resolve(&chroma_preview, "ipcm_rgb2ycc_param"))
-        chroma_replay(&chroma_preview);
-    return chroma_capture.last_rc ? chroma_capture.last_rc : chroma_preview.last_rc;
+    int cap=0,prev=0;
+    if(chroma_resolve(&chroma_capture,"ipcs_rgb2ycc_param")) cap=chroma_execute(&chroma_capture,0,1);
+    if(chroma_resolve(&chroma_preview,"ipcm_rgb2ycc_param")) prev=chroma_execute(&chroma_preview,0,1);
+    return cap?cap:prev;
 }
 
 static void chroma_publish_path(void *file, const chroma_path *path) {
@@ -355,16 +384,17 @@ static void chroma_poll_request(void) {
     chroma_last_request = id;
     int result = 0;
     if (fields != 5) result = -100;
-    else if ((u32)time((long *)0) > expires) result = -108;
+    else if ((u32)color_time((long *)0) > expires) result = -108;
     else if (operation > 2u) result = -101;
     else if (hue > 20u || sat > 20u) result = -102;
+    int eligible=operation==1u && sat!=10u?chroma_supported_pasm():1;
     if (!result && operation != 2u) {
         lock_color();
         if (operation == 1u && sat != 10u) {
             int16_t coefficients[9];
-            result = chroma_complete_coefficients(&chroma_preview, hue, sat, coefficients);
+            result = chroma_complete_coefficients_for_mode(&chroma_preview, hue, sat, coefficients,eligible);
             if (!result && chroma_capture.stock_inputs.have_chm && chroma_capture.stock_inputs.have_ycc)
-                result = chroma_complete_coefficients(&chroma_capture, hue, sat, coefficients);
+                result = chroma_complete_coefficients_for_mode(&chroma_capture, hue, sat, coefficients,eligible);
         }
         if (!result) {
             chroma_hue = operation == 0u ? 10u : hue;
@@ -372,7 +402,7 @@ static void chroma_poll_request(void) {
             chroma_enabled=operation==1;
             chroma_complete_required=0;
             if(++chroma_generation==0) chroma_generation=1;
-            result = chroma_apply_cached();
+            source_rgb_invalidate_native_locked();
         }
         unlock_color();
     }
@@ -389,12 +419,16 @@ static void chroma_initialize(void) {
     chroma_capture=(chroma_path){0}; chroma_preview=(chroma_path){0};
     chroma_last_request=0; chroma_generation=1; chroma_enabled=0;
     chroma_complete_required=chroma_ready_written=0;
+    chroma_current=(void *)0;
     chroma_hue = chroma_saturation = 10;
 }
 
-/* Caller holds the shared bridge lock, as for the RGB restoration. */
 static void chroma_shutdown(void) {
+    lock_color();
     chroma_hue = chroma_saturation = 10;
+    chroma_complete_required=0;
+    if(++chroma_generation==0) chroma_generation=1;
+    unlock_color();
     chroma_apply_cached();
     bridge_cleanup("chroma-style");
 }

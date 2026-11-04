@@ -6,6 +6,7 @@ or completed photograph follows from observing original Gamma/CCM calls. The
 explicit JPEG diagnostic option encodes unverified buffer snapshots on its own
 laboratory card; it does not establish a valid sensor/ISP photograph.
 """
+from wsl_paths import wsl_path as linux_path
 import argparse
 from datetime import datetime, timezone
 import json
@@ -26,8 +27,7 @@ def write_json(path, value):
     path.write_text(json.dumps(value,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 
 
-def linux_path(path):
-    return '/mnt/'+path.drive[0].lower()+path.as_posix()[2:]
+
 
 
 def identity(pid):

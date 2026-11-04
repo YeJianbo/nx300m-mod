@@ -3,6 +3,7 @@
 Never accepts a physical device/image argument; never enters a stock session.
 Native production persistence and launcher are tested, not ARM ptrace/ISP.
 """
+from wsl_paths import wsl_path
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -328,7 +329,7 @@ def main():
         history = OUT.parent / ('media-fs-before-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
         OUT.rename(history)
     OUT.mkdir()
-    script = '/mnt/' + ROOT.drive[0].lower() + ROOT.as_posix()[2:] + '/tools/probe_smartfilter_media_fs.py'
+    script = wsl_path(ROOT) + '/tools/probe_smartfilter_media_fs.py'
     return subprocess.run(['wsl.exe', '-d', 'Debian', '-u', 'root', '-e', 'python3', '-I', '-B', script, '--linux']).returncode
 
 

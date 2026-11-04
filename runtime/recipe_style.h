@@ -1,10 +1,9 @@
-/* One configuration commit for the four source stages. Native updates and
- * cached chroma submissions retain their own timing; this is not frame atomic. */
+/* One configuration commit for the four source stages. Each stage is applied
+ * by its next native update; configuration is not a frame-atomic operation. */
 static unsigned int recipe_generation=1,recipe_enabled,recipe_last_request;
 static unsigned int recipe_values[7]={100,100,100,10,10,10,10};
 static unsigned int recipe_expected[4],recipe_expected_rows;
 static int recipe_committed,recipe_ready_written;
-static void apply_cached(void);
 
 static unsigned int recipe_next_generation(unsigned int generation) {
     return generation==0xffffffffu?1:generation+1;
@@ -101,7 +100,7 @@ static void recipe_poll_request(void) {
     fclose(file);
     if(!id || id==recipe_last_request) return;
     recipe_last_request=id;
-    int result=fields!=10?-100:(unsigned int)time((long *)0)>expires?-108:operation>2?-101:0;
+    int result=fields!=10?-100:(unsigned int)color_time((long *)0)>expires?-108:operation>2?-101:0;
     int eligible=operation==1?chroma_supported_pasm():1;
     if(!result && operation!=2) {
         lock_color();
@@ -121,8 +120,7 @@ static void recipe_poll_request(void) {
             recipe_expected_rows=row_rgb_generation=recipe_next_generation(row_rgb_generation);
             /* Reset is performed at each next genuine native Update entrance;
              * no original parameter pointer is retained or replayed here. */
-            apply_cached();
-            result=chroma_apply_cached();
+            color_rows_pending_locked();
         }
         unlock_color();
     }

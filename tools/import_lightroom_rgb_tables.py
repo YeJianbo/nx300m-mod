@@ -1,8 +1,8 @@
 """Read local Lightroom creative RGB tables into the existing camera library.
 
 DNG SDK big-table serialization, modified base85, delta uint16 nodes and
-tetrahedral interpolation are explicit. Only AdobeRGB/gamma2.2/clip tables
-are currently baked; other native encodings are reported, not guessed.
+tetrahedral interpolation are explicit. AdobeRGB/gamma2.2/clip and
+sRGB/sRGB/clip tables are supported.
 """
 import argparse
 import hashlib
@@ -87,7 +87,7 @@ class CreativeRgbTable:
             raise ValueError('Invalid RGB table data length')
         self.primaries, self.gamma, self.gamut, self.minimum, self.maximum = struct.unpack_from('<IIIdd', raw, end)
         self.flags = struct.unpack_from('<I', raw, end+28)[0] if len(raw) == end+32 else 0
-        if (self.primaries, self.gamma, self.gamut) != (1, 3, 0) or self.flags not in (0, 1):
+        if (self.primaries, self.gamma, self.gamut) not in ((1, 3, 0), (0, 1, 0)) or self.flags not in (0, 1):
             raise ValueError(f'Unsupported RGB table colour model: {(self.primaries, self.gamma, self.gamut, self.flags)}')
         if not np.isfinite([self.minimum, self.maximum]).all() or not 0 <= self.minimum <= 1 <= self.maximum:
             raise ValueError('Invalid RGB table amount range')
@@ -116,6 +116,10 @@ class CreativeRgbTable:
         rgb = np.asarray(rgb, dtype=float)
         shape = rgb.shape
         x = rgb.reshape(-1, 3)
+        # DNG SDK enum values: primaries_sRGB=0, gamma_sRGB=1. Both ends
+        # already use the declared sRGB code values; no second gamma is needed.
+        if (self.primaries, self.gamma) == (0, 1):
+            return np.clip(self.sample(x), 0, 1).reshape(shape)
         linear = np.where(x <= .040449936, x/12.92, ((x+.055)/1.055)**2.4)
         encoded = gamma_encode(linear@np.asarray(TO_ADOBE).T)
         output = gamma_decode(np.clip(self.sample(encoded), 0, 1))@np.asarray(FROM_ADOBE).T

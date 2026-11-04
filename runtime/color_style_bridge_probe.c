@@ -56,7 +56,8 @@ static int submit(int operation, unsigned int red, unsigned int green, unsigned 
         if (fscanf(file, "%d", response + fields) != 1) break;
     fclose(file);
     if (fields != 17 || response[0] != (int)request_id || response[1] ||
-        response[10] || response[11] || response[16] != getpid()) return 0;
+        response[10] != (operation==2?0:-123) ||
+        response[11] != (operation==2?0:-123) || response[16] != getpid()) return 0;
     return 1;
 }
 
@@ -94,12 +95,13 @@ int main(void) {
     fclose(file);
     if (ready_fields != 1 || ready_pid != getpid()) return 4;
     if (!forward(base, preview) || !check_both("neutral", base, preview)) return 10;
-    if (!submit(1, 150, 100, 50) || !check_both("gain_cached", styled, preview_styled)) return 11;
+    if (!submit(1, 150, 100, 50) || !check_both("gain_staged_no_ui_write", base, preview)) return 11;
     if (!forward(base, preview) || !check_both("repeat_no_accumulation", styled, preview_styled)) return 12;
     if (!forward(new_base, new_preview) || !check_both("fresh_base", new_styled, new_preview_styled)) return 13;
     if (!submit(1, 200, 100, 50)) return 14;
     if (!forward(high_base, low_preview) || !check_both("range_whole_matrix_passthrough", high_base, low_preview)) return 15;
     if (!forward(new_base, new_preview) || !submit(0, 100, 100, 100) ||
+        !forward(new_base,new_preview) ||
         !check_both("reset_latest_base", new_base, new_preview)) return 16;
     if (!forward(base, preview) || !check_both("neutral_after_reset", base, preview)) return 17;
     puts("BRIDGE_PROBE=PASS; bridge=production-color-style.so; setters=stock-libudd; backend=synthetic-register-RAM; ready=request-timer; image_verified=0");

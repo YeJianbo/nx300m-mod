@@ -1,6 +1,6 @@
 # Lightroom 风格扩充
 
-2026-11-03 从本机 Camera Raw／Lightroom 资源中新增 60 款，活动库合计 80 款。原有 20 款逐文件核对未变，保留 Hard Mono、GR Neg／GR Pos、富士 CC／Astia／Eterna／NC／NN。
+2026-11-03 从本机 Camera Raw／Lightroom 资源中新增 60 款，本批完成时活动库合计 80 款。原有 20 款逐文件核对未变，保留 Hard Mono、GR Neg／GR Pos、富士 CC／Astia／Eterna／NC／NN。随后导入的旧通用风格另见 [个人 Lightroom 风格移植](PERSONAL_LUT_LIBRARY.md)，当前总数为 143 款；本页保留这 60 款的独立评测和包。
 
 ## 新增目录
 
@@ -52,7 +52,7 @@
 
 `tools/evaluate_lightroom_luts.py` 对比原编译器、`fit` 和 `fit-integral`，分别记录灰阶、肤色近似区、绿色、蓝色、阴影、高光、渐变、原厂组合表，以及从原 RGBTable 烘焙到 `.cube` 的误差。原厂直通作为额外对照。结果保存在独立批次，不覆盖原 20 款的评测。
 
-新增表保持现有默认编译方法；优化候选输出到 `outputs/looks/lightroom-import/profiles/`。软件评测采用 RGB-code／三线性模型，NX300M 的实际 LUT 颜色域与插值仍需实机标定。
+正式库现默认使用普通 `fit`，直接表和原厂组合表均进入 SD 打包链。原始离线对照保留在 `outputs/looks/lightroom-import/profiles/`。软件评测采用 RGB-code／三线性模型，NX300M 的实际 LUT 颜色域与插值仍需实机标定。编译、写表验证与 legacy 回退见 [LUT 编译工作流](LUT_QUALITY.md)。
 
 兼容检查覆盖 17³／33³／65³、非单位 DOMAIN、源输出越界后的裁剪、identity 与原厂组合逐字一致。完整结果为 `compatibility.json`。
 
@@ -68,7 +68,7 @@ RGB 误差为 8-bit 通道单位，均为全部风格的宏平均：
 | 两照片／120 组合 RMSE | 1.42124 | 0.95475 | 0.96405 |
 | 渐变步长残差 P99 均值 | 0.18254 | 0.18282 | 0.17891 |
 
-普通 `fit` 的总体 RGB888 误差下降 31.43%，照片误差下降 32.82%。60 款总体 RGB／OKLab 和所列六个色彩区域的 RMSE 均低于原编译器。渐变局部步长并非所有指标都改善。连续积分法额外降低约 0.95% 的整体 RGB888 误差，但照片和近灰区均值略差，因此继续保留普通 `fit` 为优先候选。
+普通 `fit` 的总体 RGB888 误差下降 31.43%，照片误差下降 32.82%。60 款总体 RGB／OKLab 和所列六个色彩区域的 RMSE 均低于原编译器。渐变局部步长并非所有指标都改善。连续积分法额外降低约 0.95% 的整体 RGB888 误差，但照片和近灰区均值略差，因此正式工作流采用普通 `fit`。
 
 强烈非线性风格的剩余误差较高：Binary 的 `fit` RMSE 为 12.107、Powder Blue 为 5.239、Vintage 10 为 4.535。不能将这三款与误差不足 1 的柔和风格视为同等保真。
 
@@ -103,4 +103,4 @@ python -X utf8 tools/evaluate_lightroom_luts.py --resume
 
 已保存的导入条目会按表身份复用。评测的 `--resume` 复用当前批次已完成的条目；更改编译算法后应去掉该参数重新评测。
 
-取景与成片 Hook 没有改变。本轮没有写卡或实机拍摄，新增风格的机内效果等待验证。
+取景与成片 Hook 没有改变。fit 表已接入原有成片写表链，机内颜色效果等待实拍验证。

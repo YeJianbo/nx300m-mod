@@ -3,6 +3,7 @@
 Uses a private mount namespace and output names; does not launch a camera or
 change the active viewer, production shims, sessions or firmware packages.
 """
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import shlex
@@ -39,9 +40,9 @@ def main():
                     '-std=c99','-O2','-Wall','-Wextra','-Werror','-fPIC','-ffreestanding',
                     '-fno-builtin','-fno-stack-protector','-nostdlib','-shared','-fuse-ld=lld',
                     'runtime/device_preview.c','-o',str(device)], cwd=ROOT, check=True)
-    base = '/mnt/'+ROOT.drive[0].lower()+ROOT.as_posix()[2:]
+    base = wsl_path(ROOT)
     bank = ROOT/'outputs/firmware-runtime/ep-cs-grids-nx300m-memory-pass-pp.bin'
-    bank_path = '/mnt/'+bank.drive[0].lower()+bank.as_posix()[2:]
+    bank_path = wsl_path(bank)
     script = f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

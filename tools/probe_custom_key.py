@@ -4,6 +4,7 @@ Only the generated test context adapts process identity and the QEMU address
 bias. Accessor bytes and preview/Quickview checks stay unchanged. Camera memory
 is always opened read-only. No firmware-mod or Custom SO is loaded.
 """
+from wsl_paths import wsl_path as linux_path
 import argparse
 import ctypes
 import difflib
@@ -25,9 +26,7 @@ GUEST = '/opt/nx300m-lab/stock-1.15'
 DEFAULT_OUTPUT = PROJECT/'outputs/deployment/custom-key-test'
 
 
-def linux_path(path):
-    path = Path(path).resolve()
-    return '/mnt/'+path.drive[0].lower()+path.as_posix()[2:]
+
 
 
 def generate_fixture(output):

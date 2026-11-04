@@ -1,4 +1,5 @@
 """Bounded read-only normal boot trace; writes only app-loader/boot-chain evidence."""
+from wsl_paths import wsl_path
 import argparse
 import io
 import difflib
@@ -392,7 +393,7 @@ def persistent_candidate():
                         'metadata': {'mode': '0o644', 'uid': 0, 'gid': 0}})
     checks = []
     for path in scripts:
-        wsl = '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+        wsl = wsl_path(path)
         process = subprocess.run(['wsl.exe', '-d', 'Debian', '-e', '/bin/sh', '-n', wsl], capture_output=True)
         checks.append({'path': path.relative_to(ROOT).as_posix(), 'exit_code': process.returncode,
                        'stderr': process.stderr.decode('utf-8', 'replace')})

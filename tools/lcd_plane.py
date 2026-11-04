@@ -2,6 +2,7 @@
 
 This is the separate video plane, before composition with the X11 OSD.
 """
+from wsl_paths import wsl_path
 import argparse
 import json
 import os
@@ -97,7 +98,7 @@ def main():
     parser.add_argument('--packet', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if os.name == 'nt':
-        script = '/mnt/'+PROJECT.drive[0].lower()+PROJECT.as_posix()[2:]+'/tools/lcd_plane.py'
+        script = wsl_path(PROJECT)+'/tools/lcd_plane.py'
         result = subprocess.run(['wsl.exe', '-u', 'root', '-e', 'python3', script, '--packet'], capture_output=True, timeout=15)
         if result.returncode: raise RuntimeError(result.stderr.decode('utf-8', 'replace').strip())
         report, frames = unpack_snapshot(result.stdout)

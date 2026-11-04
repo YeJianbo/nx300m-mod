@@ -3,6 +3,7 @@
 No camera, Wi-Fi command, main simulator, or existing namespace is used.
 The HTTP chunk sink is a fixture; interface enumeration and UDP sends are real.
 """
+from wsl_paths import wsl_path as linux
 from pathlib import Path
 import argparse
 import json
@@ -195,8 +196,7 @@ def main():
         return
     output.mkdir(parents=True, exist_ok=True)
     (output / "discovery-probe.c").write_text(HARNESS, encoding="utf-8", newline="\n")
-    def linux(path):
-        return "/mnt/" + path.drive[0].lower() + path.as_posix()[2:]
+
     result = subprocess.run(["wsl.exe", "-d", "Debian", "-u", "root", "-e", "unshare", "--net", "--mount", "--ipc", "--pid",
                              "--fork", "--mount-proc", "--kill-child", "python3", linux(ROOT / "tools/probe_remote_discovery.py"),
                              "--worker", "--output", linux(output)], capture_output=True, timeout=30)

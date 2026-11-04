@@ -17,7 +17,7 @@ OUT=BUILD/'arm-vm'
 PROBE=ram.PROBE[:ram.PROBE.index('request original-mode 2')]+r'''
 set -x
 operation binding-libc-apply apply --s2 --session 0 --calltrace 0 --table /mnt/mmc/identity.d4lut --look identity --strength 100
-request automatic-insert 121
+request automatic-insert 124
 operation automatic-insert-status status
 grep -q '"s2_path":1' automatic-insert-status.json
 request automatic-repeat 120
@@ -160,14 +160,14 @@ request wrapper-fast-render 100
 operation wrapper-fast-trace open-export
 # The Still callbacks and the Session backend now coexist in this one explicit
 # process. The device writer is RAM MMIO; both native LUT branches are real.
-for look in nx300-hard-mono ricoh-positive-exact; do
+for look in nx300-hard-mono nx300-fuji-classic-chrome; do
     mkdir -p "/perf/looks/$look"
     cp /mnt/mmc/looks/$look/* "/perf/looks/$look/"
     printf '%s|%s|0|0|0|0|0|0|0\n' "$look" "$look" >> /perf/looks.txt
 done
 NX300M_MOD_ROOT=/perf "$ENGINE" ready > still-engine-ready.json 2> still-engine-ready.stderr
 switch=0
-for look in nx300-hard-mono ricoh-positive-exact nx300-hard-mono; do
+for look in nx300-hard-mono nx300-fuji-classic-chrome nx300-hard-mono; do
     switch=$((switch+1)); tag=switch-$switch
     request "$tag.stream-start" 116
     NX300M_MOD_ROOT=/perf NX_STATE_DIR=/tmp/lut-panel-state "$ENGINE" apply "$look" 100 > "$tag.apply.json" 2> "$tag.apply.stderr"
@@ -198,7 +198,7 @@ NX300M_MOD_ROOT=/perf "$ENGINE" ready > preview-only-ready.json
 request preview-only-still 113
 cp /tmp/lut-switch-still.bin preview-only.still.bin
 operation preview-only-stopped status
-NX300M_MOD_ROOT=/perf NX_STATE_DIR=/tmp/lut-panel-state "$ENGINE" apply ricoh-positive-exact 100 > preview-only-switch.json 2> preview-only-switch.stderr
+NX300M_MOD_ROOT=/perf NX_STATE_DIR=/tmp/lut-panel-state "$ENGINE" apply nx300-fuji-classic-chrome 100 > preview-only-switch.json 2> preview-only-switch.stderr
 [ ! -e /var/run/nx300m-preview-backend ]
 operation preview-only-after-switch status
 request preview-only-color-still 113
@@ -235,7 +235,7 @@ operation switch-off-after status
 operation switch-off-trace open-export
 request switch-off-still 113
 cp /tmp/lut-switch-still.bin switch-off.still.bin
-NX300M_MOD_ROOT=/perf NX_STATE_DIR=/tmp/lut-panel-state "$ENGINE" apply ricoh-positive-exact 100 > switch-reenable.json 2> switch-reenable.stderr
+NX300M_MOD_ROOT=/perf NX_STATE_DIR=/tmp/lut-panel-state "$ENGINE" apply nx300-fuji-classic-chrome 100 > switch-reenable.json 2> switch-reenable.stderr
 NX300M_MOD_ROOT=/perf "$ENGINE" ready > switch-reenabled-native.json
 request switch-reenable-still 113
 cp /tmp/lut-switch-still.bin switch-reenable.still.bin
@@ -404,17 +404,24 @@ PROBE=PROBE.replace('code=$?; trap - EXIT; set +e',
     '    for job in /tmp/nx300m-sf-job.*; do for file in collector.log kdd.json kdd.stderr kdd.result kdd-wait.json kdd-wait.stderr; do\n'
     '        [ ! -f "$job/$file" ] || cp "$job/$file" "kdd-debug/${job##*/}.$file"\n'
     '    done; done\n'
+    '    cp /tmp/smartfilter-ram.stderr ram-fixture.stderr 2>/dev/null || true\n'
+    '    cp /tmp/smartfilter-ram.stdout ram-fixture.stdout 2>/dev/null || true\n'
     '    if [ "$code" != 0 ]; then for file in *.stderr; do printf "FILE %s\\n" "$file"; cat "$file"; done; fi')
 PROBE=PROBE.replace('echo SMARTFILTER_ARM_BOUNDARY_PASSED',
     '/mnt/mmc/bin/ipcs_session_failure_fixture.arm > session-failures.ndjson 2> session-failures.stderr\n'
     '/mnt/mmc/bin/ipcs_calltrace_fixture.arm > udd-calltrace.ndjson 2> udd-calltrace.stderr\n'
+    'cp /tmp/smartfilter-ram.stderr ram-fixture.stderr 2>/dev/null || true\n'
     'echo SMARTFILTER_ARM_BOUNDARY_PASSED')
 
 
-def call(action,command=''):
-    r=subprocess.run(['wsl.exe','-d','Debian','-u','root','-e','python3',arm_vm.wsl_path(__file__),
-                      '--linux',action,base64.b64encode(command.encode()).decode()],
-                     capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=375)
+def call(action,command='',vm_timeout=360):
+    # The guest probe now includes the demand-retry recovery scenarios; give
+    # the exec step a bounded but larger window than the old 360s default.
+    args=['wsl.exe','-d','Debian','-u','root','-e','python3',arm_vm.wsl_path(__file__),
+          '--linux',action,'--timeout',str(vm_timeout),
+          base64.b64encode(command.encode()).decode()]
+    r=subprocess.run(args,capture_output=True,text=True,encoding='utf-8',
+                     errors='replace',timeout=vm_timeout+60)
     if r.returncode: raise RuntimeError(r.stderr or r.stdout)
     return json.loads(r.stdout)
 
@@ -509,12 +516,12 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
                         ('ipcs-kdd-collector.sh',ROOT/'mod/deployment/mfw/ipcs-kdd-collector.sh'),
                         ('smartfilter_ram.bin',BUILD/'smartfilter_ram.bin')]:
         p=stage/name; p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(source.read_bytes())
-    for look in ('nx300-hard-mono','ricoh-positive-exact'):
+    for look in ('nx300-hard-mono','nx300-fuji-classic-chrome'):
         for name in ('table.d4lut','table-stock3d.d4lut'):
             target=stage/'looks'/look/name; target.parent.mkdir(parents=True,exist_ok=True)
             source=ROOT/'looks'/look/name
             if source.exists(): target.write_bytes(source.read_bytes())
-    candidate=json.loads((OUT/'candidate.json').read_text())
+    candidate=json.loads((OUT/'candidate.json').read_text(encoding='utf-8'))
     candidate.update(ram_build=report,session_experiment=True,
                      session_hardware_boundary='UDD reference operations simulated with paired per-TID references; no physical PMU',
                      measured_hardware_performance=False)
@@ -523,8 +530,19 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
 
 
 def verify(guest):
-    def rows(name): return [json.loads(v) for v in (guest/(name+'.json')).read_text().splitlines() if v.startswith('{')]
+    def rows(name): return [json.loads(v) for v in (guest/(name+'.json')).read_text(encoding='utf-8').splitlines() if v.startswith('{')]
     def session(name): return next(r for r in rows(name) if r.get('type')=='ipcs_session')
+    def admission(name):
+        line=next(s for s in (guest/(name+'.stderr')).read_text(encoding='utf-8').splitlines()
+                  if s.startswith('Control admission:'))
+        fields={k:int(v) for k,v in (word.split('=',1) for word in line.split() if '=' in word)}
+        return dict(mode=line.split()[2],**fields)
+    cold=admission('binding-libc-apply')
+    warm=admission('automatic-insert-status')
+    restarted=admission('baseline')
+    assert cold['mode']=='full_hash' and cold['hashed_files']==7 and cold['cache_hits']==0,cold
+    assert warm['mode']=='cached_file_identity' and warm['hashed_files']==0 and warm['cache_hits']==7,warm
+    assert restarted['mode']=='full_hash' and restarted['hashed_files']==7,restarted
     inserted=rows('automatic-insert-status')[0]
     repeated=rows('automatic-repeat-status')[0]
     switched=rows('automatic-switch-status')[0]
@@ -535,8 +553,8 @@ def verify(guest):
     assert repeated['s2_path']==1 and repeated['refresh_requests']==1,repeated
     assert switched['look_id']=='monochrome' and switched['s2_path']==1 and switched['refresh_requests']==1,switched
     assert removed['s2_path']==0 and removed['refresh_requests']==removed['refresh_dispatches']==2,removed
-    assert full['s2_path']==0 and full['refresh_requests']==3 and full['refresh_error']!=0,full
-    assert retry['s2_path']==1 and retry['refresh_requests']==4 and retry['refresh_dispatches']==3 and retry['refresh_error']==0,retry
+    assert full['s2_path']==0 and full['refresh_requests']==4 and full['refresh_error']!=0,full
+    assert retry['s2_path']==1 and retry['refresh_requests']==5 and retry['refresh_dispatches']==3 and retry['refresh_error']==0,retry
     baseline=(guest/'baseline.yuv').read_bytes()
     assert baseline==(guest/'candidate.yuv').read_bytes()==(guest/'return-baseline.yuv').read_bytes()
     for label in ['baseline-trace','returned-trace','stopped-trace']:
@@ -545,22 +563,27 @@ def verify(guest):
     fault=session('uncertain-trace')
     assert fault['state']==4 and fault['held']==2 and fault['error']==-78,fault
     status=rows('uncertain-status')[0]; assert status['control_paused']==1,status
-    refs=[json.loads(v) for v in (guest/'smartfilter-ram.stdout').read_text().splitlines() if v.startswith('{"type":"fixture_refs"')][-1]
+    refs=[json.loads(v) for v in (guest/'smartfilter-ram.stdout').read_text(encoding='utf-8').splitlines() if v.startswith('{"type":"fixture_refs"')][-1]
     assert refs['held']==0 and refs['opens']==refs['closes'] and refs['device_opens']==refs['device_closes'],refs
-    assert (guest/'mfw-library.sha256').read_text().split()[0]==firmware_profile('mfw')['libmisc_sha256']
-    failures=[json.loads(v) for v in (guest/'session-failures.ndjson').read_text().splitlines()]
-    assert len(failures)==7 and all(r['passed'] is True for r in failures),failures
+    assert (guest/'mfw-library.sha256').read_text(encoding='utf-8').split()[0]==firmware_profile('mfw')['libmisc_sha256']
+    failures=[json.loads(v) for v in (guest/'session-failures.ndjson').read_text(encoding='utf-8').splitlines()]
+    assert len(failures)==11 and all(r['passed'] is True for r in failures),failures
+    assert failures[0]['check']=='open_failure_demand_retry_capped',failures
+    assert failures[7]['check']=='open_failure_recovers_on_demand',failures
+    assert [r['check'] for r in failures[8:]]==[
+        'ambiguous_open_failure_no_cleanup','recovery_close_failure_stays_blocked',
+        'recovery_waits_for_lifecycle_lock'],failures
     from analyze_ipcs_calls import analyze
-    udd=analyze([json.loads(v) for v in (guest/'udd-calltrace.ndjson').read_text().splitlines() if v.startswith('{')])
+    udd=analyze([json.loads(v) for v in (guest/'udd-calltrace.ndjson').read_text(encoding='utf-8').splitlines() if v.startswith('{')])
     assert not udd['excluded'] and [r['udd_branch'] for r in udd['calls']]==[
         'first_process_reference','existing_process_reference','first_process_reference'],udd
     arm_vm.write_json(OUT/'udd-calltrace-report.json',udd)
-    fast_config=next(json.loads(v) for v in (guest/'smartfilter-ram.stdout').read_text().splitlines()
+    fast_config=next(json.loads(v) for v in (guest/'smartfilter-ram.stdout').read_text(encoding='utf-8').splitlines()
                      if v.startswith('{"type":"fixture_fast_preview"'))
     assert fast_config['session']==1 and fast_config['timing']==fast_config['calltrace']==0,fast_config
     initial=next(r for r in rows('wrapper-fast-arm') if 'look_id' in r)
     assert initial['look_id']=='current-mono' and initial['strength']==100,initial
-    assert (guest/'wrapper-fast-backend.txt').read_text()=='smartfilter\n'
+    assert (guest/'wrapper-fast-backend.txt').read_text(encoding='utf-8')=='smartfilter\n'
     assert rows('first-preview-still-ready')[0]['ready'] is True
     assert (guest/'first-preview.still.bin').read_bytes()==(OUT/'source-files/monochrome.d4lut').read_bytes()
     assert (guest/'wrapper-fast-render.yuv').read_bytes()==(guest/'wrapper-render.yuv').read_bytes()
@@ -571,11 +594,11 @@ def verify(guest):
     for label in ('wrapper-selection-stock','wrapper-selection-stock-enable'):
         stock=rows(label)[0]
         assert stock['look_id']=='stock' and stock['strength']==0,stock
-    assert 'PREVIEW-WARNING' not in (guest/'wrapper-selection-sync.stderr').read_text()
-    assert 'PREVIEW-WARNING' not in (guest/'wrapper-selection-stock.stderr').read_text()
+    assert 'PREVIEW-WARNING' not in (guest/'wrapper-selection-sync.stderr').read_text(encoding='utf-8')
+    assert 'PREVIEW-WARNING' not in (guest/'wrapper-selection-stock.stderr').read_text(encoding='utf-8')
     assert rows('still-engine-ready')[0]['ready'] is True
-    assert len({(guest/f'switch-{i}.saved-inode').read_text() for i in (1,2,3)})==1
-    for i,look in enumerate(('nx300-hard-mono','ricoh-positive-exact','nx300-hard-mono'),1):
+    assert len({(guest/f'switch-{i}.saved-inode').read_text(encoding='utf-8') for i in (1,2,3)})==1
+    for i,look in enumerate(('nx300-hard-mono','nx300-fuji-classic-chrome','nx300-hard-mono'),1):
         tag=f'switch-{i}'
         table=OUT/'source-files/looks'/look/'table-stock3d.d4lut'
         expected=(table if table.exists() else table.with_name('table.d4lut')).read_bytes()
@@ -583,11 +606,11 @@ def verify(guest):
         assert (guest/(tag+'.after-preview.bin')).read_bytes()==expected,tag
         assert (guest/(tag+'.after-capture.bin')).read_bytes()==expected,tag
         assert (guest/(tag+'.stream-capture.bin')).read_bytes()==expected,tag
-        selected=(guest/(tag+'.selection')).read_text().split()
+        selected=(guest/(tag+'.selection')).read_text(encoding='utf-8').split()
         assert selected[1]==f'/perf/looks/{look}/table.d4lut' and selected[2]=='100',selected
         status=rows(tag+'.status')[0]
         assert status['look_id']==look and status['applied_generation']==status['requested_generation'],status
-        assert 'PREVIEW-WARNING' not in (guest/(tag+'.apply.stderr')).read_text()
+        assert 'PREVIEW-WARNING' not in (guest/(tag+'.apply.stderr')).read_text(encoding='utf-8')
     assert (guest/'switch-1.preview.yuv').read_bytes()==(guest/'switch-3.preview.yuv').read_bytes()
     assert (guest/'switch-1.preview.yuv').read_bytes()!=(guest/'switch-2.preview.yuv').read_bytes()
     assert (guest/'switch-stock.preview.yuv').read_bytes()==(OUT/'source-files/input.yuv').read_bytes()
@@ -595,8 +618,8 @@ def verify(guest):
     import struct
     expected_stock=struct.pack('<2190H',*factory_3d_lut())
     assert (guest/'switch-stock.still.bin').read_bytes()==expected_stock
-    assert 'LUT_DISABLED' in (guest/'switch-off.json').read_text()
-    assert (guest/'switch-off.saved').read_text()=='0\n'
+    assert 'LUT_DISABLED' in (guest/'switch-off.json').read_text(encoding='utf-8')
+    assert (guest/'switch-off.saved').read_text(encoding='utf-8')=='0\n'
     off_native=rows('switch-off-native')[0]
     assert off_native['rw_slots_original'] and not off_native['ram_hooks_installed'],off_native
     before_off,after_off=rows('switch-off-before')[0],rows('switch-off-after')[0]
@@ -605,26 +628,27 @@ def verify(guest):
     assert off_session['mode']==off_session['held']==off_session['active']==0,off_session
     assert (guest/'switch-off-preview.yuv').read_bytes()==(OUT/'source-files/input.yuv').read_bytes()
     assert (guest/'switch-off.still.bin').read_bytes()==expected_stock
-    streams=[json.loads(v) for v in (guest/'smartfilter-ram.stdout').read_text().splitlines()
+    streams=[json.loads(v) for v in (guest/'smartfilter-ram.stdout').read_text(encoding='utf-8').splitlines()
              if v.startswith('{"type":"fixture_stream"')]
     assert len(streams)==4 and all(r['frames']>1 and r['processed']>0 and r['control_paused']==0 for r in streams),streams
     assert [r['captures'] for r in streams]==[1,1,1,0],streams
     assert rows('switch-reenabled-native')[0]['ready'] is True
-    assert (guest/'switch-reenable.still.bin').read_bytes()==(OUT/'source-files/looks/ricoh-positive-exact/table-stock3d.d4lut').read_bytes()
-    assert 'PREVIEW-WARNING' not in (guest/'switch-reenable.stderr').read_text()
+    assert (guest/'switch-reenable.still.bin').read_bytes()==(OUT/'source-files/looks/nx300-fuji-classic-chrome/table-stock3d.d4lut').read_bytes()
+    assert 'PREVIEW-WARNING' not in (guest/'switch-reenable.stderr').read_text(encoding='utf-8')
     reenabled=rows('menu-reenable-status')[0]
-    assert reenabled['look_id']=='ricoh-positive-exact' and reenabled['applied_generation']==reenabled['requested_generation'],reenabled
-    assert 'PREVIEW-WARNING' in (guest/'partial-switch.stderr').read_text()
-    assert (guest/'partial-switch.selection').read_text().split()[1]=='/perf/looks/nx300-hard-mono/table.d4lut'
+    assert reenabled['look_id']=='nx300-fuji-classic-chrome' and reenabled['applied_generation']==reenabled['requested_generation'],reenabled
+    assert 'PREVIEW-WARNING' in (guest/'partial-switch.stderr').read_text(encoding='utf-8')
+    assert (guest/'partial-switch.selection').read_text(encoding='utf-8').split()[1]=='/perf/looks/nx300-hard-mono/table.d4lut'
     retried=rows('partial-retry-status')[0]
     assert retried['look_id']=='nx300-hard-mono' and retried['applied_generation']==retried['requested_generation'],retried
     cancelled_control=rows('cancelled-control-status')[0]
     assert cancelled_control['control_paused']==0 and cancelled_control['look_id']=='nx300-hard-mono',cancelled_control
-    cancelled_log=(guest/'cancelled-control.stderr').read_text()
+    cancelled_log=(guest/'cancelled-control.stderr').read_text(encoding='utf-8')
     assert 'preview admission restored=true' in cancelled_log,cancelled_log
-    assert cancelled_log.count('Control admission: full_hash ')==1,cancelled_log
+    assert cancelled_log.count('Control admission: cached_file_identity ')==1,cancelled_log
+    assert 'Control admission: full_hash ' not in cancelled_log,cancelled_log
     assert 'Control admission: reused_authenticated_files ' in cancelled_log,cancelled_log
-    assert (guest/'cancelled-control-tracer.txt').read_text().split()[-1]=='0'
+    assert (guest/'cancelled-control-tracer.txt').read_text(encoding='utf-8').split()[-1]=='0'
     fast=session('wrapper-fast-trace')
     assert fast['mode']==1 and fast['trace_next']==0 and fast['error']==0,fast
     assert not any(r.get('type')=='ipcs_open_call' for r in rows('wrapper-fast-trace'))
@@ -632,7 +656,7 @@ def verify(guest):
     assert fast_stopped['mode']==fast_stopped['held']==fast_stopped['active']==0,fast_stopped
     fast_status=rows('wrapper-fast-status')[0]
     assert not fast_status['enabled'] and fast_status['control_paused']==fast_status['diag_frames']==0,fast_status
-    saved=[json.loads(v) for v in (guest/'wrapper-persisted.ndjson').read_text().splitlines() if v.startswith('{')]
+    saved=[json.loads(v) for v in (guest/'wrapper-persisted.ndjson').read_text(encoding='utf-8').splitlines() if v.startswith('{')]
     # The normal-mode stop exported its own snapshot before the diagnostic run.
     # Analyze the last complete export, rather than merging separate windows.
     open_rows=[r for r in saved if r.get('type','').startswith('ipcs_open') or r.get('type')=='ipcs_session']
@@ -659,19 +683,19 @@ def verify(guest):
     assert cancelled['error']==125 and not cancelled['timing_perturbed'],cancelled
     stopped=rows('wrapper-cancel-status')[0]
     assert not stopped['enabled'] and stopped['control_paused']==0,stopped
-    assert (guest/'wrapper-cancel-tracer.txt').read_text().split()[-1]=='0'
+    assert (guest/'wrapper-cancel-tracer.txt').read_text(encoding='utf-8').split()[-1]=='0'
     assert any(r.get('command')=='recover-kdd-guard' and r['recovered'] is True
                for r in rows('wrapper-recovered-guard'))
-    assert 'unresolved_operation' in (guest/'wrapper-unknown-guard.json').read_text()
+    assert 'unresolved_operation' in (guest/'wrapper-unknown-guard.json').read_text(encoding='utf-8')
     arm_vm.write_json(OUT/'wrapper-calltrace-report.json',wrapper_report)
-    failed=(guest/'wrapper-failures-persisted.log').read_text()
+    failed=(guest/'wrapper-failures-persisted.log').read_text(encoding='utf-8')
     assert 'NX_PREVIEW_FAILURE command=test-monochrome-timing rc=3' in failed
     assert 'Invalid native module/table' in failed
     assert 'stored_abi=4 expected_abi=7' in failed
-    assert 'Invalid native module/table' in (guest/'wrapper-failure.stderr').read_text()
-    assert 'stored_abi=4 expected_abi=7' in (guest/'wrapper-abi-failure.stderr').read_text()
+    assert 'Invalid native module/table' in (guest/'wrapper-failure.stderr').read_text(encoding='utf-8')
+    assert 'stored_abi=4 expected_abi=7' in (guest/'wrapper-abi-failure.stderr').read_text(encoding='utf-8')
     for name,owner in [('binding-libc.stdout','libc'),('smartfilter-ram.stdout','libpthread')]:
-        bindings=[json.loads(v) for v in (guest/name).read_text().splitlines()
+        bindings=[json.loads(v) for v in (guest/name).read_text(encoding='utf-8').splitlines()
                   if v.startswith('{"type":"fixture_open_binding"')]
         assert len(bindings)==2 and [r['enabled'] for r in bindings]==[1,0],bindings
         assert all(r['owner']==owner and r['original']==r['forwarded_original']
@@ -679,13 +703,17 @@ def verify(guest):
     memory=rows('automatic-memory-status')[0]
     assert memory['s2_path']==1 and memory['refresh_pending']==0 and memory['refresh_state']==7,memory
     assert memory['refresh_resumes']>0 and memory['refresh_wakeups']>0,memory
-    assert '"native_matcher_and_capture_defer":true' in (guest/'binding-libc.stdout').read_text()
+    assert '"native_matcher_and_capture_defer":true' in (guest/'binding-libc.stdout').read_text(encoding='utf-8')
     assert (guest/'preview-only.still.bin').read_bytes()==(guest/'switch-3.still.bin').read_bytes()
-    assert (guest/'preview-only-color.still.bin').read_bytes()==(OUT/'source-files/looks/ricoh-positive-exact/table-stock3d.d4lut').read_bytes()
+    assert (guest/'preview-only-color.still.bin').read_bytes()==(OUT/'source-files/looks/nx300-fuji-classic-chrome/table-stock3d.d4lut').read_bytes()
     stopped=rows('preview-only-stopped')[0]; after_switch=rows('preview-only-after-switch')[0]
     assert not stopped['enabled'] and not after_switch['enabled'] and stopped['requested_generation']==after_switch['requested_generation']
-    assert '取景预览已关闭；照片 LUT 保留' in (guest/'preview-only-stop.json').read_text()
+    assert '取景预览已关闭；照片 LUT 保留' in (guest/'preview-only-stop.json').read_text(encoding='utf-8')
     return dict(passed=True,abi=7,actual_ram_loader=True,actual_got_hooks=20,mfw_userspace_verified=True,
+                loader_wakes_controller_without_first_frame=True,
+                admission_file_cache_reused_across_commands=True,
+                admission_new_process_requires_full_hash=True,
+                admission_cost_arm_fixture=dict(cold=cold,warm=warm,new_process=restarted),
                 asynchronous_stop_callback_wakes_controller=True,
                 native_stop_callback_and_memory_matching_executed=True,
                 unchanged_map_resumes_without_capture=True,

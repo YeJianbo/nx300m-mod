@@ -1,4 +1,5 @@
 """Build a read-only, external ARM lens/PP observer against the old stock libc."""
+from wsl_paths import wsl_path
 import io
 import json
 from pathlib import Path
@@ -144,7 +145,7 @@ def main():
                     '-std=c99', '-O2', '-Wall', '-Wextra', '-Werror', '-ffreestanding', '-fno-builtin',
                     '-fno-stack-protector', '-fno-pie', '-ffunction-sections', '-fdata-sections',
                     '-I' + str(OUT), '-c', 'runtime/manual_lens_probe.c', '-o', str(obj)], cwd=PROJECT, check=True)
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 guest=/opt/nx300m-lab/stock-1.15

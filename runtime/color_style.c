@@ -5,6 +5,10 @@
  * keeps that matrix as the restoration base, scales its output rows, and then
  * calls the same original setters. It never writes WB/AWB state.
  */
+#define _GNU_SOURCE 1
+#include <pthread.h>
+#include <stdint.h>
+
 extern void *dlsym(void *, const char *);
 extern void *fopen(const char *, const char *);
 extern int fscanf(void *, const char *, ...);
@@ -16,8 +20,10 @@ extern int getpid(void);
 extern int kill(int, int);
 extern int *__errno_location(void);
 extern int snprintf(char *, unsigned long, const char *, ...);
-extern long time(long *);
+/* pthread.h uses the toolchain's time64 ABI; the camera exports time32. */
+extern long color_time(long *) __asm__("time");
 extern void *stderr;
+extern void abort(void);
 
 typedef unsigned int u32;
 typedef signed int i32;
@@ -26,7 +32,17 @@ typedef int (*color_setter)(color_matrix *);
 typedef void *(*ecore_timer_add_fn)(double, int (*)(void *), void *);
 
 enum { NEUTRAL = 100, MATRIX_MIN = -1024, MATRIX_MAX = 1023 };
-static volatile int color_lock;
+static pthread_mutex_t color_lock = PTHREAD_MUTEX_INITIALIZER;
+enum color_io_kind { COLOR_MATRIX, COLOR_CHROMA, COLOR_TONE, COLOR_EDGE, COLOR_IO_KINDS };
+static pthread_mutex_t color_io[2] = {
+    PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP, PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
+};
+typedef struct {
+    uint64_t issued, completed, successful;
+    unsigned int generation;
+    int known;
+} color_row_state;
+static color_row_state color_rows[2];
 static unsigned int percent[3] = {NEUTRAL, NEUTRAL, NEUTRAL};
 static unsigned int row_rgb_generation=1;
 static unsigned int last_request;
@@ -80,9 +96,27 @@ static void bridge_cleanup(const char *stem) {
 
 static void lock_color(void) {
     if(!color_process_current()) return;
-    while (__sync_lock_test_and_set(&color_lock, 1)) { }
+    if(pthread_mutex_lock(&color_lock)) abort();
 }
-static void unlock_color(void) { if(color_process_current()) __sync_lock_release(&color_lock); }
+static void unlock_color(void) {
+    if(color_process_current() && pthread_mutex_unlock(&color_lock)) abort();
+}
+/* Lock order is always submission -> state. UI requests take only state;
+ * no driver, native getter or file I/O may execute while state is held. */
+static void color_io_enter(int capture, enum color_io_kind kind) {
+    (void)kind;
+    if(pthread_mutex_lock(&color_io[!!capture])) abort();
+}
+static void color_io_leave(int capture, enum color_io_kind kind) {
+    (void)kind;
+    if(pthread_mutex_unlock(&color_io[!!capture])) abort();
+}
+static void source_rgb_invalidate_native_locked(void);
+static void color_rows_pending_locked(void) {
+    if(capture_base_valid) capture_last_rc=-123;
+    if(preview_base_valid) preview_last_rc=-123;
+    source_rgb_invalidate_native_locked();
+}
 
 static color_setter resolve_ipcs(void) {
     color_setter setter = __atomic_load_n(&stock_ipcs, __ATOMIC_ACQUIRE);
@@ -137,58 +171,25 @@ static int make_styled(const color_matrix *base, color_matrix *styled) {
     return 1;
 }
 
-static int forward_matrix(color_setter setter, const color_matrix *base,
-                          color_matrix *scratch, int *modified,
-                          int *range_bypassed) {
-    if (!setter) return 1;
-    *range_bypassed = 0;
-    if (is_neutral()) {
-        int result = setter((color_matrix *)base);
-        if (!result) *modified = 0;
-        return result;
-    }
-    if (!make_styled(base, scratch)) {
-        *range_bypassed = 1;
-        int result = setter((color_matrix *)base);
-        if (!result) *modified = 0;
-        return result;
-    }
-    int result = setter(scratch);
-    if (!result) *modified = 1;
-    return result;
-}
-
 static void restore_cached(void) {
-    color_setter setter;
-    if (capture_base_valid && (setter = resolve_ipcs())) {
-        int result = setter(&capture_base);
-        source_rgb_cached_setter_result_locked(1,result);
-        capture_last_rc = result;
-        if (!result) capture_modified = 0;
-    }
-    if (preview_base_valid && (setter = resolve_ipcm())) {
-        int result = setter(&preview_base);
-        source_rgb_cached_setter_result_locked(0,result);
-        preview_last_rc = result;
-        if (!result) preview_modified = 0;
-    }
-}
-
-static void apply_cached(void) {
-    color_matrix scratch;
-    color_setter setter;
-    int range_bypassed;
-    if (capture_base_valid && (setter = resolve_ipcs())) {
-        capture_last_rc = forward_matrix(setter, &capture_base, &scratch,
-                                         &capture_modified, &range_bypassed);
-        source_rgb_cached_setter_result_locked(1,capture_last_rc);
-        if (range_bypassed) ++capture_range_bypass;
-    }
-    if (preview_base_valid && (setter = resolve_ipcm())) {
-        preview_last_rc = forward_matrix(setter, &preview_base, &scratch,
-                                         &preview_modified, &range_bypassed);
-        source_rgb_cached_setter_result_locked(0,preview_last_rc);
-        if (range_bypassed) ++preview_range_bypass;
+    /* Exit-only restoration. Ordinary UI changes wait for a real native
+     * update, rather than replaying an old base from the Ecore thread. */
+    for(int capture=0;capture<2;++capture) {
+        color_setter setter=capture?resolve_ipcs():resolve_ipcm();
+        color_io_enter(capture,COLOR_MATRIX);
+        lock_color();
+        int valid=capture?capture_base_valid:preview_base_valid;
+        color_matrix base=capture?capture_base:preview_base;
+        unlock_color();
+        if(valid && setter) {
+            int result=setter(&base);
+            lock_color();
+            source_rgb_cached_setter_result_locked(capture,result);
+            if(capture) { capture_last_rc=result;if(!result) capture_modified=0; }
+            else { preview_last_rc=result;if(!result) preview_modified=0; }
+            unlock_color();
+        }
+        color_io_leave(capture,COLOR_MATRIX);
     }
 }
 
@@ -241,7 +242,7 @@ static int poll_request(void *unused) {
     last_request = id;
 
     int result = 0;
-    if ((unsigned int)time((long *)0) > expires) result = -108;
+    if ((unsigned int)color_time((long *)0) > expires) result = -108;
     else if (operation > 2u) result = -101;
     else if (operation == 1u &&
              (requested[0] > 200u || requested[1] > 200u || requested[2] > 200u))
@@ -252,13 +253,12 @@ static int poll_request(void *unused) {
         if(++row_rgb_generation==0) row_rgb_generation=1;
         if (operation == 0u) {
             percent[0] = percent[1] = percent[2] = NEUTRAL;
-            apply_cached();
         } else {
             percent[0] = requested[0];
             percent[1] = requested[1];
             percent[2] = requested[2];
-            apply_cached();
         }
+        color_rows_pending_locked();
         unlock_color();
     }
     write_response(id, result);
@@ -271,81 +271,78 @@ static int write_ready(void) {
     return bridge_write_ready("/var/run/nx300m-color-style-ready");
 }
 
-int ipcs_color_correction_param(color_matrix *matrix) {
-    color_setter setter = resolve_ipcs();
+static int color_forward_matrix(color_matrix *matrix,int capture) {
+    color_setter setter = capture?resolve_ipcs():resolve_ipcm();
     if(!color_process_current()) return setter?setter(matrix):1;
-    if (!setter) { source_rgb_missing_setter(1);return 1; }
-    if (!matrix) {
-        lock_color();
-        int result=setter(matrix);source_rgb_setter_result_locked(1,matrix,result,0);
-        unlock_color();return result;
-    }
+    if (!setter) { source_rgb_missing_setter(capture);return 1; }
     color_matrix styled;
     color_matrix *forwarded=matrix;
-    int result;
+    int modified=0;
+    /* Serialize before taking the snapshot: an older queued call cannot
+     * replay configuration captured before a newer hardware submission. */
+    color_io_enter(capture,COLOR_MATRIX);
     lock_color();
-    capture_base = *matrix;
-    source_rgb_cache_matrix_locked(1);
-    capture_base_valid = 1;
-    ++capture_calls;
-    if (!is_neutral() && !make_styled(&capture_base, &styled)) {
-        ++capture_range_bypass;
-        result = setter(matrix);
-        if (!result) capture_modified = 0;
-    } else if (is_neutral()) {
-        result = setter(matrix); /* strict pointer/data passthrough */
-        if (!result) capture_modified = 0;
-    } else {
-        forwarded=&styled;
-        result = setter(&styled);
-        if (!result) capture_modified = 1;
+    color_row_state *row=&color_rows[!!capture];
+    uint64_t ticket=++row->issued;
+    unsigned int generation=row_rgb_generation;
+    if(matrix) {
+        if(capture) { capture_base=*matrix;capture_base_valid=1;++capture_calls; }
+        else { preview_base=*matrix;preview_base_valid=1;++preview_calls; }
+        source_rgb_cache_matrix_locked(capture);
+        if(!is_neutral()) {
+            if(make_styled(matrix,&styled)) { forwarded=&styled;modified=1; }
+            else if(capture) ++capture_range_bypass;
+            else ++preview_range_bypass;
+        }
     }
-    capture_last_rc = result;
-    source_rgb_setter_result_locked(1,forwarded,result,forwarded==&styled);
     unlock_color();
+    int result=setter(forwarded); /* retain pointer identity for stock passthrough */
+    lock_color();
+    /* A reentrant setter can complete a nested write first. Its hardware
+     * ownership cannot be attributed to the outer transaction. */
+    int current=ticket==row->issued;
+    if(current) {
+        row->completed=ticket;row->known=!result && matrix!=0;
+        if(!result && matrix) { row->successful=ticket;row->generation=generation; }
+        if(capture) {
+            capture_last_rc=generation==row_rgb_generation?result:-123;
+            if(!result && matrix) capture_modified=modified;
+        } else {
+            preview_last_rc=generation==row_rgb_generation?result:-123;
+            if(!result && matrix) preview_modified=modified;
+        }
+    } else {
+        row->known=0;
+        if(capture) capture_last_rc=-124;else preview_last_rc=-124;
+    }
+    source_rgb_setter_result_locked(capture,forwarded,result,modified);
+    if(!current) {
+        source_rgb_hardware *hardware=capture?&source_rgb_capture_hardware:&source_rgb_preview_hardware;
+        hardware->state_known=0;hardware->error=-124;
+    }
+    unlock_color();
+    color_io_leave(capture,COLOR_MATRIX);
     return result;
 }
-
+int ipcs_color_correction_param(color_matrix *matrix) { return color_forward_matrix(matrix,1); }
 int ipcm_color_correction_param(color_matrix *matrix) {
-    color_setter setter = resolve_ipcm();
-    if(!color_process_current()) return setter?setter(matrix):1;
-    if (!setter) { source_rgb_missing_setter(0);return 1; }
-    if (!matrix) {
-        lock_color();
-        int result=setter(matrix);source_rgb_setter_result_locked(0,matrix,result,0);
-        unlock_color();return result;
-    }
-    color_matrix styled;
-    color_matrix *forwarded=matrix;
-    int result;
-    lock_color();
-    preview_base = *matrix;
-    source_rgb_cache_matrix_locked(0);
-    preview_base_valid = 1;
-    ++preview_calls;
-    if (!is_neutral() && !make_styled(&preview_base, &styled)) {
-        ++preview_range_bypass;
-        result = setter(matrix);
-        if (!result) preview_modified = 0;
-    } else if (is_neutral()) {
-        result = setter(matrix); /* strict pointer/data passthrough */
-        if (!result) preview_modified = 0;
-    } else {
-        forwarded=&styled;
-        result = setter(&styled);
-        if (!result) preview_modified = 1;
-    }
-    preview_last_rc = result;
-    source_rgb_setter_result_locked(0,forwarded,result,forwarded==&styled);
-    unlock_color();
-    return result;
+    return color_forward_matrix(matrix,0);
 }
 
 /* Startup may fork after preload constructors but before its first Ecore
  * loop. Discard copied caches rather than restoring a possibly half-written
  * parent baseline, and reset the copied lock without trying to acquire it. */
 static void color_reset_local(void) {
-    color_lock=0; attached=ready_written=0;
+    /* A pre-Ecore fork adopts fresh local locks; inherited parent locks are
+     * never used by helpers or restored by their destructors. */
+    color_lock=(pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+    for(int capture=0;capture<2;++capture) {
+        color_rows[capture]=(color_row_state){0};
+        color_io[capture]=(pthread_mutex_t)PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+    }
+    nx_sharpness_native_lock=(pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+    nx_sharpness_native_depth=0;
+    attached=ready_written=0;
     percent[0]=percent[1]=percent[2]=NEUTRAL;
     row_rgb_generation=1; last_request=0;
     capture_calls=preview_calls=capture_range_bypass=preview_range_bypass=0;
@@ -413,9 +410,9 @@ __attribute__((destructor)) static void shutdown_color_style(void) {
     bridge_cleanup("sharpness");
     lock_color();
     percent[0] = percent[1] = percent[2] = NEUTRAL;
+    unlock_color();
     restore_cached();
     chroma_shutdown();
-    unlock_color();
     bridge_cleanup("color-style");
     bridge_cleanup("contrast");
     if(capture_base_valid || preview_base_valid || chroma_capture.base_valid || chroma_preview.base_valid)

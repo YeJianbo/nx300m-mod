@@ -1,4 +1,5 @@
 """Stage a single-module rootfs launch candidate; never install or run it."""
+from wsl_paths import wsl_path as host_wsl_path
 import json
 from pathlib import Path
 import subprocess
@@ -54,7 +55,7 @@ def build():
         raise ValueError('Candidate contains unexpected or missing rootfs files')
     checks = []
     for path in scripts:
-        wsl_path = '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+        wsl_path = host_wsl_path(path)
         result = subprocess.run(['wsl.exe', '-d', 'Debian', '-e', '/bin/sh', '-n', wsl_path],
                                 capture_output=True, text=True)
         checks.append({'path': path.relative_to(ROOT).as_posix(), 'exit_code': result.returncode,

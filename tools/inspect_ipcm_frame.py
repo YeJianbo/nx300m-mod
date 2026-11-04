@@ -2,6 +2,7 @@
 
 The output is a debug buffer readback, not the camera's LCD or an ISP render.
 """
+from wsl_paths import wsl_path
 import argparse
 import json
 import os
@@ -54,7 +55,7 @@ def main():
         result = read_buffer(json.loads(args.layout))
         path.write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
         return
-    script = '/mnt/'+PROJECT.drive[0].lower()+PROJECT.as_posix()[2:]+'/tools/inspect_ipcm_frame.py'
+    script = wsl_path(PROJECT)+'/tools/inspect_ipcm_frame.py'
     result = subprocess.run(['wsl.exe', '-u', 'root', '-e', 'python3', script, '--layout', json.dumps(stock_layout())],
                             capture_output=True, timeout=20)
     if result.returncode: raise RuntimeError(result.stderr.decode('utf-8', 'replace').strip())

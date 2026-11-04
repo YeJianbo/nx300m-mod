@@ -3,6 +3,7 @@
 Run with the project's Conda Python on Windows. The Linux worker uses only the
 standard library. The serial command channel is intended for a trusted developer.
 """
+from wsl_paths import wsl_path
 import argparse
 import base64
 import concurrent.futures
@@ -39,9 +40,7 @@ def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
 
-def wsl_path(path):
-    path = str(Path(path).resolve())
-    return '/mnt/' + path[0].lower() + path[2:].replace('\\', '/')
+
 
 
 def linux_call(arguments, capture=False, check=True):

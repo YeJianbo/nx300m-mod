@@ -22,9 +22,11 @@ static __thread contrast_transaction *contrast_current;
 static void contrast_forward_tone(void *parameters,int capture) {
     void (*original)(void *)=dlsym((void *)-1,capture?"ipcs_tone_lut":"ipcm_tone_lut");
     if(!color_process_current()) { if(original) original(parameters); return; }
+    color_io_enter(capture,COLOR_TONE);
+    if(original) original(parameters);
     lock_color();
     contrast_hardware_state *hardware=capture?&contrast_capture_hardware:&contrast_preview_hardware;
-    if(original) { original(parameters);++hardware->calls;hardware->available=1; }
+    if(original) { ++hardware->calls;hardware->available=1; }
     contrast_transaction *transaction=contrast_current;
     if(original && parameters && transaction && transaction->capture==capture && transaction->saw_curve) {
         hardware->generation=transaction->generation;
@@ -32,6 +34,7 @@ static void contrast_forward_tone(void *parameters,int capture) {
         hardware->state_known=1;hardware->error=transaction->error;
     } else { hardware->state_known=0;hardware->error=original?-124:-120; }
     unlock_color();
+    color_io_leave(capture,COLOR_TONE);
 }
 void ipcs_tone_lut(unsigned short *parameters) { contrast_forward_tone(parameters,1); }
 void ipcm_tone_lut(unsigned char *parameters) { contrast_forward_tone(parameters,0); }
@@ -186,7 +189,7 @@ static void contrast_poll_request(void) {
     fclose(file);
     if(!id||id==contrast_last_request) return;
     contrast_last_request=id;
-    int result=fields!=4?-100:(unsigned int)time((long *)0)>expires?-108:operation>2?-101:level>20?-102:0;
+    int result=fields!=4?-100:(unsigned int)color_time((long *)0)>expires?-108:operation>2?-101:level>20?-102:0;
     if(!result&&operation==1&&!chroma_supported_pasm()) result=-112;
     lock_color();
     if(!result&&operation!=2) {

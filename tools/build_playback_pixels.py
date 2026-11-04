@@ -1,4 +1,5 @@
 """Build the optional software playback pixel adapter without restarting a session."""
+from wsl_paths import wsl_path
 import io
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ OUTPUT=PROJECT/'outputs/firmware-runtime/playback-pixels'
 
 def main():
     OUTPUT.mkdir(parents=True,exist_ok=True)
-    base='/mnt/'+PROJECT.drive[0].lower()+PROJECT.as_posix()[2:]
+    base=wsl_path(PROJECT)
     script=f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

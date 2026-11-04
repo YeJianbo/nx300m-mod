@@ -159,6 +159,19 @@ for strength in 0 50 100; do
     select_strength "$strength"
     rpc 1 0 "composed-$strength"
 done
+rpc 1 0 selection-repeat
+# Preserve generation/path/byte count while editing strength in place. The
+# selection cache must observe metadata changes, invalid input and deletion.
+printf '%s %s 000\n' "$generation" "$ROOT/looks/ricoh-negative-exact/table.d4lut" > /var/run/nx300m-lut-selection
+rpc 1 0 selection-inplace-zero
+printf '%s %s 050\n' "$generation" "$ROOT/looks/ricoh-negative-exact/table.d4lut" > /var/run/nx300m-lut-selection
+rpc 1 0 selection-inplace-half
+printf 'broken selection\n' > /var/run/nx300m-lut-selection
+rpc 1 0 selection-invalid
+rm /var/run/nx300m-lut-selection
+rpc 1 0 selection-missing
+select_strength 100
+rpc 1 0 selection-recovered
 if [ "$NX_LUT_FACTORY_ONLY" -eq 0 ]; then
     for strength in 0 50 100; do
         select_strength "$strength"
@@ -480,6 +493,16 @@ def verify(guest):
             if words(guest / f'{stage}-{mode}.bin') != baseline[mode]:
                 raise ValueError(f'{stage} {mode} did not restore the genuine baseline')
         check_trace(f'stock-{mode}', mode, passthrough=True)
+    prior=json.loads((guest/'composed-100.trace.json').read_text())
+    repeated=json.loads((guest/'selection-repeat.trace.json').read_text())
+    if not repeated.get('selection_cache_hit') or repeated['selection_reads']!=prior['selection_reads']:
+        raise ValueError('Unchanged selection was read again instead of using its metadata cache')
+    half=tuple((a+b+1)//2 for a,b in zip(baseline['composed'],candidate['composed']))
+    for tag, expected in (
+        ('selection-repeat',candidate['composed']),('selection-inplace-zero',baseline['composed']),
+        ('selection-inplace-half',half),('selection-invalid',baseline['composed']),
+        ('selection-missing',baseline['composed']),('selection-recovered',candidate['composed'])):
+        if words(guest/f'{tag}.bin')!=expected: raise ValueError('Selection cache freshness failure: '+tag)
     if words(guest / 'installed-same-params.bin') != candidate['composed']:
         raise ValueError('First hook call did not invalidate the pre-existing original cache')
     check_trace('installed-same-params', 'composed', 100)
@@ -632,6 +655,8 @@ def verify(guest):
             'checks': checks, 'stock_selection_restored': True, 'original_slots_restored': True,
             'trace_checks': trace_checks, 'zero_strength_original_pointers_preserved': True,
             'full_strength_cached_planes_forwarded': True, 'table_cache_checks': cache_checks,
+            'unchanged_selection_read_cached': True,
+            'selection_cache_same_size_edits_invalid_delete_recovery_checked': True,
             'hot_path_comparison': performance,
             'repeated_apply_same_mapping': True, 'restore_reapply_stock_preserved': True,
             'direct_source_tested': 'direct' in modes,

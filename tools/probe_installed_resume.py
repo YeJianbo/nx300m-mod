@@ -1,4 +1,5 @@
 """Continue the existing ARM VM app after the binary test-client was corrected."""
+from wsl_paths import wsl_path
 import gzip
 import hashlib
 import io
@@ -57,7 +58,7 @@ phase generated-JPEG-backup-restore
             archive.addfile(member, io.BytesIO(data))
     archive_path = directory / 'resume-update.tar.gz'
     archive_path.write_bytes(gzip.compress(body.getvalue(), mtime=0))
-    guest = '/mnt/' + candidate.PROJECT.drive[0].lower() + candidate.PROJECT.as_posix()[2:]
+    guest = wsl_path(candidate.PROJECT)
     upload = subprocess.run(['wsl.exe', '-d', 'Debian', '-u', 'root', '-e', 'python3',
                              guest + '/tools/probe_sd_vm.py', 'upload-worker',
                              guest + '/' + archive_path.relative_to(candidate.PROJECT).as_posix()],

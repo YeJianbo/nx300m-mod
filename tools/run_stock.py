@@ -1,4 +1,5 @@
 """Run genuine stock ARM programs in a private WSL chroot with no camera devices."""
+from wsl_paths import wsl_path
 
 import argparse
 from datetime import datetime, timezone
@@ -39,8 +40,7 @@ def diagnostic_sample_source(directory):
             'note':'Pre-launch file metadata; encoder validates exact plane lengths at use. Not ISP pixels.'}
 
 
-def wsl_path(path):
-    return "/mnt/" + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def shell(script, **kwargs):

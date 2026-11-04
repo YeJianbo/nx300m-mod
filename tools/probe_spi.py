@@ -1,4 +1,5 @@
 """Check original ARM SPI configuration, CS GPIO and failure without RX data."""
+from wsl_paths import wsl_path
 import argparse
 import json
 from pathlib import Path
@@ -16,7 +17,7 @@ def main():
     args = parser.parse_args()
     if args.peer != 'none' and not args.mmio: parser.error('Loopback requires --mmio')
     options = (' -E NX300M_SPI_MMIO=1 -E NX300M_SPI_PEER='+args.peer) if args.mmio else ''
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

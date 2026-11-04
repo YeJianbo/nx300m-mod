@@ -1,4 +1,5 @@
 """Check missing/short diagnostic planes without a camera or real photographs."""
+from wsl_paths import wsl_path as wsl
 import json
 from pathlib import Path
 import shlex
@@ -9,8 +10,7 @@ OUT = ROOT/'outputs/firmware-runtime/jpeg-encode/diagnostic-samples-probe'
 STOCK = '/opt/nx300m-lab/stock-1.15'
 
 
-def wsl(path):
-    return '/mnt/'+path.drive[0].lower()+path.as_posix()[2:]
+
 
 
 def main():

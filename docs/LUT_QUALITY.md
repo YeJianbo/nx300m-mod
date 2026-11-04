@@ -1,16 +1,39 @@
 # NX300M 成片 LUT：代码审查与 9³ 编译优化
 
-2026-11-02。本轮优化电脑端编译器，生成候选表；默认仍为 `legacy`。相机 RAM Hook、ISP 设置、运行时处理流程和主 `looks/` 表保持原状。
+2026-11-03：正式库默认使用普通 `fit`。导入、重新编译、模拟器同步和 SD 打包均接入同一编译入口，照片使用的直接表与原厂组合表一起更新。相机 RAM Hook、ISP 设置、Reset 和 IQ 恢复保持现有实现。
+
+## 正式工作流与回退
+
+`LookLibrary` 默认生成 fit 表；`build_sd_bundle.py` 和 `build_lut_color_test.py` 打包前核对源文件、编译方法、编译器版本及表内容，缺失或过期时离线重编。`look.json` 的 `compiler` 记录方法和两张实际表的 SHA256。输入未变时复用编译结果；相机只读取原有大小的表，不执行拟合。
+
+打包与模拟器同步会把同一份元数据声明的两张表完整读入内存，逐张核对 SHA256、4380 字节格式及填充后再发布；编译期间读到不同版本的表会报错。源库的多文件写入仍不具备事务性，并行重编同一款可能冲突，应待单次编译完成后再重试。
+
+显式同步 `legacy` 后，模拟器打开 LUT 面板或应用风格会保留现有编译方式；重新导入、普通同步和 SD 打包默认仍为 fit。模拟器 CLI 可用 `tools/metol_stock.py --lut --method legacy` 显式选择旧算法。相关复现和修正记录见 `outputs/review/session-fit/review.md`。
+
+```powershell
+# 整库编译；默认 fit
+python -X utf8 tools/looks.py build --all
+
+# 当前测试卡部署 fit；显式改为 legacy 即可回退旧采样算法
+python -X utf8 tools/prepare_ipcs_diagnostic_card.py --deploy --serial LOCAL_REDACTED --lut-method fit
+python -X utf8 tools/prepare_ipcs_diagnostic_card.py --deploy --serial LOCAL_REDACTED --lut-method legacy
+```
+
+`cube_to_d4.py` 命令行默认也改为 fit，`--method legacy` 保留旧节点采样和向下取整。底层 `compile_cube()` 的历史默认值继续供旧评测与原生诊断使用；正式入口均显式选择编译方法。评测工具的 legacy 基线直接由旧算法生成，不再把正式库当前表误标成 legacy。
+
+`outputs/deployment/lut-fit/arm-vm/report.json` 记录 Hard Mono、富士 NC、GR Pos 的 36 组实际 ARM 写表检查：fit／legacy、两种原厂表来源、0／50／100% 强度。三通道输出与所选表逐字相符，关闭后恢复原厂；每次更新前仍执行原厂 Reset。`workflow-report.json` 记录全库打包核对。旧表另存 `legacy-library.zip`，完整表回退包为 `nx300m-lut-legacy.zip`。
+
+当前确认到原厂写表的字节，fit 的实拍 JPEG 颜色尚待机身验证。下面保留原 20 款与扩充 60 款的离线评测。
 
 ## 审查结论
 
 当前能改进的是 **9³ 对源 LUT 的保真度**。20 款同源对照中，独立 RGB888 样本的平均 RMSE 从 2.919 降到 2.173，约下降 25.6%。两张照片、40 个风格／场景组合的平均 RMSE 从 1.081 降到 0.716，约下降 33.7%。数值单位均为 8-bit 通道色值。
 
-最重要的未决项是 LUT 在真实 ISP 中的颜色域和插值规则。当前软件评测使用 RGB code／三线性模型；它衡量源函数的近似误差，不能用来确认实机 JPEG 已校色。候选表须在模型确认、实拍对照后启用。
+最重要的未决项是 LUT 在真实 ISP 中的颜色域和插值规则。当前软件评测使用 RGB code／三线性模型，衡量源函数的近似误差；实机 JPEG 的校色仍需实拍对照。
 
 | 优先级 | 代码审查发现 | 处理 |
 | --- | --- | --- |
-| P0 | `F(factory_node)` 只有在源 LUT 与原生表输出属于同一颜色域时才是正确的色彩组合。原厂接口命名不能证明这个前提 | 保留假设，不替换默认表；先标定 LUT 之后的颜色处理链 |
+| P0 | `F(factory_node)` 只有在源 LUT 与原生表输出属于同一颜色域时才是正确的色彩组合。原厂接口命名不能证明这个前提 | 沿用现有颜色域约定；后续标定 LUT 之后的颜色处理链 |
 | P1 | 原 `cube_to_d4.py` 只在 729 个节点采样，未优化节点间的输出误差 | 新增有界全局拟合，使用独立离网格样本评估 |
 | P1 | 原厂组合表也只复合节点，未优化整个 `F(interpolate(factory, x))` | 组合表单独拟合这一完整目标；19 款组合表均完成对照 |
 | P1 | 原编译器向下取整，存在负向量化偏差 | 增加四舍五入基线和整数节点优化；单独四舍五入的平均 RMSE 收益约 0.5% |

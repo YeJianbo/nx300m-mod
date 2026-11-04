@@ -59,42 +59,9 @@ export DISPLAY=${DISPLAY:-:0}
 export NX300M_MOD_ROOT="$ROOT" NX300M_MOD_SOURCE_ROOT="$ROOT" NX300M_MOD_SOURCE_ID="$source_id"
 export NX_STATE_DIR="$runtime"
 unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH
-live=0
-saved_off=0
-if [ ! -e /var/run/nx300m-lut-selection ] && [ -f "$ROOT/.state/lut-choice" ] &&
-    [ "$(cat "$ROOT/.state/lut-choice")" = 0 ]; then saved_off=1; fi
-if [ "$force_dry" -eq 0 ] && [ "$saved_off" = 1 ] && [ -r "$CODE/lut-load.sh" ]; then
-    # Opening a menu while Off must not reinstall the Still adapter. The engine
-    # loads it lazily only after the user selects a real look.
-    live=1
-elif [ "$force_dry" -eq 0 ] && "$runtime/lut_engine.arm" ready; then
-    live=1
-elif [ "$force_dry" -eq 0 ]; then
-    # Load once, then verify the installed code before enabling changes.
-    printf '%s lut panel: adapter not resident, applying\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-        >>"${NX_FN_KEY_LOG:-/dev/null}" 2>/dev/null || :
-    # lut-load.sh lives on the SD data root; it stages its own RAM copies.
-    # Admission errors do not improve by repeating the same ptrace operation.
-    adapter_applied=0
-    if [ -r "$ROOT/lut-load.sh" ] && /bin/sh "$ROOT/lut-load.sh" apply; then
-        adapter_applied=1
-    fi
-    if [ "$adapter_applied" = 1 ]; then
-        printf '%s lut panel: adapter applied\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-            >>"${NX_FN_KEY_LOG:-/dev/null}" 2>/dev/null || :
-        if "$runtime/lut_engine.arm" ready; then live=1; fi
-    else
-        printf '%s lut panel: adapter apply failed\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-            >>"${NX_FN_KEY_LOG:-/dev/null}" 2>/dev/null || :
-    fi
-fi
-if [ "$live" -eq 1 ]; then
-    "$runtime/lut_engine.arm" restore-selection || fail 'cannot restore the saved selection'
-    set -- --live
-else
-    printf '当前面板为浏览模式；原厂相机尚未加载匹配的 LUT 适配器。\n' >&2
-    set -- --dry-run
-fi
+# The engine admits/loads the adapter on Apply. Merely opening the list must
+# not pause the camera or synchronize preview before the first UI frame.
+if [ "$force_dry" -eq 0 ]; then set -- --live; else set -- --dry-run; fi
 [ "$(stat -c '%d:%i' "$ROOT")" = "$source_id" ] || fail 'LUT source changed during panel preparation'
 printf 'panel_runtime=%s\nlut_data_root=%s\n' "$runtime" "$ROOT"
 cd "$runtime"

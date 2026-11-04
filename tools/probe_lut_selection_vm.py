@@ -91,6 +91,28 @@ for variant in saved-mono keys-from-off tap-from-off browse-mono; do
     cat /perf/$variant-actions.txt
     gzip /perf/$variant-before.ppm /perf/$variant-picked.ppm
 done
+# Direct launcher must display both saved-On and saved-Off without executing
+# ready/apply/restore-selection. The engine admits hardware only on confirmation.
+mkdir -p /perf/mod/.state
+for variant in direct-saved direct-off; do
+    rm -f /var/run/nx300m-lut-selection /var/run/nx300m-lut-selection-session
+    if [ "$variant" = direct-saved ]; then
+        printf '2 /perf/mod/looks/nx300-hard-mono/table.d4lut 75\n' > /perf/mod/.state/lut-choice
+    else
+        printf '0\n' > /perf/mod/.state/lut-choice
+    fi
+    : > /perf/actions.txt
+    /rescue/busybox timeout 15 /bin/sh /perf/mod/lut-panel.sh > /perf/$variant.log 2>&1 &
+    panel=$!
+    attempt=0
+    until grep -q '^FIRST_FRAME ' /perf/$variant.log; do
+        kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+    done
+    [ ! -s /perf/actions.txt ]
+    /perf/close.arm key Menu
+    wait "$panel"
+    cp /perf/actions.txt /perf/$variant-actions.txt
+done
 printf 'button|开启流畅预览 · 当前 LUT|preview-s2-enable\nbutton|选择 LUT|lut\n' > /perf/mod/gui_preview_quick.NX300M
 cat > /perf/mod/mfw-panel-actions.sh <<'ACTIONS'
 #!/bin/sh
@@ -132,10 +154,16 @@ def main():
     vm.DRIVER = vm.DRIVER.replace('    if(argc==2) {', TAP_DRIVER+'\n    if(argc==2) {', 1)
     vm.DRIVER = vm.DRIVER.replace('    XEvent event={0};', '    if(capture_only){XCloseDisplay(d);return 0;}\n    XEvent event={0};', 1)
     vm.DRIVER = vm.DRIVER.replace('XStringToKeysym("Menu")', 'XStringToKeysym(argc==3 ? argv[2] : "Menu")')
+    launcher = ROOT/'mod/deployment/mfw/lut-panel.sh'
+    vm.EXTRA_FILES = {
+        'perf/mod/lut-panel.sh': launcher.read_bytes(),
+        'perf/mod/bin/lut_engine.arm': b'#!/bin/sh\nprintf "%s\\n" "$*" >> /perf/actions.txt\nexit 0\n',
+    }
     vm.prepare()
     report = dict(passed=False, hardware_pixels_verified=False,
                   scope='Native ARM nxui, real catalogue and X11 key/tap input; engine action recorder',
-                  candidate_sha256=hashlib.sha256((ROOT/'outputs/metol/nxui.arm').read_bytes()).hexdigest())
+                  candidate_sha256=hashlib.sha256((ROOT/'outputs/metol/nxui.arm').read_bytes()).hexdigest(),
+                  lut_panel_sha256=hashlib.sha256(launcher.read_bytes()).hexdigest())
     started = False
     try:
         vm.call('start'); started = True
@@ -162,6 +190,14 @@ def main():
                    for v in variants}
         collect(out, 'off-preview.log')
         off_preview=(out/'off-preview.log').read_text()
+        for variant in ('direct-saved', 'direct-off'):
+            collect(out, variant+'.log')
+            collect(out, variant+'-actions.txt')
+        report['direct_launcher_does_not_call_adapter_or_restore_selection'] = all(
+            (out/(variant+'-actions.txt')).read_text()=='' for variant in ('direct-saved', 'direct-off'))
+        report['saved_choice_visible_without_camera_mutation'] = (
+            'key=nx300-hard-mono strength=75 saved=1' in (out/'direct-saved.log').read_text()
+            and 'key=__off strength=100 saved=1' in (out/'direct-off.log').read_text())
         report['actions'] = actions
         report['browsing_waits_for_confirmation'] = True  # checked in guest before each OK
         report['only_final_choice_submitted_once'] = all(
@@ -170,7 +206,8 @@ def main():
             a and a[-1]=='apply nx300-hard-mono' for a in actions.values())
         report['off_preview_explains_selection_required'] = '当前 LUT 为关 · 请先选择 LUT，再开启预览' in off_preview
         report['passed'] = all(report[key] for key in ('browsing_waits_for_confirmation', 'only_final_choice_submitted_once',
-                              'full_catalogue_keyboard_and_touch_select_mono', 'off_preview_explains_selection_required'))
+                              'full_catalogue_keyboard_and_touch_select_mono', 'off_preview_explains_selection_required',
+                              'direct_launcher_does_not_call_adapter_or_restore_selection', 'saved_choice_visible_without_camera_mutation'))
     except Exception as error:
         report['error'] = str(error)
         raise

@@ -1,4 +1,5 @@
 """Check real SRW packing using the original firmware's packed-pixel reader."""
+from wsl_paths import wsl_path
 import argparse
 import json
 from pathlib import Path
@@ -25,8 +26,8 @@ def main():
         if not border and raw.raw_image.shape != (info['height'], info['width']): raise ValueError('Source geometry changed')
         if source_x < 0 or source_y < 0: raise ValueError('Probe sample is outside recorded active area')
         expected = [int(value) for value in raw.raw_image[source_y:source_y+2, source_x:source_x+2].reshape(-1)]
-    base = '/mnt/'+PROJECT.drive[0].lower()+PROJECT.as_posix()[2:]
-    packet = '/mnt/'+args.packet.resolve().drive[0].lower()+args.packet.resolve().as_posix()[2:]
+    base = wsl_path(PROJECT)
+    packet = wsl_path(args.packet.resolve())
     script = f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

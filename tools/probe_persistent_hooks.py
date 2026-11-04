@@ -1,4 +1,5 @@
 """Co-load persistent hooks with original ARM loader/Ecore in an independent root."""
+from wsl_paths import wsl_path as wsl
 import io
 import argparse
 import json
@@ -40,8 +41,7 @@ _start:
 '''
 
 
-def wsl(path):
-    return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def stage():

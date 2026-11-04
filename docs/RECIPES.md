@@ -30,7 +30,9 @@ Metol 上游把 Picture Wizard 配方保存为 `R_COLOR、G_COLOR、B_COLOR、HU
 
 ## RGB 行增益扩展
 
-`runtime/color_style.c` 拦截静态照片 `ipcs_color_correction_param` 与取景 `ipcm_color_correction_param`，保存每次原厂刚生成的 `col_mat[9]`，然后把处理后的矩阵转交给原厂 setter。模块通过原厂 Ecore 定时器读写 `/var/run/nx300m-color-style-{request,response,ready}`；ready 文件包含 guest PID。`tools/color_style.py` 提供 set、reset、status API。关闭／复位会把最近一份原厂矩阵重新交给原厂 setter；它不改原厂 AWB/WB 状态，也不写持久偏好。
+`runtime/color_style.c` 拦截静态照片 `ipcs_color_correction_param` 与取景 `ipcm_color_correction_param`，保存每次原厂刚生成的 `col_mat[9]`，然后把处理后的矩阵转交给原厂 setter。模块通过原厂 Ecore 定时器读写 `/var/run/nx300m-color-style-{request,response,ready}`；ready 文件包含 guest PID。`tools/color_style.py` 提供 set、reset、status API。设置与复位只暂存参数，在下一次原厂 Color 节点更新时生效；原厂 Reset 仍由该次 Update 的原调用线程执行。已有矩阵等待新参数时，setter 状态为 `-123`，不能把请求接受视为硬件已经更新。模块不改原厂 AWB/WB 状态，也不写持久偏好。
+
+状态读写使用短时 pthread mutex；IPCS、IPCM 各用一把提交锁，串行化各自的矩阵、色度、Tone、锐化调用。原厂 setter、模式读取和文件操作均放在状态锁外，UI 不等待提交锁，也不回放缓存到驱动。提交成功与失败分开记录；色度双选择器仍沿用原有恢复流程。进程退出时保留原有的最近缓存恢复，预 Ecore fork 的新宿主重新建立本地锁，helper 不接管父进程状态。
 
 矩阵 ABI 和算术依据来自核验过的 NX300M 1.15 原厂文件：`ipcs_submodule_type.h`／`ipcm_submodule_type.h` 定义九个 32 位 `col_mat`；原厂 `CIpcMath::MatrixMult3x3` 对行主序矩阵计算 `A×B`。色彩节点乘PSS／ColorTone时传入分母256，整数除法向零截断；这一分母不代表输入基准或最终CCM的单位值就是256。目标基准由 `EncodeLMWtoD4COLMAT` 编码，初始每行和为128。原厂 UDD setter 将系数限制在 −1024…1023，并按 11 位有符号值打包。证据、隔离 ARM 探针和专属模块构建见 `outputs/metol/color-style-probe.json`、`color-style-matrix-math.asm`、`color-style-ipcs-abi.asm` 与 `color-style-ipcm-abi.asm`；早期基准顺序见 `outputs/metol/rgb-target.json/.asm`。
 
@@ -225,7 +227,7 @@ python tools/contrast_style.py --reset
 
 ### Sharpness 原厂阶段控制
 
-`runtime/sharpness_native.h` 导出两张可动态替换的原厂九项表，并以同一互斥锁包围两个原厂 `SetParam` 的完整调用。启用时将该路九项临时设为选定源因子，调用原函数后恢复；关闭时使用原九项。TLS深度及逐层保存支持同线程嵌套，调用期间不持有控制状态锁。原始参数索引、每次基准、模式分支、LUT和setter调用保持原顺序。
+`runtime/sharpness_native.h` 导出两张可动态替换的原厂九项表，并以同一 pthread mutex 包围两个原厂 `SetParam` 的完整调用；竞争时休眠等待。启用时将该路九项临时设为选定源因子，调用原函数后恢复；关闭时使用原九项。TLS深度及逐层保存支持同线程嵌套，调用期间不持有控制状态锁。原始参数索引、每次基准、模式分支、LUT和setter调用保持原顺序。
 
 `tools/probe_sharpness_native.py` 确认两原vtable实际命中挂钩，原库中每张表唯一的直接GOT读取均在对应消费者；未发现直接跳入两原入口绕过符号解析的调用。6,048组完整16KiB寄存器RAM对照一致，另有1,200次双线程调用，合计7,248组、失败0；原表恢复、嵌套及错误路径通过。构建和运行退出0，stderr为空，记录见 `outputs/metol/sharpness-native-probe.json`。设备打开计数和无关DSP调用使用显式夹具；这些结果不覆盖物理ISP像素输出。
 

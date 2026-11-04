@@ -1,4 +1,5 @@
 """Check LUT selection persistence on ARM in isolated RAM; no camera needed."""
+from wsl_paths import wsl_path
 import hashlib
 import json
 from pathlib import Path
@@ -91,7 +92,7 @@ def main():
     sources = {name: hashlib.sha256((PROJECT / name).read_bytes()).hexdigest() for name in inputs}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / 'fixture.c').write_text(SOURCE, encoding='utf-8', newline='\n')
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = r'''set -eu
 cd PROJECT_PATH
 tc=/opt/nx300m-toolchain/usr

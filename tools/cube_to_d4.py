@@ -40,9 +40,12 @@ def load_cube(path):
     return size, low, high, values
 
 METHODS = ('legacy', 'round', 'fit', 'fit-perceptual', 'fit-integral')
+DEFAULT_METHOD = 'fit'
 
 
 def compile_cube(cube, stock_baseline=None, *, method='legacy'):
+    # Keep the historical low-level default for baseline/diagnostic callers.
+    # Library imports and the CLI explicitly select DEFAULT_METHOD.
     if method not in METHODS:
         raise ValueError('Unknown compiler method: '+method)
     if method != 'legacy':
@@ -74,14 +77,14 @@ def compile_cube(cube, stock_baseline=None, *, method='legacy'):
                 for c in range(3): planes[c].append(math.floor(max(0., min(1., rgb[c])) * 1023 + 1e-9))
     return b''.join(struct.pack('<730H', *plane, 0) for plane in planes)
 
-def convert(path):
-    return compile_cube(load_cube(path))
+def convert(path, *, method=DEFAULT_METHOD):
+    return compile_cube(load_cube(path), method=method)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('cube', type=Path)
     parser.add_argument('output', type=Path)
-    parser.add_argument('--method', choices=METHODS, default='legacy')
+    parser.add_argument('--method', choices=METHODS, default=DEFAULT_METHOD)
     parser.add_argument('--report', type=Path, help='Write offline model and fit metadata as JSON')
     args = parser.parse_args()
     paths = [args.cube.resolve(), args.output.resolve()]
@@ -91,7 +94,7 @@ def main():
         parser.error('Source, output table and JSON report must use different paths')
     cube = load_cube(args.cube)
     if args.method == 'legacy':
-        data, detail = compile_cube(cube), {'algorithm': 'legacy'}
+        data, detail = compile_cube(cube, method='legacy'), {'algorithm': 'legacy'}
     else:
         from lut_resample import compile_table
         data, detail = compile_table(cube, method=args.method)

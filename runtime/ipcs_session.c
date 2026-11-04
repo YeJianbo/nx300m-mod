@@ -14,6 +14,10 @@ static unsigned blocked(struct nx_ips *s) {
     for(unsigned i=0;i<NX_IPS_REASONS;++i) n|=s->blockers[i];
     return n;
 }
+static int recoverable(struct nx_ips *s) {
+    return s->state==NX_IPS_FAILED&&s->held==2&&s->error==NX_IPS_OPEN_IRQ_ERROR&&
+           !s->unlock_errors&&!s->close_errors&&s->recoveries<NX_IPS_RECOVERY_LIMIT;
+}
 static int release_locks(struct nx_ips *s,unsigned held) {
     int error=0;
     while(held) if(s->api.post(s->api.locks[--held])) error=NX_IPS_UNCERTAIN;
@@ -44,7 +48,15 @@ void nx_ips_fault(struct nx_ips *s,int error) {
 }
 int nx_ips_frame_enter(struct nx_ips *s) {
     lock(s);
-    if(blocked(s)||s->error||!s->running) { ++s->busy; unlock(s); return NX_IPS_BUSY; }
+    if(blocked(s)||s->error||!s->running) {
+        ++s->busy;
+        /* A failed state is only retried on renewed demand. Mark the attempt
+         * and wake the owner; blockers already signal through hold/release. */
+        if(recoverable(s)&&!blocked(s)&&s->running) {
+            s->requested=1; s->last_frame_ms=s->api.ms(); changed(s);
+        }
+        unlock(s); return NX_IPS_BUSY;
+    }
     s->requested=1; s->last_frame_ms=s->api.ms();
     if(s->state!=NX_IPS_READY||s->held!=1) {
         ++s->busy; changed(s); unlock(s); return NX_IPS_BUSY;
@@ -86,6 +98,33 @@ void nx_ips_owner(struct nx_ips *s) {
     for(;;) {
         lock(s);
         unsigned event=s->event;
+        /* Stock 1.15 ipcs_open_irq returns -3 for a negative IRQ result and
+         * ipcs_open forwards it before init. Other failures remain ambiguous.
+         * Cleanup uses the same lifecycle/channel order as normal Close. */
+        if(recoverable(s)&&!blocked(s)&&!s->active&&s->requested&&
+           s->api.ms()-s->last_error_ms>=NX_IPS_RETRY_MS) {
+            unlock(s);
+            int rc=acquire_locks(s);
+            if(rc) {
+                lock(s); ++s->lock_busy;
+                if(rc<0) { ++s->unlock_errors; s->error=rc; }
+                changed(s); event=s->event; unlock(s);
+                s->api.wait(&s->event,event,20); continue;
+            }
+            lock(s);
+            int cleanup=recoverable(s)&&!blocked(s)&&!s->active&&s->requested;
+            if(cleanup) { ++s->recoveries; ++s->recovery_closes; }
+            unlock(s);
+            if(cleanup) rc=s->api.close();
+            int post_error=release_locks(s,NX_IPS_LOCKS);
+            lock(s);
+            if(cleanup) {
+                if(rc) { ++s->close_errors; s->error=rc; }
+                else { s->held=0; s->error=0; s->state=NX_IPS_IDLE; }
+            }
+            if(post_error) { ++s->unlock_errors; s->error=post_error; s->state=NX_IPS_FAILED; }
+            changed(s); unlock(s); continue;
+        }
         int idle=s->requested&&s->api.ms()-s->last_frame_ms>=NX_IPS_IDLE_MS;
         int want=s->requested&&!blocked(s)&&!s->error&&!idle;
         int opening=want&&!s->held&&!s->active;
@@ -118,11 +157,11 @@ void nx_ips_owner(struct nx_ips *s) {
         lock(s);
         if(!cancel) {
             if(opening) {
-                if(rc<0) { ++s->open_errors; s->held=2; }
-                else { ++s->opens; s->held=1; }
+                if(rc<0) { ++s->open_errors; s->held=2; s->last_error_ms=s->api.ms(); }
+                else { ++s->opens; s->held=1; s->recoveries=0; }
             } else {
-                if(rc) { ++s->close_errors; s->held=2; }
-                else { ++s->closes; s->held=0; s->requested=0; if(idle) ++s->idle_releases; }
+                if(rc) { ++s->close_errors; s->held=2; s->last_error_ms=s->api.ms(); }
+                else { ++s->closes; s->held=0; s->requested=0; s->recoveries=0; if(idle) ++s->idle_releases; }
             }
         }
         if(post_error) { ++s->unlock_errors; s->error=post_error; }

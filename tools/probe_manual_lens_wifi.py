@@ -3,6 +3,7 @@
 Only 0x1cccb0..0x1ccd8f executes. Earlier storage/busy checks, real lens
 hardware, RVF state transitions and the real camera process are not exercised.
 """
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import shlex
@@ -137,7 +138,7 @@ def main():
         '-ffunction-sections', '-fdata-sections', '-I.', '-I' + str(OUT),
         '-c', str(OUT / 'wifi-gate-fixture.c'), '-o', str(OUT / 'wifi-gate-fixture.o'),
     ], cwd=PROJECT, check=True)
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 guest=/opt/nx300m-lab/stock-1.15

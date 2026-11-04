@@ -1,4 +1,5 @@
 """Update only the native remote in the existing stock app session."""
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import subprocess
@@ -47,7 +48,7 @@ print(json.dumps({'namespace_pid':state['namespace_pid'],'camera':camera,'remote
 '''
     gallery = json.loads(session_file().read_text(encoding='utf-8')).get('gallery_share', False)
     source = ROOT / ('outputs/quickshare/gallery/nx-remote-controller.arm' if gallery else 'outputs/metol/remote/nx-remote-controller.arm')
-    path = '/mnt/' + source.drive[0].lower() + source.as_posix()[2:]
+    path = wsl_path(source)
     result = subprocess.run(['wsl.exe', '-u', 'root', '-e', 'python3', '-c', code,
                              json.dumps(dict(state, gallery=gallery)), '1' if stop else '0', path],
                             capture_output=True, timeout=15)

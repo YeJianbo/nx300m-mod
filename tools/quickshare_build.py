@@ -4,6 +4,7 @@ Run using the project's Conda Python. Dependencies are not installed implicitly.
 The ARM target requires rustup's armv7-unknown-linux-musleabi standard library
 and the separately built ARM musl compiler in WSL.
 """
+from wsl_paths import wsl_path
 
 import argparse
 import json
@@ -19,9 +20,7 @@ OUTPUT = PROJECT / "outputs/quickshare"
 TARGET = "armv7-unknown-linux-musleabi"
 
 
-def wsl_path(path: Path) -> str:
-    value = str(path.resolve())
-    return "/mnt/" + value[0].lower() + "/" + value[3:].replace("\\", "/")
+
 
 
 def main() -> None:

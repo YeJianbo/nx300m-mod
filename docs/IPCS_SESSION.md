@@ -2,6 +2,41 @@
 
 更新：2026-11-03。
 
+## Session 稳定性与软件调用开销
+
+当前保持 ABI7 Session 实现，每帧原厂 Open／LUT／YCC／Reset／IQ 恢复／Close 顺序不变。本轮未改动 `ipcs_session.c`、`smartfilter_session.inc` 或 `smartfilter_ipcs.c`，仅增加离线测量夹具。
+
+`tools/probe_ipcs_session_cost_vm.py` 在独立 ARM Linux、原厂 glibc／pthread／UDD 环境中实际运行当前 Session 管理代码。3618 次准入和 96 轮嵌套 capture／stream／control 阻止、排空、恢复后，Open／Close 为 98／98，最终 held=0，五锁全部释放，固定所有者与渲染线程不同。空闲释放及现有七项 Open／Close 失败、在途排空、停流超时检查全部通过。原厂 UDD 另完成 5952 对已有引用的 Open／Close，最终引用为 0，只有所有者首开触发一次设备替身 Open。
+
+Open／Close 失败检查验证的是故障阻断，未实现自愈。失败后 `held=2`、`state=FAILED`，`nx_ips_drain()` 返回 -117，B2Y Open 随之拒绝原厂拍照。当前资源是否释放不确定，不能靠清状态或直接放行拍照恢复。这个异常路径仍待解决；需要相机主进程真正退出才能清除其状态，普通开关机可能恢复 MFW 快照。
+
+本轮复查收紧了汇总条件：必须有成功的执行退出码及完成标记、四组各 31 条唯一测量、每批 64 次调用、完整正值计时、九个指定检查及平衡引用。空数据不再显示通过。已有 124 条批次记录按新条件重新分析通过，没有重跑 VM；复现和审查记录见 `outputs/review/session-fit/review.md`。
+
+以下为每批 64 对调用、31 批的墙钟均摊值，单位微秒；P95／P99 是批次均摊分位数，不是单帧长尾。Reset／IQ 和硬件处理不计入此表。
+
+| 调用范围 | P50 | P95 | P99 |
+| --- | ---: | ---: | ---: |
+| 原厂已有引用的 Open＋Close | 2.921 | 8.473 | 13.044 |
+| Open 诊断包装核心，采样关闭，含 Close | 22.159 | 35.022 | 35.642 |
+| 同一包装，采样开启，含 Close | 585.896 | 621.879 | 637.805 |
+| READY 准入＋生命周期锁＋帧归还 | 265.087 | 353.530 | 369.946 |
+
+准入对的渲染线程 CPU P50 为 262.764 μs，包含所有者线程的进程 CPU 均摊 P50 为 443.381 μs。事件通知会唤醒所有者，是可见的软件成本；目前没有据此改动同步和唤醒语义。诊断关闭时 `nx_ipct_finish` 仍有一次 TID 查询，记录为已知包装成本，未扩展为运行时优化。
+
+结论是保留现有 Session 复用与原厂恢复流程，日常继续关闭 calltrace／timing。报告为 `outputs/performance/ipcs-session-cost/arm-vm/report.json`；VM 已关闭。实体设备首次上电的 11.66 ms 旧记录与上述软件数值属于不同测量范围。复用后的实体 Open 分位数、76 ms 长尾来源、LCD FPS、休眠覆盖及功耗仍缺新数据。
+
+## Open／Close 失败的按需恢复（2026-11-04）
+
+原厂 `libudd.so.3.1` 反汇编（`outputs/metol/ipcs-lifecycle/udd.asm`）已把 Open／Close 的每个失败分支归类：
+
+- `ipcs_open`（0x4bb78）所有失败分支都在 `ipcs_init`（0x4bc74，唯一写寄存器的步骤）之前返回：设备节点 open 失败（-1）、计数超限（-1）、reg_base 失败（-1，原厂自行调 `d4_udd_close` 清计数）、`ipcs_open_irq` 失败（-1/-2，计数保留）。失败调用从不改写 IPCS 寄存器。
+- `ipcs_close`（0x4bdb8）只释放句柄（udd 计数、reg_base ioctl+munmap、irq ioctl、fd），不写寄存器；计数已清零后重试 Close 会以 -1 短路，永远无法补做释放。
+- Mod 每帧 restore 的 `api.reset` 就是原厂 `ipcs_init`（`tools/build_smartfilter_preview.py` 的 GOT 表：`api.reset→ipcs_init`），寄存器状态每帧重建。
+
+据此，`runtime/ipcs_session.c` 增加有边界的按需恢复：`FAILED` 且 `held==2`、无 unlock/post 记账错误、无 blocker、有帧在请求（`requested`）且距上次失败 ≥2 秒时，所有者线程先做**一次** `api.close()` 尝试（结果只记 `recovery_closes`，不判定），清 `held/error` 后走正常 opening 路径全新 Open——成功即恢复 READY，失败则回到 FAILED 并计入 `recoveries`；每个故障纪元最多 3 次，超限保持现有阻断，恢复成功后计数清零。信号量 post 失败（`unlock_errors`）、帧记账不一致、`nx_ips_fault`（stop 超时/UNCERTAIN）与 Open 计数饱和仍永久阻断，不恢复。`nx_ips_frame_enter` 的错误路径现在会在恢复预算尚存时标记请求并唤醒所有者；无唤醒、无需求时不重试。
+
+夹具新增/调整场景：`open_failure_demand_retry_capped`（失败后无需求不重试；有需求重试 3 次达限阻断）、`open_failure_recovers_on_demand`（一次 close+全新 open 后恢复 READY，帧仲裁不变）；`close_ref` 允许恢复关闭在未持有通道租约时进行（`held==0` 分支）。`ipcs_session` 状态行新增 `recoveries`／`recovery_closes` 字段。`tools/probe_ipcs_session_vm.py` 调用链接受 `--timeout`（Session 探针执行窗口放宽到 900 秒，其他探针默认仍 360），并在探针 trap 中转储 RAM 夹具 stderr，便于定位 guest 失败。
+
 ## 切换后等待拍照才接入预览
 
 ABI6 已实机运行，但用户仍需拍照或进入回放才能使预览接入。日志记录了请求代次领先已处理代次；开启 NC 时尚无 S2 节点。静态分析进一步确认：只调用 `changeState(14)` 没有走完原厂恢复流程。

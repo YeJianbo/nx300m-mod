@@ -231,11 +231,13 @@ def verify(guest):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--linux', choices=('start', 'exec', 'stop'))
+    parser.add_argument('--timeout', type=int, default=360,
+                        help='VM exec timeout in seconds (default 360)')
     parser.add_argument('payload', nargs='?', default='')
     args = parser.parse_args()
     configure()
     if args.linux:
-        print(json.dumps(vm.linux_worker(args.linux, args.payload)))
+        print(json.dumps(vm.linux_worker(args.linux, args.payload, timeout=args.timeout)))
         return
     OUT.mkdir(parents=True, exist_ok=True)
     report = {'passed': False, 'phase': 'prepare'}
@@ -255,7 +257,9 @@ def main():
         else:
             raise TimeoutError('Private SmartFilter VM boot timed out')
         report['phase'] = 'execute'
-        execution = call('exec', '/bin/sh /arm-vm/mfw-probe.sh')
+        # boundary.call is the session probe's call: its recovery scenarios
+        # added real-time retry waits, so widen this exec window only.
+        execution = call('exec', '/bin/sh /arm-vm/mfw-probe.sh', vm_timeout=900)
         arm_vm.write_json(OUT/'execution.json', execution)
         guest = collect()
         if execution['exit_code'] or 'SMARTFILTER_ARM_BOUNDARY_PASSED' not in execution['output']:

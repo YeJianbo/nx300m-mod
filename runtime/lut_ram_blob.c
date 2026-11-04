@@ -45,6 +45,12 @@ struct table_cache {
 /* A context slot owns both its table and this cache until Update returns.
  * Other threads never wait for it or reuse its table while a writer runs. */
 static struct table_cache table_caches[SLOTS];
+struct selection_cache {
+    u32 valid, generation, strength, reads, hit;
+    struct file_stamp stamp;
+    char path[256];
+};
+static struct selection_cache selection_caches[SLOTS];
 
 static int sys3(int n, int a, int b, int c) {
     register int r0 __asm__("r0")=a;
@@ -126,6 +132,9 @@ static void trace(struct context *s,const char *stage) {
     p=append(p,",\"generation\":");p=number(p,s->generation);
     p=append(p,",\"strength\":");p=number(p,s->strength);
     struct table_cache *cache=&table_caches[s-contexts];
+    struct selection_cache *choice=&selection_caches[s-contexts];
+    p=append(p,",\"selection_reads\":");p=number(p,choice->reads);
+    p=append(p,",\"selection_cache_hit\":");p=append(p,choice->hit?"true":"false");
     p=append(p,",\"table_reads\":");p=number(p,cache->reads);
     p=append(p,",\"table_cache_hit\":");p=append(p,cache->hit?"true":"false");
     p=append(p,",\"selection_path\":\"");p=append(p,s->path);p=append(p,"\"}\n");
@@ -168,7 +177,18 @@ static int valid_path(const char *path) {
 }
 static void selection(struct context *s) {
     char text[320]; const char *p=text; unsigned k=0;
+    struct selection_cache *cache=&selection_caches[s-contexts];
+    struct file_stamp before,after;
+    cache->hit=0;
     s->active=0;s->generation=0;s->strength=100;s->forwarded=0;s->composed=0;s->path[0]=0;
+    int stamped=!file_stamp("/var/run/nx300m-lut-selection",&before);
+    if(stamped && cache->valid && same_stamp(&cache->stamp,&before)) {
+        cache->hit=1;
+        s->active=1;s->generation=cache->generation;s->strength=cache->strength;
+        append(s->path,cache->path);return;
+    }
+    cache->valid=0;
+    ++cache->reads;
     int n=read_file("/var/run/nx300m-lut-selection",text,sizeof(text)-1);
     if(n<=0) return;
     /* A NUL inside the file must not hide a malformed tail. */
@@ -186,9 +206,16 @@ static void selection(struct context *s) {
     }
     if(!valid_path(s->path)) goto invalid;
     s->active=1;
+    /* Controls publish by rename. Also detect same-size edits and refuse a
+     * changing read; each context owns its cache without any shared lock. */
+    if(stamped && !file_stamp("/var/run/nx300m-lut-selection",&after)) {
+        if(!same_stamp(&before,&after)) goto invalid;
+        save_stamp(&cache->stamp,&after);append(cache->path,s->path);
+        cache->generation=s->generation;cache->strength=s->strength;cache->valid=1;
+    }
     return;
 invalid:
-    s->path[0]=0;s->generation=0;s->strength=100;
+    s->active=0;s->path[0]=0;s->generation=0;s->strength=100;
 }
 static int load_table(struct context *s,int stock) {
     struct table_cache *cache=&table_caches[s-contexts];

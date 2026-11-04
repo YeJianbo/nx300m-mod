@@ -17,12 +17,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def forward(self):
         if self.path == '/__nx_proxy_status':
-            data = json.dumps({'pid': os.getpid(), 'namespace_pid': self.server.namespace_pid}).encode()
+            data = json.dumps({'pid': os.getpid(), 'namespace_pid': self.server.namespace_pid,
+                               'expected_namespace': True}).encode()
             self.send_response(200); self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data); return
         connection = None
         started = False
         try:
+            # A viewer request may outlive stop/start and reach a replacement
+            # listener on the same port. Reject it before forwarding a mutation.
+            expected = self.headers.get('X-NX-Expected-Namespace')
+            if expected is not None and expected != str(self.server.namespace_pid):
+                data = json.dumps({'error': 'Camera session changed'}).encode()
+                self.send_response(409)
+                self.send_header('Content-Length', str(len(data)))
+                self.send_header('Connection', 'close')
+                self.end_headers(); self.wfile.write(data)
+                self.close_connection = True
+                return
             origin = self.headers.get('Origin')
             if self.command in ('POST', 'PUT') and origin and origin != f'http://{self.headers.get("Host")}':
                 raise ValueError('Origin mismatch')

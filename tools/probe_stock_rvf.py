@@ -1,4 +1,5 @@
 """Observe the genuine stock Wi-Fi app in a disposable, read-only-root namespace."""
+from wsl_paths import wsl_path as linux_path
 import argparse
 import json
 import os
@@ -14,9 +15,7 @@ GUEST = '/opt/nx300m-lab/stock-1.15'
 OUTPUT = PROJECT / 'outputs/nxconnect/stock-rvf'
 
 
-def linux_path(path):
-    path = path.resolve()
-    return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def save(path, value):

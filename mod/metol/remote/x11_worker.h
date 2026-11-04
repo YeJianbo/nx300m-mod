@@ -34,12 +34,17 @@ static int xw_has_held(void) {
 static void xw_child(int fd,pid_t parent) {
     /* A killed supervisor must not leave an X client or inherited SD files.
      * Recheck PPID after installing PDEATHSIG to close the fork/prctl race. */
-    if (prctl(PR_SET_PDEATHSIG,SIGKILL) || getppid()!=parent) _exit(125);
+    if (prctl(PR_SET_PDEATHSIG,SIGKILL,0L,0L,0L)) {
+        fprintf(stderr,"NX_X11_WORKER_SETUP pdeathsig errno=%d\n",errno);_exit(125);
+    }
+    if (getppid()!=parent) {
+        fprintf(stderr,"NX_X11_WORKER_SETUP parent changed expected=%ld actual=%ld\n",(long)parent,(long)getppid());_exit(125);
+    }
     prctl(PR_SET_NAME,"nx-x11-worker",0,0,0);
     signal(SIGINT,SIG_DFL);signal(SIGTERM,SIG_DFL);signal(SIGCHLD,SIG_DFL);
-    if (chdir("/")) _exit(125);
+    if (chdir("/")) { fprintf(stderr,"NX_X11_WORKER_SETUP chdir errno=%d\n",errno);_exit(125); }
     DIR *directory=opendir("/proc/self/fd");
-    if (!directory) _exit(125);
+    if (!directory) { fprintf(stderr,"NX_X11_WORKER_SETUP fd directory errno=%d\n",errno);_exit(125); }
     int scan_fd=dirfd(directory);struct dirent *entry;
     while ((entry=readdir(directory))) {
         char *end;long value=strtol(entry->d_name,&end,10);
@@ -116,6 +121,8 @@ static void xw_poll(void) {
         int status;pid_t found=waitpid(xw.pid,&status,WNOHANG);
         if (found==xw.pid || (found<0 && errno==ECHILD)) {
             int idle_close=xw.retiring==2;
+            if (!xw.retiring && found==xw.pid)
+                fprintf(stderr,"NX_X11_WORKER_EXIT pid=%ld status=%d\n",(long)xw.pid,status);
             xw.pid=0;xw.retiring=0;
             if (!idle_close) xw_fail();
         }

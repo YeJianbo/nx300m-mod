@@ -3,6 +3,7 @@
 The CLI fixture emits protocol events; it never connects to a receiver. This
 checks selected-file handoff and UI completion, not phone interoperability.
 """
+from wsl_paths import wsl_path
 from pathlib import Path
 import json
 import subprocess
@@ -85,7 +86,7 @@ def main():
     OUT.mkdir(exist_ok=True)
     (OUT/'ui-driver.c').write_text(HELPER,encoding='utf-8')
     (OUT/'cli-fixture.sh').write_text(FIXTURE,encoding='utf-8',newline='\n')
-    project='/mnt/'+ROOT.drive[0].lower()+ROOT.as_posix()[2:]
+    project=wsl_path(ROOT)
     folder=project+'/outputs/quickshare/gallery'
     script=f'''set -eu
 mount --make-rprivate /

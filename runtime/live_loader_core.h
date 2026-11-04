@@ -97,6 +97,9 @@ static struct mapping *cover(uint32_t address,unsigned size,int writable,int exe
     return NULL;
 }
 struct image {int fd;uint32_t bias;struct mapping *first;Elf32_Ehdr eh;Elf32_Phdr ph[32];};
+#ifndef NX_LOADER_FILE_HASH
+#define NX_LOADER_FILE_HASH file_hash
+#endif
 static int image_open(unsigned pid,const char *name,unsigned size,const char *sha,struct image *out) {
     memset(out,0,sizeof *out);out->fd=-1;struct mapping *first=NULL;
     for(unsigned i=0;i<nmaps;i++)if(!strcmp(base(maps[i].path),name)){
@@ -106,7 +109,7 @@ static int image_open(unsigned pid,const char *name,unsigned size,const char *sh
     if(!first||!out->first||out->first->path[0]!='/')return 0;
     char path[640];snprintf(path,sizeof path,"/proc/%u/root%s",pid,first->path);int fd=open(path,O_RDONLY|O_CLOEXEC);if(fd<0)return 0;
     struct stat64 st;int ok=!__fxstat64(3,fd,&st)&&S_ISREG(st.st_mode)&&st.st_size==size &&
-        (unsigned long long)st.st_ino==first->inode && major(st.st_dev)==first->devmajor && minor(st.st_dev)==first->devminor && file_hash(fd,size,sha);
+        (unsigned long long)st.st_ino==first->inode && major(st.st_dev)==first->devmajor && minor(st.st_dev)==first->devminor && NX_LOADER_FILE_HASH(fd,size,sha);
     if(ok)ok=read_exact(fd,&out->eh,sizeof out->eh,0);
     Elf32_Ehdr *h=&out->eh;
     if(ok)ok=!memcmp(h->e_ident,ELFMAG,SELFMAG)&&h->e_ident[EI_CLASS]==ELFCLASS32&&h->e_ident[EI_DATA]==ELFDATA2LSB&&

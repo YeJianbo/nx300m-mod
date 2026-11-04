@@ -3,6 +3,7 @@
 Run with the project Conda Python. The receiver's actual file/open result must
 be entered separately; process success alone never sets transfer_success=true.
 """
+from wsl_paths import wsl_path as wsl
 import argparse
 import datetime
 import json
@@ -12,8 +13,7 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-def wsl(path):
-    return "/mnt/" + str(path)[0].lower() + "/" + str(path)[3:].replace("\\", "/")
+
 
 
 def main():

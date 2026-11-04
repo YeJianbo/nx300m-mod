@@ -4,6 +4,7 @@
  */
 #ifndef NX_SHARPNESS_NATIVE_H
 #define NX_SHARPNESS_NATIVE_H
+#include <pthread.h>
 
 typedef unsigned int (*nx_sharpness_native_fn)(void *, unsigned int);
 enum {
@@ -17,7 +18,7 @@ unsigned int nx_sharpness_capture_table[9]
 unsigned int nx_sharpness_preview_table[9]
     __asm__("_ZN11CIpcmEdgeD412m_iSharpnessE") = {160,180,202,228,256,288,324,364,410};
 static const unsigned int nx_sharpness_original_table[9] = {160,180,202,228,256,288,324,364,410};
-static volatile int nx_sharpness_native_lock;
+static pthread_mutex_t nx_sharpness_native_lock=PTHREAD_MUTEX_INITIALIZER;
 /* Recursive entry can occur through a callback on the same thread. Its local
  * saved table is restored before returning to the outer original consumer. */
 static __thread unsigned int nx_sharpness_native_depth;
@@ -35,12 +36,12 @@ static unsigned int nx_sharpness_native_run(void *self, unsigned int index,
         return 0;
     }
     if (outer) {
-        while (__sync_lock_test_and_set(&nx_sharpness_native_lock, 1)) { }
+        pthread_mutex_lock(&nx_sharpness_native_lock);
         for (i = 0; i < 9; ++i) {
             if (nx_sharpness_capture_table[i] != nx_sharpness_original_table[i] ||
                 nx_sharpness_preview_table[i] != nx_sharpness_original_table[i]) {
                 if (failure) *failure = NX_SHARPNESS_NATIVE_TABLE_CHANGED;
-                __sync_lock_release(&nx_sharpness_native_lock);
+                pthread_mutex_unlock(&nx_sharpness_native_lock);
                 return 0;
             }
         }
@@ -55,7 +56,7 @@ static unsigned int nx_sharpness_native_run(void *self, unsigned int index,
     for (i = 0; i < 9; ++i) table[i] = saved[i];
     __sync_synchronize();
     --nx_sharpness_native_depth;
-    if (outer) __sync_lock_release(&nx_sharpness_native_lock);
+    if (outer) pthread_mutex_unlock(&nx_sharpness_native_lock);
     return result;
 }
 #endif

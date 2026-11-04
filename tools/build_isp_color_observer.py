@@ -3,6 +3,7 @@
 No running camera namespace is entered or restarted. The probe uses original
 NX300M 1.15 ARM libraries with explicit parameters and allocated register RAM.
 """
+from wsl_paths import wsl_path
 import argparse
 import json
 from pathlib import Path
@@ -77,7 +78,7 @@ def build():
 
 def probe():
     PROBE.mkdir(parents=True,exist_ok=True)
-    base = '/mnt/'+ROOT.drive[0].lower()+ROOT.as_posix()[2:]
+    base = wsl_path(ROOT)
     script = f'''set -eu
 tc=/opt/nx300m-toolchain/usr
 rf={shlex.quote(GUEST)}

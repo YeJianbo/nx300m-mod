@@ -1,4 +1,5 @@
 """Build the ARM capture-AE shutter bound and optionally probe the stock getter."""
+from wsl_paths import wsl_path
 
 import argparse
 import json
@@ -104,7 +105,7 @@ def main():
         return
     (OUT / "shutter-limit-probe.c").write_text(PROBE, encoding="utf-8")
     (OUT / "shutter-limit-crt0.S").write_text(CRT, encoding="utf-8")
-    project = "/mnt/" + ROOT.drive[0].lower() + ROOT.as_posix()[2:]
+    project = wsl_path(ROOT)
     script = f'''set -eu
 cd {shlex.quote(project)}
 tc=/opt/nx300m-toolchain/usr

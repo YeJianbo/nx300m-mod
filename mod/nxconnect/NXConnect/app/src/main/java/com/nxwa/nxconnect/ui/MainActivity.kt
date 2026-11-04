@@ -440,7 +440,7 @@ class MainActivity : AppCompatActivity() {
                 return@launch
             }
             nfcDialog = NxDialogBuilder(this@MainActivity).setTitle("通过 NFC 连接").setIcon(R.drawable.ic_oneui_nfc)
-                .setMessage("连接 WLAN：${credential.ssid}\n\n继续后请在 Android 系统弹窗允许连接。连接成功后会识别相机服务并进入相册。" +
+                .setMessage("连接 WLAN：${credential.ssid}\n\n继续后请在 Android 系统弹窗允许添加该网络。连接成功后会识别相机服务并进入相册。" +
                     if (NxApp.isConnected) "\n\n当前相机连接将断开。" else "")
                 .setPositiveButton("连接") { _, _ ->
                     pairing.dispose()
@@ -754,7 +754,7 @@ class MainActivity : AppCompatActivity() {
                             .putInt("daemon_port", connectedPort)
                             .putInt("cgi_port", connectedCgiPort)
                             .apply()
-                        com.nxwa.nxconnect.net.CameraWifi.ssid?.let { ssid ->
+                        (com.nxwa.nxconnect.net.CameraWifi.ssid ?: pairing.boundSsid)?.let { ssid ->
                             getSharedPreferences("camera_pair", 0).edit().putString("ssid", ssid)
                                 .putString("model", verify.info.model).putString("ip", ip).putInt("port", connectedPort).apply()
                             home.btnPair.text = "连接"

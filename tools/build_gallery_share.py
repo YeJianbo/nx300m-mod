@@ -2,6 +2,7 @@
 
 Does not restart the simulator, regenerate web/colour assets or install firmware.
 """
+from wsl_paths import wsl_path
 import io
 import argparse
 import json
@@ -77,7 +78,7 @@ def main():
     with (OUT/'gallery_share_stock.h').open('a',encoding='ascii') as stream:
         stream.write('#define NX_DEPTH2_ADDRESS 0x11a52cu\nstatic const unsigned char nx_depth2_stock[]={\n'+
                      ','.join(f'0x{b:02x}' for b in menu_code)+'\n};\n')
-    project='/mnt/'+ROOT.drive[0].lower()+ROOT.as_posix()[2:]
+    project=wsl_path(ROOT)
     script=f'''set -eu
 cd {shlex.quote(project)}
 tc=/opt/nx300m-toolchain/usr

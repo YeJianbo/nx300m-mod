@@ -6,7 +6,7 @@ import shlex
 import subprocess
 
 from build_color_style import build_bridge
-from build_ycc_probe import wsl_path
+from wsl_paths import wsl_path
 
 PROJECT = Path(__file__).resolve().parents[1]
 OUTPUT = PROJECT / 'outputs/metol'
@@ -67,7 +67,7 @@ exec unshare --mount --net --ipc sh -c '
         'supported_hue': True, 'supported_saturation': 'standard/custom1 P/A/S/M with unit stock CHM',
         'backend': 'original libudd setters, synthetic RAM, isolated Ecore fixture; shared camera/VM untouched',
         'stdout': stdout.strip().splitlines(),
-        'checks': ['neutral passthrough','cached HUE application','fresh base','repeat does not accumulate',
+        'checks': ['neutral passthrough','UI requests leave register RAM unchanged','HUE application at next native setter','fresh base','repeat does not accumulate',
                    'source rounding including negative coefficients','source table 235/234 asymmetry',
                    'reset latest base','whole matrix signed11 fallback','other selectors forward unchanged outside the complete path',
                    'incomplete base rejection','out-of-range index rejection','trailing token rejection',

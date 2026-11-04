@@ -17,6 +17,7 @@
 #include <sys/ptrace.h>
 #include <sys/wait.h>
 #include <sys/vfs.h>
+#include <sys/msg.h>
 #include <signal.h>
 #include <time.h>
 #include "smartfilter_ram.h"
@@ -31,7 +32,10 @@ extern int old_sscanf(const char *,const char *,...) __asm__("sscanf");
 #define strtoul old_strtoul
 #define strtol old_strtol
 #define sscanf old_sscanf
+static int admission_file_hash(int,unsigned,const char *);
+#define NX_LOADER_FILE_HASH admission_file_hash
 #include "live_loader_core.h"
+#include "smartfilter_admission_cache.h"
 
 /* Fault injection is admitted only for the named isolated fixture process. */
 static int fixture_fail_slot=-1;
@@ -166,14 +170,15 @@ static int target_open(unsigned pid,int fixture,struct target *t) {
     if(strcmp(base(exe),fixture?"smartfilter_fixture.arm":"di-camera-app-nx300")) {
         fprintf(stderr,"Original executable name differs: %s\n",exe); return 0;
     }
-    int fd=open(path,O_RDONLY|O_CLOEXEC);
-    int ok=fd>=0&&!__fxstat64(3,fd,&t->app_file)&&
-        (fixture||file_hash(fd,STOCK_APP_SIZE,STOCK_APP_SHA));
-    if(fd>=0) close(fd);
-    if(!ok) { fprintf(stderr,"Original executable identity/hash failed: %s expected_bytes=%u\n",exe,STOCK_APP_SIZE); return 0; }
     struct thread thread;
     if(!task_identity(pid,pid,&thread)||!load_maps(pid)) return 0;
     t->start=thread.start;
+    admission_cache_begin(pid,t->start,fixture);
+    int fd=open(path,O_RDONLY|O_CLOEXEC);
+    int ok=fd>=0&&!__fxstat64(3,fd,&t->app_file)&&
+        (fixture||admission_file_hash(fd,STOCK_APP_SIZE,STOCK_APP_SHA));
+    if(fd>=0) close(fd);
+    if(!ok) { fprintf(stderr,"Original executable identity/hash failed: %s expected_bytes=%u\n",exe,STOCK_APP_SIZE); return 0; }
     for(unsigned i=0;i<STOCK_IMAGES;++i) {
         int ok=image_open(pid,stock_images[i].name,stock_images[i].size,stock_images[i].sha,&t->images[i]);
         const char *alias=i==4?"libc.so.6":i==5?"libpthread.so.0":NULL;
@@ -182,7 +187,8 @@ static int target_open(unsigned pid,int fixture,struct target *t) {
         t->image_mapping[i]=*t->images[i].first;
     }
     snprintf(path,sizeof path,"/proc/%u/mem",pid); t->mem=open(path,O_RDONLY|O_CLOEXEC); if(t->mem<0) return 0;
-    return target_sites(pid,fixture,t);
+    if(!target_sites(pid,fixture,t)) return 0;
+    admission_cache_save(); return 1;
 }
 static int same_file(const struct stat64 *a,const struct stat64 *b) {
     return a->st_dev==b->st_dev&&a->st_ino==b->st_ino&&a->st_size==b->st_size&&
@@ -388,9 +394,11 @@ static void session_export_to(FILE *out,const struct nx_sfr_config *c,const stru
     fprintf(out,"{\"type\":\"ipcs_session\",\"pid\":%u,\"build\":%u,\"mode\":%u,\"state\":%u,\"held\":%u,"
            "\"owner_tid\":%u,\"active\":%u,\"opens\":%u,\"closes\":%u,\"busy\":%u,\"error\":%d,"
            "\"external_stop\":%u,\"drain_timeouts\":%u,\"open_errors\":%u,\"close_errors\":%u,"
-           "\"unlock_errors\":%u,\"b2y_leases\":%u,\"stream_stopped\":%u,\"trace_next\":%u,\"trace_dropped\":%u}\n",
+           "\"unlock_errors\":%u,\"recoveries\":%u,\"recovery_closes\":%u,"
+           "\"b2y_leases\":%u,\"stream_stopped\":%u,\"trace_next\":%u,\"trace_dropped\":%u}\n",
            pid,NX_SFR_BUILD,c->session_mode,p->state,p->held,p->owner_tid,p->active,p->opens,p->closes,p->busy,p->error,
            p->external_stop,p->drain_timeouts,p->open_errors,p->close_errors,p->unlock_errors,
+           p->recoveries,p->recovery_closes,
            s->b2y_leases,s->stream_stopped,s->open_trace.next,s->open_trace.dropped);
     for(unsigned i=0;i<NX_IPCT_RECORDS&&i<s->open_trace.next;++i) {
         const struct nx_ipct_record *r=&s->open_trace.records[i];
@@ -445,7 +453,7 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     unsigned diag_epoch=0; int status_pending=0,export_pending=0,probe_save_pending=0,timing_attempted=0,probe_attempted=0;
     unsigned allocated_work=0,allocated_region=0;
 #ifdef NX_SFR_SESSION
-    int session_control_attempted=0;
+    int session_control_attempted=0,refresh_control_attempted=0;
 #endif
     struct stopped *allocation_leader=NULL;
     struct kept_timing *kept=NULL;
@@ -460,7 +468,9 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     if(!(reused?target_refresh(pid,fixture,t):target_open(pid,fixture,t))) {
         fprintf(stderr,"Original ELF/code/slot admission failed.\n");free(blob);return 3;
     }
-    fprintf(stderr,"Control admission: %s elapsed_ms=%llu\n",reused?"reused_authenticated_files":"full_hash",now_ms()-admission_at);
+    fprintf(stderr,"Control admission: %s elapsed_ms=%llu cache_hits=%u hashed_files=%u\n",
+            reused?"reused_authenticated_files":admission_cache_hits?"cached_file_identity":"full_hash",
+            now_ms()-admission_at,admission_cache_hits,admission_cache_misses);
     diag_ledger_load(&ledger,pid,t->start,h.build);
     /* Optional diagnostics must not make restore depend on allocation. Allocate
      * before stopping the target; the authoritative copy is taken after drain. */
@@ -646,12 +656,39 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     }
 #endif
     { unsigned paused=0; if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,control_pause),&paused,4)) goto done; }
+#ifdef NX_SFR_SESSION
+    /* A plain liveview need not run the hooked node callback yet. Publish a
+     * single native item-change notification while the target is stopped;
+     * its controller performs the normal stop/drain/restart after detach.
+     * Changing only the table keeps the existing topology and sends nothing. */
+    unsigned wanted=cfg.enabled&&cfg.strength&&cfg.insert_enabled&&!runtime.s2_fault&&!runtime.bridge.fault;
+    if(cfg.profile==NX_SFR_S2&&!cfg.probe_once&&!runtime.refresh_pending&&
+       !runtime.refresh_queued&&wanted!=runtime.s2_path) {
+        int queue=-1; unsigned queued=1,requests=runtime.refresh_requests+1; int error=0;
+        if(!cfg.capture_queue||!read_exact(t->mem,&queue,sizeof queue,(unsigned)cfg.capture_queue)||queue<0) goto done;
+        refresh_control_attempted=1;
+        if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_queued),&queued,4)||
+           !poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_requests),&requests,4)||
+           !poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_error),&error,4)) goto done;
+        unsigned message[4]={1,0x02010034,0x39,0};
+        if(msgsnd(queue,message,12,IPC_NOWAIT)) {
+            fprintf(stderr,"Native refresh notification failed: errno=%d; selection rolled back.\n",errno); goto done;
+        }
+        fprintf(stderr,"Native refresh queued: generation=%u topology=%u; controller applies after detach.\n",cfg.generation,wanted);
+    }
+#endif
     pause_owner.present=0;
     runtime.control_pause=0; runtime.timing=armed; runtime.probe=probe;
     installed=installing; status_pending=1; rc=0;
 done:
     if(rc) {
 #ifdef NX_SFR_SESSION
+        if(refresh_control_attempted) {
+            unsigned queued=runtime.refresh_queued,requests=runtime.refresh_requests;
+            if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_queued),&queued,4)||
+               !poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_requests),&requests,4)||
+               !poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,refresh_error),&runtime.refresh_error,4)) transaction_poisoned=1;
+        }
         if(session_control_attempted) {
             unsigned stop=runtime.session.external_stop;
             if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,session.external_stop),&stop,4)||

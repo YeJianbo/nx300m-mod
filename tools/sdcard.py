@@ -3,6 +3,7 @@
 Only a new lab image is formatted. Existing images are reused, never reset.
 The original libdevman/libstorage still read card properties and filesystem.
 """
+from wsl_paths import wsl_path
 import argparse
 import json
 import os
@@ -135,7 +136,7 @@ def main():
     if os.name == 'nt':
         state = inspect_session()
         if not state['running']: raise RuntimeError('Original camera is not running')
-        script = '/mnt/'+PROJECT.drive[0].lower()+PROJECT.as_posix()[2:]+'/tools/sdcard.py'
+        script = wsl_path(PROJECT)+'/tools/sdcard.py'
         result = subprocess.run(['wsl.exe', '-u', 'root', '-e', 'nsenter', '-t', str(state['namespace_pid']), '--mount',
                                  'python3', script, '--bootstrap', GUEST, '--image', args.image], capture_output=True, timeout=30)
         if result.returncode: raise RuntimeError(result.stderr.decode('utf-8', 'replace').strip())

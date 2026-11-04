@@ -4,6 +4,7 @@ Extracts the exact stock HAL quantization tables. Does not install a producer,
 enable the encoder, modify media, or restart the simulator.
 """
 from __future__ import annotations
+from wsl_paths import wsl_path
 
 import argparse
 import io
@@ -25,9 +26,7 @@ STOCK = Path('//wsl.localhost/Debian/opt/nx300m-lab/stock-1.15')
 INDICES = (10, 6, 2)
 
 
-def wsl_path(path: Path) -> str:
-    path = path.resolve()
-    return '/mnt/'+path.drive[0].lower()+path.as_posix()[2:]
+
 
 
 class StockElf:

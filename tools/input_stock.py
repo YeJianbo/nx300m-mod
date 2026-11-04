@@ -1,4 +1,5 @@
 """Send XTEST mouse/keyboard input to the actual stock UI's private X server."""
+from wsl_paths import wsl_path
 import argparse
 import ctypes
 import json
@@ -11,6 +12,13 @@ import time
 from session_stock import session_file
 
 PROJECT = Path(__file__).resolve().parents[1]
+
+
+def namespace_command(namespace, screen, action, arguments=()):
+    script = wsl_path(PROJECT) + '/tools/input_stock.py'
+    return ['wsl.exe', '-u', 'root', '-e', 'nsenter', '-t', str(namespace), '--mount', '--net',
+            '/usr/bin/python3', script, '--screen', screen, action, *map(str, arguments)]
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -29,8 +37,7 @@ def main():
     args = parser.parse_args()
     if os.name == 'nt':
         state = json.loads(session_file().read_text(encoding='utf-8'))
-        script = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:] + '/tools/input_stock.py'
-        command = ['wsl.exe', '-u', 'root', '-e', 'nsenter', '-t', str(state['namespace_pid']), '--mount', '--net', '/usr/bin/python3', script, '--screen', state['raw_screen'], args.action]
+        command = namespace_command(state['namespace_pid'], state['raw_screen'], args.action)
         if args.action == 'click': command.extend([str(args.x), str(args.y)])
         elif args.action == 'key': command.append(args.name)
         elif args.action == 'shutter': command.append(args.phase)

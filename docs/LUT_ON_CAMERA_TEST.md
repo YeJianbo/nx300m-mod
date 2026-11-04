@@ -2,6 +2,8 @@
 
 本轮检查同一次选择能否同时更新取景和 JPEG。Session 流畅预览保留，普通使用不启动性能采样。
 
+默认目录为 23 款加「关」：富士 CC／Astia／Eterna／NC／NN，奥林巴斯 Vivid／Muted／Chrome，宾得 Natural／Bright／反转片／SATOBI／银盐漂白／Gold，自制日光／海盐晴蓝／薄荷青绿／奶油暖光／电影青橙／日出淡彩，以及 GR Neg／GR Pos、Hard Mono。其余源文件保留，启用清单为 `looks/catalog.json`。当前目录包为 `outputs/looks/lightroom-import/on-camera-test/nx300m-lut-color-test.zip`。
+
 1. 装测试卡开机，使用 P／A／S／M，关闭原厂智能滤镜。
 2. 短按 Custom 打开 LUT 面板，选 Hard Mono、100%，保留并关闭。
 3. 长按 Custom，选择「开启取景预览 · 当前 LUT」，退出面板，先不拍照、不进回放，检查黑白是否直接出现。ABI7 补接原厂停流完成及内存匹配恢复，首次接入须实体复测。

@@ -1,4 +1,5 @@
 """Decode the stock PP transport snapshot taken at CSM readout arm time."""
+from wsl_paths import wsl_path
 import argparse
 import json
 import os
@@ -78,11 +79,11 @@ def main():
     if args.file:
         print(json.dumps(decode(args.file.read_bytes()), indent=2)); return
     if os.name == 'nt':
-        script = '/mnt/'+PROJECT.drive[0].lower()+PROJECT.as_posix()[2:]+'/tools/readout_state.py'
+        script = wsl_path(PROJECT)+'/tools/readout_state.py'
         command = ['wsl.exe', '-u', 'root', '-e', 'python3', script]
         if args.compare:
             packet = args.compare.resolve()
-            command.extend(('--compare', '/mnt/'+packet.drive[0].lower()+packet.as_posix()[2:]))
+            command.extend(('--compare', wsl_path(packet)))
         result = subprocess.run(command, capture_output=True, timeout=20)
         if result.returncode: raise RuntimeError(result.stderr.decode('utf-8', 'replace').strip())
         print(result.stdout.decode('utf-8').strip()); return

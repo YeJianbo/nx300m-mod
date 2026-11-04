@@ -4,6 +4,7 @@ Windows/Conda stages dependencies from the verified stock TAR. Linux workers use
 only the standard library. No running camera root, binfmt registration or device
 other than /dev/null is used. The production scripts are not altered.
 """
+from wsl_paths import wsl_path
 import argparse
 import hashlib
 import io
@@ -294,7 +295,7 @@ def main():
         raise SystemExit(launch())
     else:
         stage()
-        guest = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+        guest = wsl_path(PROJECT)
         script = 'cd ' + shlex.quote(guest) + ' && exec python3 tools/probe_sd_native.py --launch'
         result = subprocess.run(['wsl.exe', '-d', 'Debian', '-u', 'root', '-e', 'sh', '-c', script], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=70)
         (OUT / 'probe.stdout.log').write_text(result.stdout, encoding='utf-8')

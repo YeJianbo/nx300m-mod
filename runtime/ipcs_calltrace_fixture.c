@@ -24,6 +24,7 @@ static int (*libc_open)(const char *,int,...);
 static unsigned *udd_count;
 static void *outer_mutex;
 static unsigned physical_opens;
+static unsigned native_udd,native_mutex,*udd_slot,*mutex_slot;
 static sem_t ready,finish_owner;
 static unsigned tid(void) { return (unsigned)syscall(SYS_gettid); }
 static int clock_time(unsigned which,struct nx_ipct_time *p) { return (int)syscall(SYS_clock_gettime,which,p); }
@@ -76,7 +77,40 @@ static void export(void) {
         puts("]}");
     }
 }
-int main(void) {
+static unsigned long long ns(unsigned which) {
+    struct timespec t; CHECK(!syscall(SYS_clock_gettime,which,&t));
+    return (unsigned long long)t.tv_sec*1000000000ULL+t.tv_nsec;
+}
+static void costs(void) {
+    pthread_t thread; CHECK(!pthread_create(&thread,NULL,owner,NULL));
+    CHECK(!sem_wait(&ready)&&*udd_count==1);
+    /* The same real UDD bookkeeping is used in all cases. Only the device,
+     * IRQ and MMIO boundary is substituted. Timed Open/Close calls remain
+     * paired and on the rendering thread; the owner keeps its own reference. */
+    const char *names[]={"native-existing","wrapped-off","wrapped-on"};
+    for(unsigned mode=0;mode<3;++mode) {
+        *udd_slot=mode?(unsigned)udd:native_udd;
+        *mutex_slot=mode?(unsigned)mutex:native_mutex;
+        for(unsigned sample=0;sample<31;++sample) {
+            memset(&trace,0,sizeof trace); trace.enabled=mode==2;
+            unsigned long long w=ns(1),c=ns(3);
+            for(unsigned i=0;i<64;++i) {
+                if(mode) open_call(NX_IPCT_PREVIEW); else CHECK(!original_open());
+                CHECK(!original_close());
+            }
+            c=ns(3)-c; w=ns(1)-w;
+            CHECK(*udd_count==1&&trace.dropped==0);
+            if(mode==2) CHECK(trace.next==64);
+            printf("{\"type\":\"udd-cost\",\"mode\":\"%s\",\"sample\":%u,\"calls\":64,\"wall_ns\":%llu,\"cpu_ns\":%llu}\n",
+                   names[mode],sample,w,c);
+        }
+    }
+    trace.enabled=0;
+    CHECK(!sem_post(&finish_owner)&&!pthread_join(thread,NULL)&&*udd_count==0);
+    CHECK(physical_opens==1);
+    puts("{\"check\":\"real_udd_existing_reference_cost\",\"calls\":5952,\"device_opens\":1,\"remaining_references\":0,\"passed\":true}");
+}
+int main(int argc,char **argv) {
     void *u=dlopen("libudd.so.3.1",RTLD_LAZY|RTLD_LOCAL); CHECK(u);
     void *p=dlopen("libpthread.so.0",RTLD_NOW|RTLD_LOCAL); CHECK(p);
     original_open=dlsym(u,"ipcs_open"); original_close=dlsym(u,"ipcs_close");
@@ -88,8 +122,8 @@ int main(void) {
     outer_mutex=(void *)(bias+0x1012ecU);
     api.tid=tid; api.clock=clock_time; trace.enabled=1;
     unsigned *slot;
-    slot=(void *)(bias+stock_slots[NX_SFR_UDD_OPEN].slot); *slot=(unsigned)udd;
-    slot=(void *)(bias+stock_slots[NX_SFR_MUTEX].slot); *slot=(unsigned)mutex;
+    slot=(void *)(bias+stock_slots[NX_SFR_UDD_OPEN].slot); udd_slot=slot; native_udd=*slot; *slot=(unsigned)udd;
+    slot=(void *)(bias+stock_slots[NX_SFR_MUTEX].slot); mutex_slot=slot; native_mutex=*slot; *slot=(unsigned)mutex;
     slot=(void *)(bias+stock_slots[NX_SFR_DEVICE_OPEN].slot); *slot=(unsigned)device_open;
     slot=(void *)(bias+stock_slots[NX_SFR_REGMAP].slot); *slot=(unsigned)regmap;
     slot=(void *)(bias+stock_slots[NX_SFR_IRQ].slot); *slot=(unsigned)irq;
@@ -99,6 +133,7 @@ int main(void) {
     /* Avoid absolute runtime addresses in the generated header. */
     (void)bias;
     CHECK(!sem_init(&ready,0,0)&&!sem_init(&finish_owner,0,0));
+    if(argc==2&&!strcmp(argv[1],"--cost")) { costs(); return 0; }
     pthread_t thread; CHECK(!pthread_create(&thread,NULL,owner,NULL));
     CHECK(!sem_wait(&ready)); CHECK(*udd_count==1);
     open_call(NX_IPCT_PREVIEW); CHECK(*udd_count==2);

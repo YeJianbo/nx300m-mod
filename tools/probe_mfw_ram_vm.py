@@ -517,7 +517,7 @@ def prepare():
     print('Prepared private ARM initramfs and read-only bind source; cached base unchanged', flush=True)
 
 
-def linux_worker(action, payload):
+def linux_worker(action, payload, timeout=360):
     arm_vm.SERIAL = SOCKET + '-serial.sock'
     arm_vm.QMP = SOCKET + '-qmp.sock'
     if action == 'start':
@@ -543,7 +543,7 @@ def linux_worker(action, payload):
         return {'pid': process.pid}
     if action == 'stop': return arm_vm.qmp('quit')
     command = base64.b64decode(payload).decode()
-    return arm_vm.native_exec(command, timeout=360)
+    return arm_vm.native_exec(command, timeout=timeout)
 
 
 def call(action, command=''):

@@ -4,6 +4,7 @@ Never executes stock upgrade main. Does not create an installable SLP or use a
 camera. Windows entry point uses the project's Conda Python; Linux needs only
 unshare, mount, chroot, timeout and the existing static user-mode QEMU.
 """
+from wsl_paths import wsl_path as wsl
 import argparse
 import hashlib
 import io
@@ -48,8 +49,7 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def wsl(path):
-    return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def prepare(firmware):

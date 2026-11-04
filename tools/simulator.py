@@ -11,17 +11,19 @@ import socket
 import sys
 import threading
 import time
+from urllib.parse import urlencode
 
 from render_runtime_frame import read_frame
 from session_stock import inspect_session, BackendUnavailable
 from metol_stock import open_panel, engine_action, sync_looks
 from look_library import LookLibrary
+from look_catalog import camera_looks
 from mfw_runtime import firmware_profile
 from remote_stock import start as start_remote, stop_proxy, read_osd_frame
+from input_stock import namespace_command
 
 PROJECT = Path(__file__).resolve().parents[1]
 OUTPUT = PROJECT / 'outputs/firmware-runtime'
-INPUT = PROJECT / 'tools/input_stock.py'
 GUEST = '/opt/nx300m-lab/stock-1.15'
 PAGE = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NX300M 原厂程序</title><style>
@@ -65,6 +67,7 @@ class Session:
     def __init__(self):
         self.process = None
         self.lock = threading.Lock()
+        self.generation = 0
         self.started_at = 0
         self.replay_packet = None
         self.sdcard = False
@@ -110,6 +113,7 @@ class Session:
                     raise RuntimeError('当前运行的是 ' + active_firmware + '，请先停止再启动 ' + self.firmware + '。')
                 return
             if state['starting']: return
+            self.generation += 1
             if state['namespace_pid']:
                 self._stop_namespace(state['namespace_pid'])
             if self.process is not None and self.process.poll() is None:
@@ -139,6 +143,7 @@ class Session:
 
     def stop(self):
         with self.lock:
+            self.generation += 1
             pid = self.namespace()
             # A start request may still be preparing its namespace.
             if pid is None and self.process is not None and self.process.poll() in (None, 0) and time.monotonic() - self.started_at < 35:
@@ -231,28 +236,80 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def native_control(self, path, values=None):
+    def native_request(self, path, values=None):
         # Both lab pages and native clients use the same ARM service. Only the
         # lab supervisor handle is added here for this page's session checks.
         with SESSION.lock:
             state = SESSION.require_backend(SESSION.status())
-            if not state['running']:
+            if not state.get('running') or not state.get('namespace_pid'):
                 raise RuntimeError('请先启动原厂程序')
-            start_remote()
-            connection = http.client.HTTPConnection('127.0.0.1', 8782, timeout=16)
-            try:
-                body = None if values is None else json.dumps(values).encode('utf-8')
-                connection.request('GET' if values is None else 'POST',
-                                   '/api/v1/'+path, body=body,
-                                   headers={'Content-Type': 'application/json'})
-                response = connection.getresponse()
-                result = json.loads(response.read())
-                status = response.status
-            finally:
-                connection.close()
-            if isinstance(result, dict) and result.get('native_service'):
-                result['namespace_pid'] = state['namespace_pid']
-        self.reply(result, status)
+            expected_ns = state['namespace_pid']
+            expected_generation = SESSION.generation
+            if start_remote() != expected_ns:
+                raise RuntimeError('相机会话在操作期间已变更')
+        connection = http.client.HTTPConnection('127.0.0.1', 8782, timeout=16)
+        try:
+            body = None if values is None else json.dumps(values).encode('utf-8')
+            connection.request('GET' if values is None else 'POST',
+                               '/api/v1/'+path, body=body,
+                               headers={'Content-Type': 'application/json',
+                                        'X-NX-Expected-Namespace': str(expected_ns)})
+            response = connection.getresponse()
+            result = json.loads(response.read())
+            status = response.status
+        finally:
+            connection.close()
+        self.check_control_session(expected_ns, expected_generation)
+        if isinstance(result, dict) and result.get('native_service'):
+            result['namespace_pid'] = expected_ns
+        return result, status
+
+    def check_control_session(self, namespace, generation):
+        with SESSION.lock:
+            current = SESSION.require_backend(SESSION.status())
+            if (SESSION.generation != generation or not current.get('running')
+                    or current.get('namespace_pid') != namespace):
+                raise RuntimeError('相机会话在操作期间已变更')
+
+    def native_control(self, path, values=None):
+        self.reply(*self.native_request(path, values))
+
+    def native_input(self, body):
+        if not isinstance(body, dict): raise ValueError('请提供输入动作')
+        action = body.get('action')
+        if action == 'shutter':
+            phase = body.get('phase')
+            if phase not in ('half', 'full', 'release'): raise ValueError('未知快门输入')
+            # The lab shutter also changes its private board input. Preserve
+            # those levels and edge delays; skip the Windows Python child.
+            with SESSION.lock:
+                state = SESSION.require_backend(SESSION.status())
+                namespace, generation = state.get('namespace_pid'), SESSION.generation
+                if not state.get('running') or not namespace: raise RuntimeError('请先启动原厂程序')
+                if SESSION.software_playback and start_remote() != namespace:
+                    raise RuntimeError('相机会话在操作期间已变更')
+            command = namespace_command(namespace, '480x800', 'shutter', [phase])
+            result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+            self.check_control_session(namespace, generation)
+            if result.returncode: raise ValueError(result.stderr.strip())
+            self.reply({'message': '已发送', 'input': json.loads(result.stdout)})
+            return
+        if action == 'click':
+            x, y = int(body['x']), int(body['y'])
+            if not (0 <= x < 800 and 0 <= y < 480): raise ValueError('点击坐标超出画面')
+            query, report = {'click': f'{x}-{y}'}, {'action': action, 'view': [x, y]}
+        elif action == 'key':
+            name = str(body['key'])
+            if not name or not name.isascii() or not all(c.isalnum() or c == '_' for c in name):
+                raise ValueError('未知 X11 按键名称')
+            query, report = {'key': name, 'bind': '1'}, {'action': action, 'name': name}
+        else:
+            raise ValueError('未知输入动作')
+        result, status = self.native_request('input/inject?' + urlencode(query), {})
+        if status == 200 and isinstance(result, dict) and result.get('ok') is True:
+            self.reply({'message': '已发送', 'input': {**report, 'transport': 'native-x11-worker'}})
+        else:
+            self.reply(result, status)
 
     def do_GET(self):
         if self.path == '/remote':
@@ -270,7 +327,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/status':
                 state = SESSION.status()
                 self.reply(state, 503 if state.get('backend_available') is False else 200)
-            elif self.path == '/looks': self.reply({'looks': LookLibrary().list()})
+            elif self.path == '/looks': self.reply({'looks': camera_looks(LookLibrary())})
             elif self.path.split('?')[0] == '/simulator/info':
                 state = SESSION.status()
                 self.reply({'simulator': True, 'requested_firmware': SESSION.firmware,
@@ -352,20 +409,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/dial-lock':
                 self.native_control('controls/dial-lock', body)
             elif self.path == '/input':
-                if SESSION.namespace() is None: raise ValueError('请先启动原厂程序')
-                action = body.get('action')
-                if action == 'click': args = ['click', str(int(body['x'])), str(int(body['y']))]
-                elif action == 'key': args = ['key', str(body['key'])]
-                elif action == 'shutter':
-                    phase = body.get('phase')
-                    if phase not in ('half', 'full', 'release'): raise ValueError('未知快门输入')
-                    args = ['shutter', phase]
-                else: raise ValueError('未知输入动作')
-                with SESSION.lock:
-                    if SESSION.software_playback: start_remote()
-                    result = subprocess.run([sys.executable, str(INPUT), *args], capture_output=True, text=True, timeout=20)
-                if result.returncode: raise ValueError(result.stderr.strip())
-                self.reply({'message':'已发送', 'input':json.loads(result.stdout)})
+                self.native_input(body)
             else: self.reply({'error':'接口不存在'}, 404)
         except BackendUnavailable as exc:
             self.reply({'error':str(exc), 'backend_available':False, 'camera_state':'unknown'}, 503)

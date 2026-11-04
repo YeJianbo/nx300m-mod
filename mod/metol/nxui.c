@@ -5,6 +5,7 @@
  * Rendering is event driven; the only timer is backend/debounce housekeeping.
  */
 #define _POSIX_C_SOURCE 200809L
+#define _LARGEFILE64_SOURCE 1
 #define NK_INCLUDE_FIXED_TYPES
 #define NK_INCLUDE_STANDARD_IO
 #define NK_INCLUDE_STANDARD_VARARGS
@@ -29,6 +30,9 @@
 #include "nxui_services.h"
 #include "mod_paths.h"
 extern Bool XTestFakeKeyEvent(Display *, unsigned int, Bool, unsigned long);
+/* glibc 2.13 exposes the versioned ARM stat64 entry points. */
+extern int __xstat64(int, const char *, struct stat64 *);
+extern int __lxstat64(int, const char *, struct stat64 *);
 
 static struct nx_recipe recipes[NXUI_MAX_RECIPES];
 static struct nx_item items[NXUI_MAX_ITEMS];
@@ -38,6 +42,10 @@ static int count, item_count, selected, menu, page, live, dirty = 1, quit;
 /* A successful LUT choice stays selected when the panel closes. */
 static int lut_mode = 0;
 static int mfw_services, mfw_selected, mfw_readonly, mfw_open_lut, mfw_preview, mfw_quick;
+static const char *mfw_menu_root, *mfw_menu_engine;
+static int mfw_lut_quick, mfw_return_requested;
+static char mfw_lut_root[NXUI_PATH], mfw_lut_engine[NXUI_PATH];
+static long long lut_page_requested;
 static const char *mfw_stock_key;
 static char mfw_status[1024] = "选择操作；需要服务信息时点“刷新服务状态”。";
 static int lut_strength = 100;
@@ -338,6 +346,84 @@ static int load_menu(const char *source) {
     fprintf(stderr, "MENU file=%s items=%d\n", menu_path, item_count);
     resize_panel(); return 1;
 }
+/* This only reads the catalogue and choice. Loading the adapter, restoring a
+ * saved look and synchronizing preview belong to explicit control events. */
+static int load_lut_choices(const char *path) {
+    int n = nx_load_recipes(path, recipes+1, NXUI_MAX_RECIPES-1);
+    if (n < 0) return 0;
+    memset(recipes, 0, sizeof *recipes);
+    strcpy(recipes[0].key, "__off"); strcpy(recipes[0].label, "关");
+    count = n+1; selected = lut_draft = 0; lut_strength = 100;
+    nx_queue_init(&queue);
+    snprintf(status, sizeof status, "当前选择：关 · 原厂拍摄");
+    FILE *selection = fopen("/var/run/nx300m-lut-selection", "r");
+    int saved = 0;
+    if (!selection) {
+        char session[NXUI_PATH] = "", choice[NXUI_PATH];
+        FILE *in = fopen("/var/run/nx300m-lut-selection-session", "r");
+        if (in) { if (!fgets(session, sizeof session, in)) session[0] = 0; fclose(in); }
+        session[strcspn(session, "\r\n")] = 0;
+        if (strcmp(session, root)) {
+            snprintf(choice, sizeof choice, "%s/.state/lut-choice", root);
+            selection = fopen(choice, "r");
+            if (!selection) {
+                snprintf(choice, sizeof choice, "%s/.state/lut-selection", root);
+                selection = fopen(choice, "r");
+            }
+            saved = 1;
+        }
+    }
+    if (selection) {
+        unsigned int generation, strength = 100; char table[256], candidate[256];
+        if (fscanf(selection, "%u %255s %u", &generation, table, &strength) >= 2) {
+            for (int i = 1; i < count; i++) {
+                int length = snprintf(candidate, sizeof candidate, "%s/looks/%.63s/table.d4lut", root, recipes[i].key);
+                if (length < 0 || length >= (int)sizeof candidate) continue;
+                if (!strcmp(table, candidate)) {
+                    selected = i; lut_strength = strength <= 100 ? (int)strength : 100;
+                    snprintf(status, sizeof status, "%s %s · 强度 %d%%%s", saved ? "上次选择" : "当前选择",
+                        recipes[i].label, lut_strength, saved ? " · 按 OK 应用" : "");
+                    break;
+                }
+            }
+        }
+        fclose(selection);
+    }
+    const char *notice = getenv("NXUI_LUT_NOTICE");
+    if (notice && *notice) snprintf(status, sizeof status, "%s", notice);
+    fprintf(stderr, "LUT_ENTRY index=%d key=%s strength=%d saved=%d\n", selected, recipes[selected].key, lut_strength, saved);
+    return 1;
+}
+static void open_mfw_lut(void) {
+    char catalogue[NXUI_PATH], identity[64]; struct stat64 source, asset;
+    const char *service = getenv("NX_FN_SERVICE_ROOT"), *data = getenv("NX300M_MOD_SOURCE_ROOT");
+    mfw_open_lut = 0;
+    if (!service || !*service) service = root;
+    if (!data || !*data) data = service;
+    if (!nx_mod_root_valid(data) || __xstat64(3, data, &source) || !S_ISDIR(source.st_mode) ||
+            snprintf(catalogue, sizeof catalogue, "%s/looks.txt", data) >= (int)sizeof catalogue ||
+            snprintf(mfw_lut_engine, sizeof mfw_lut_engine, "%s/bin/lut_engine.arm", service) >= (int)sizeof mfw_lut_engine ||
+            __lxstat64(3, mfw_lut_engine, &asset) || !S_ISREG(asset.st_mode) || access(mfw_lut_engine, X_OK)) {
+        message("LUT 文件不可用 · 请检查卡上的滤镜库"); return;
+    }
+    snprintf(mfw_lut_root, sizeof mfw_lut_root, "%s", data);
+    mfw_menu_root = root; mfw_menu_engine = engine; root = mfw_lut_root;
+    if (!load_lut_choices(catalogue)) { root = mfw_menu_root; mfw_menu_root = NULL; message("LUT 列表读取失败"); return; }
+    snprintf(identity, sizeof identity, "%llu:%llu", (unsigned long long)source.st_dev, (unsigned long long)source.st_ino);
+    setenv("NX300M_MOD_ROOT", root, 1);
+    setenv("NX300M_MOD_SOURCE_ROOT", root, 1); setenv("NX300M_MOD_SOURCE_ID", identity, 1);
+    engine = mfw_lut_engine; live = !mfw_readonly; lut_mode = 1;
+    mfw_lut_quick = mfw_quick; mfw_services = mfw_quick = menu = 0;
+    touch_active = 0; resize_panel();
+}
+static void return_mfw_menu(void) {
+    if (!mfw_menu_root || child || queue.close_requested) return;
+    root = mfw_menu_root; engine = mfw_menu_engine; mfw_menu_root = NULL;
+    setenv("NX300M_MOD_ROOT", root, 1);
+    mfw_services = menu = 1; mfw_quick = mfw_lut_quick;
+    lut_mode = live = lut_draft = 0; nx_queue_init(&queue);
+    status[0] = 0; touch_active = 0; resize_panel();
+}
 static void choose(int index) {
     if (count <= 0 || queue.close_requested) return;
     selected = (index + count) % count;
@@ -531,7 +617,7 @@ static void activate_mfw_item(int index) {
     }
     if (mfw_readonly && strcmp(action, "status") && strcmp(action, "network-info") && strcmp(action, "preview-status")) { message("截图模式不执行操作"); return; }
     if (!strcmp(action, "lut")) {
-        mfw_open_lut = 1; queue.close_requested = 1; return;
+        lut_page_requested = now_ms(); mfw_open_lut = dirty = 1; return;
     }
     if (!strcmp(action, "menu") || !strcmp(action, "gallery")) {
         mfw_stock_key = !strcmp(action, "menu") ? "Menu" : "XF86Tools";
@@ -763,7 +849,7 @@ static void draw(void) {
             nk_layout_row_dynamic(ctx, mfw_quick ? 32 : (item_count > 8 ? 40 : 48), mfw_quick ? 1 : 2);
             for (i = 0; i < item_count; i++) {
                 snprintf(line, sizeof line, "%s%s", i == mfw_selected ? "› " : "", items[i].label);
-                if (nk_button_label(ctx, line)) { mfw_selected = i; activate_mfw_item(i); }
+                if (nk_button_label(ctx, line)) { mfw_selected = i; activate_mfw_item(i); break; }
             }
             nk_layout_row_dynamic(ctx, 23, 1);
             nk_label_colored(ctx, child ? (mfw_child_readonly ? "正在读取…" : "正在执行…")
@@ -779,8 +865,9 @@ static void draw(void) {
                             : (lut_mode ? "LUT  /  3D 滤镜" : (live ? "FILMLAB  /  滤镜预览" : "FILMLAB  /  配方浏览")),
                          NK_TEXT_LEFT, accent);
         nk_layout_row_push(ctx, 104);
-        if (nk_button_label(ctx, menu ? "胶片" : "设置")) {
-            if (menu) { menu = 0; resize_panel(); }
+        if (nk_button_label(ctx, mfw_menu_root ? "返回" : menu ? "胶片" : "设置")) {
+            if (mfw_menu_root) { mfw_return_requested = dirty = 1; }
+            else if (menu) { menu = 0; resize_panel(); }
             else { char p[64]; snprintf(p, sizeof p, "gui_ini.NX300M"); load_menu(p); }
         }
         nk_layout_row_push(ctx, 104);
@@ -985,38 +1072,9 @@ int main(int argc, char **argv) {
     if (setpriority(PRIO_PROCESS, 0, 0) != 0)
         fprintf(stderr, "setpriority failed errno=%d\n", errno);
     nx_queue_init(&queue);
-    count = mfw_services ? 0 : nx_load_recipes(recipe_path, recipes, NXUI_MAX_RECIPES);
+    count = mfw_services || lut_mode ? 0 : nx_load_recipes(recipe_path, recipes, NXUI_MAX_RECIPES);
     if (count < 0) count = 0;
-    if (lut_mode) {
-        /* Off is a control action, not an identity LUT or a catalogue file. */
-        if (count == NXUI_MAX_RECIPES) --count;
-        memmove(recipes+1, recipes, (size_t)count*sizeof *recipes);
-        memset(recipes, 0, sizeof *recipes);
-        strcpy(recipes[0].key, "__off"); strcpy(recipes[0].label, "关"); ++count;
-        snprintf(status, sizeof status, "当前选择：关 · 原厂拍摄");
-        FILE *selection = fopen("/var/run/nx300m-lut-selection", "r");
-        if (selection) {
-            unsigned int generation, strength = 100; char path[256], candidate[256];
-            if (fscanf(selection, "%u %255s %u", &generation, path, &strength) >= 2) {
-                for (i = 0; i < count; i++) {
-                    int length = snprintf(candidate, sizeof candidate, "%s/looks/%.63s/table.d4lut", root, recipes[i].key);
-                    if (length < 0 || length >= (int)sizeof candidate) continue;
-                    if (!strcmp(path, candidate)) {
-                        selected = i;
-                        lut_strength = strength <= 100 ? (int)strength : 100;
-                        snprintf(status, sizeof status, "当前选择 %s · 强度 %d%% · 在原厂重载时加载", recipes[i].label, lut_strength);
-                        break;
-                    }
-                }
-            }
-            fclose(selection);
-        }
-    }
-    if (lut_mode) {
-        const char *notice = getenv("NXUI_LUT_NOTICE");
-        if (notice && *notice) snprintf(status, sizeof status, "%s", notice);
-        fprintf(stderr, "LUT_ENTRY index=%d key=%s strength=%d\n", selected, recipes[selected].key, lut_strength);
-    }
+    if (lut_mode && !load_lut_choices(recipe_path)) count = 0;
     recipes_ready = now_ms();
     display = XOpenDisplay(NULL);
     if (!display) { fprintf(stderr, "XOpenDisplay failed\n"); return 4; }
@@ -1251,6 +1309,8 @@ int main(int argc, char **argv) {
           }
           nk_input_end(ctx);
         }
+        if (mfw_return_requested) { mfw_return_requested = 0; return_mfw_menu(); }
+        if (mfw_open_lut && !queue.close_requested) open_mfw_lut();
         panel_check_visibility();
         poll_child();
         refresh_services(0);
@@ -1269,6 +1329,12 @@ int main(int argc, char **argv) {
             if (dirty) {
                 long long draw_started = now_ms(), elapsed;
                 dirty = 0; draw(); render_count++; painted = 1;
+                if (lut_mode && lut_page_requested) {
+                    XSync(display, False);
+                    fprintf(stderr, "LUT_PAGE pid=%ld shown_ms=%lld elapsed_ms=%lld\n",
+                        (long)getpid(), now_ms(), now_ms()-lut_page_requested);
+                    lut_page_requested = 0;
+                }
                 if (xlib.surf->present_failed) queue.close_requested = 1;
                 elapsed = now_ms() - draw_started;
                 if (elapsed > max_draw_ms) max_draw_ms = elapsed;
@@ -1337,18 +1403,5 @@ int main(int argc, char **argv) {
         } else fprintf(stderr, "MFW stock_input key=%s unavailable\n", mfw_stock_key);
     }
     XCloseDisplay(display); close(lockfd); alarm(0);
-    if (mfw_open_lut) {
-        char launcher[NXUI_PATH];
-        /* The Fn panel roots nxui at its six-item menu directory, which has no
-         * LUT assets. The service root (NX_FN_SERVICE_ROOT) owns lut-panel.sh
-         * and its engine, so resolve the launch from there when it is set. */
-        const char *service_root = getenv("NX_FN_SERVICE_ROOT");
-        const char *lut_base = service_root && *service_root ? service_root : root;
-        if (snprintf(launcher,sizeof launcher,"%s/lut-panel.sh",lut_base)>=(int)sizeof launcher) return 6;
-        /* exec drops the CLOEXEC service-panel lock before LUT acquires it.
-         * The previous camera focus and X11 resources have already returned. */
-        execl("/bin/sh","sh",launcher,(char *)0);
-        fprintf(stderr,"LUT panel launch failed errno=%d\n",errno);return 127;
-    }
     return 0;
 }

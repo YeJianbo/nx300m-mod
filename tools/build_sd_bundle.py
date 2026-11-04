@@ -2,6 +2,7 @@
 
 This does not install the start hook, modify firmware, or contact a camera.
 """
+from wsl_paths import wsl_path
 import argparse
 import gzip
 import io
@@ -13,6 +14,9 @@ import struct
 import subprocess
 import tarfile
 from look_library import LookLibrary
+from look_catalog import camera_looks
+from lut_table_data import read_tables
+from cube_to_d4 import DEFAULT_METHOD, METHODS
 from recipe_style import catalogue as recipe_catalogue
 from elftools.elf.elffile import ELFFile
 
@@ -31,14 +35,16 @@ PANEL_BINARIES = ('nxui.arm', 'recipe_engine.arm', 'lut_engine.arm')
 PANEL_FONT = 'usr/share/fonts/SDIC_GP_US_20120720.ttf'
 
 
-def bundle_looks(root):
+def bundle_looks(root, *, method=DEFAULT_METHOD):
     library = LookLibrary()
-    looks = library.list()
+    looks = camera_looks(library)
     if len(looks) > 256:
         raise ValueError('Native LUT catalog supports at most 256 entries')
     rows, ids = [], set()
     for look in looks:
         key = look['id']
+        if method is not None:
+            look = library.ensure_compiled(key, method=method)
         source = library.directory(key)
         if key in ids or source.name != key or library.get(key) != look:
             raise ValueError(f'Ambiguous LUT entry: {key}')
@@ -46,20 +52,10 @@ def bundle_looks(root):
         label = library.label(look['label'])
         if any(ord(c) < 32 or ord(c) == 127 for c in label):
             raise ValueError(f'Control character in LUT label: {key}')
+        tables = read_tables(source, look)
         target = root / 'looks' / key
         target.mkdir(parents=True)
-        for name in ('table.d4lut', 'table-stock3d.d4lut'):
-            path = source / name
-            if name == 'table-stock3d.d4lut' and not path.exists():
-                if look.get('native_stock_3d_table') == name:
-                    raise ValueError(f'Missing composed table: {key}')
-                continue
-            data = path.read_bytes()
-            if len(data) != 4380:
-                raise ValueError(f'Invalid LUT table length: {path}')
-            words = struct.unpack('<2190H', data)
-            if any(v > 1023 or (i % 730 == 729 and v) for i, v in enumerate(words)):
-                raise ValueError(f'Invalid 10-bit LUT table or padding: {path}')
+        for name, data in tables.items():
             (target / name).write_bytes(data)
         # Keep portable metadata; local LR profile paths are not runtime inputs.
         metadata = {k: v for k, v in look.items() if k != 'source_path'}
@@ -110,7 +106,7 @@ def bundle_panel_assets(root):
             'font_family': 'SDIC_GP_US', 'native_default': True}
 
 
-def build(remote=None):
+def build(remote=None, *, lut_method=DEFAULT_METHOD):
     remote = remote or PROJECT / 'outputs/metol/remote/nx-remote-controller.arm'
     quickshare = PROJECT / 'outputs/quickshare/nx-quickshare-armv7'
     web = PROJECT / 'outputs/metol/remote/web_root'
@@ -140,7 +136,7 @@ def build(remote=None):
     if fw_mod_so.exists():
         shutil.copyfile(fw_mod_so, lib_dir / fw_mod_so.name)
     shutil.copytree(web, root / 'web_root')
-    look_ids = bundle_looks(root)
+    look_ids = bundle_looks(root, method=lut_method)
     panels = bundle_panel_assets(root)
     runtime_files = sorted(path.relative_to(root).as_posix() for path in root.rglob('*') if path.is_file())
     runtime_files.append('runtime-files.list')
@@ -167,7 +163,7 @@ def build(remote=None):
                 inventory.append({'path': relative, 'bytes': len(data), 'mode': oct(mode)})
     report = {'bundle': archive.relative_to(PROJECT).as_posix(), 'root': '/mnt/mmc/nx300m-mod',
               'listen_default': '127.0.0.1:8781', 'services': ['remote (owns on-demand Quick Share children)'],
-              'looks': look_ids, 'panels': panels, 'native_dependencies': native_dependencies,
+              'looks': look_ids, 'lut_compiler_method': lut_method, 'panels': panels, 'native_dependencies': native_dependencies,
               'runtime': {'migrated': True, 'entry': 'ram-start.sh --service',
                           'stage_source': 'mod/deployment/mfw/ram-stage.sh',
                           'root': 'resolved /tmp/nx300m-mfw/runtime on writable executable tmpfs',
@@ -180,7 +176,7 @@ def build(remote=None):
 
 
 def probe():
-    guest_project = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    guest_project = wsl_path(PROJECT)
     script = 'cd ' + shlex.quote(guest_project) + ' && exec unshare --mount --net --ipc --pid --fork --mount-proc python3 mod/deployment/probe_lifecycle.py'
     result = subprocess.run(['wsl.exe', '-u', 'root', '-e', 'sh', '-c', script], capture_output=True, encoding='utf-8', errors='replace')
     (OUTPUT / 'probe.stdout.log').write_text(result.stdout, encoding='utf-8')
@@ -193,6 +189,7 @@ def main():
     global OUTPUT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--probe', action='store_true', help='Run shell lifecycle probes in a fresh WSL PID/mount/network namespace')
+    parser.add_argument('--lut-method', choices=METHODS, default=DEFAULT_METHOD)
     parser.add_argument('--output', type=Path, help='Separate staging directory under outputs/ for concurrent integration work')
     args = parser.parse_args()
     if args.output:
@@ -202,7 +199,7 @@ def main():
         if args.probe:
             parser.error('--output cannot be combined with the existing fixed-path lifecycle probe')
         OUTPUT=candidate
-    report = build()
+    report = build(lut_method=args.lut_method)
     if args.probe:
         probe()
     print(f"SD bundle built: {report['bundle']} ({len(report['files'])} files)")

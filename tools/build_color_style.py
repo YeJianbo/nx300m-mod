@@ -1,4 +1,5 @@
 """Build the RGB bridge; probe original matrix math and genuine stock setters."""
+from wsl_paths import wsl_path
 import argparse
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ GUEST = '/opt/nx300m-lab/stock-1.15'
 def build_bridge():
     OUTPUT.mkdir(parents=True, exist_ok=True)
     target = OUTPUT / 'color-style.so'
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     # Source interpolation needs ARM soft-float/int64 support. Link only the
     # required libgcc routines privately; do not override the app's arithmetic.
     script = f'''set -eu
@@ -25,7 +26,7 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
  -fPIC -ffreestanding -fno-builtin -fno-stack-protector \\
  -ffp-contract=off -fno-fast-math -fexcess-precision=standard \\
  -nostdlib -shared -Wl,-z,nocombreloc -Wl,--exclude-libs,ALL \\
- runtime/color_style.c -lgcc -o outputs/metol/color-style.so
+ runtime/color_style.c /opt/nx300m-lab/stock-1.15/lib/libpthread.so.0 -lgcc -o outputs/metol/color-style.so
 '''
     built = subprocess.run(['wsl.exe','-u','root','-e','sh','-c',script],capture_output=True,timeout=60)
     (OUTPUT/'color-style-build.log').write_bytes(built.stdout+built.stderr)
@@ -154,10 +155,10 @@ int main(int argc,char **argv) {
     return 0;
 }
 ''', encoding='utf-8')
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(base)}
-cc -std=c99 -O2 -Wall -Wextra -Werror -fPIC -shared runtime/color_style.c -ldl -o outputs/metol/color-style-lifecycle-native.so
+cc -std=c99 -O2 -Wall -Wextra -Werror -fPIC -shared runtime/color_style.c -ldl -pthread -o outputs/metol/color-style-lifecycle-native.so
 cc -D_GNU_SOURCE -std=c99 -O2 -Wall -Wextra -Werror -fPIC -shared outputs/metol/color-style-lifecycle-fixture.c -o outputs/metol/color-style-lifecycle-fixture.so
 cc -std=c99 -O2 -Wall -Wextra -Werror outputs/metol/color-style-lifecycle-probe.c -Loutputs/metol -Wl,--no-as-needed -l:color-style-lifecycle-fixture.so -o outputs/metol/color-style-lifecycle-probe
 exec unshare --mount --net --ipc sh -ec '
@@ -201,7 +202,7 @@ exec unshare --mount --net --ipc sh -ec '
 
 
 def run_original_probe():
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 tc=/opt/nx300m-toolchain/usr
 rf={shlex.quote(GUEST)}
@@ -250,7 +251,7 @@ unset LD_LIBRARY_PATH
 
 
 def run_bridge_probe():
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 tc=/opt/nx300m-toolchain/usr
 rf={shlex.quote(GUEST)}
@@ -343,9 +344,10 @@ def main():
             'ecore_scheduler': 'fixture stub captures and explicitly invokes production request callback',
             'checks': [
                 'neutral passthrough', 'independent RGB row gains',
+                'UI requests stage without hardware replay',
                 'repeated stock matrix does not accumulate', 'fresh stock base',
                 'positive and negative overflow bypass the whole matrix',
-                'reset restores latest stock base', 'neutral after reset',
+                'reset restores latest stock base at next native setter', 'neutral after reset',
             ],
             'used_sensor_or_camera_session': False,
             'stock_libraries_modified': False,

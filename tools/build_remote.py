@@ -1,4 +1,5 @@
 """Build the NX300M native remote backend and adapt the pinned Metol web client."""
+from wsl_paths import wsl_path
 from pathlib import Path
 import argparse
 import shlex
@@ -94,7 +95,7 @@ def main():
         print('Metol web client built')
         return
     lut_build_contract.identity()
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

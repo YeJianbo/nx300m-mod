@@ -1,4 +1,5 @@
 """Build the standalone service trigger against original ARM glibc 2.13."""
+from wsl_paths import wsl_path as wsl
 import io
 import json
 from pathlib import Path
@@ -12,8 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'outputs/deployment/service-loader'
 
 
-def wsl(path):
-    return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def stage():

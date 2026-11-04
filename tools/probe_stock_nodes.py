@@ -1,4 +1,5 @@
 """Run stock LUT/Gamma C++ parameter nodes against explicit inputs and MMIO RAM."""
+from wsl_paths import wsl_path
 import argparse
 import json
 from pathlib import Path
@@ -19,7 +20,7 @@ def main():
     LookLibrary().get(args.look)
     LookLibrary().get(args.alternate)
     if args.look == args.alternate: raise ValueError('Use distinct looks for reload verification')
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

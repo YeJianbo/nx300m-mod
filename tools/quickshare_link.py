@@ -6,13 +6,14 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from wsl_paths import wsl_path
 
 
 def linux_path(value: str) -> str:
-    if re.match(r"^[A-Za-z]:[\\/]", value):
-        return "/mnt/" + value[0].lower() + "/" + value[3:].replace("\\", "/")
+    if re.match(r"^[A-Za-z]:[\\/]|^[\\/]{2}", value):
+        return wsl_path(value, distro=os.environ.get("NX_QS_WSL_DISTRO", "Debian"))
     for prefix in ("-L", "-Wl,--version-script=", "-Wl,-T,"):
-        if value.startswith(prefix) and re.match(r"^[A-Za-z]:[\\/]", value[len(prefix) :]):
+        if value.startswith(prefix):
             return prefix + linux_path(value[len(prefix) :])
     return value
 

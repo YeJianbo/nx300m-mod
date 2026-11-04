@@ -13,6 +13,9 @@ static volatile int color_lock;
 static void lock_color(void) { while (__sync_lock_test_and_set(&color_lock,1)) {} }
 static void unlock_color(void) { __sync_lock_release(&color_lock); }
 static int chroma_supported_pasm(void) { return supported; }
+static int color_process_current(void) { return 1; }
+static int bridge_write_ready(const char *path) { (void)path;return 1; }
+static void bridge_cleanup(const char *stem) { (void)stem; }
 static unsigned char capture_vtable[32], preview_vtable[32];
 static int16_t singleton[9]={128,16,-16,-12,128,12,4,-4,128};
 static const int16_t original_singleton[9]={128,16,-16,-12,128,12,4,-4,128};
@@ -58,7 +61,7 @@ static long fixture_time(long *out) { if(out) *out=100;return 100; }
 #define rename fixture_rename
 #define unlink fixture_unlink
 #define getpid fixture_pid
-#define time fixture_time
+#define color_time fixture_time
 #include "source_rgb_style.h"
 #undef dlsym
 #undef fopen
@@ -66,7 +69,7 @@ static long fixture_time(long *out) { if(out) *out=100;return 100; }
 #undef rename
 #undef unlink
 #undef getpid
-#undef time
+#undef color_time
 
 #define CHECK(condition) do { if (!(condition)) { \
     fprintf(stderr,"STATE_FAIL line=%d condition=%s\n",__LINE__,#condition);++failures; } } while(0)
@@ -173,6 +176,10 @@ int main(void) {
     update((struct plan){.idle=1});
     CHECK(source_rgb_preview.generation==successful.generation && source_rgb_preview.modified==1 && source_rgb_preview.error==0);
     CHECK(source_rgb_preview.last_update_setter_calls==0 && read_response().applied);
+    int resets_before=reset_calls;
+    lock_color();source_rgb_invalidate_native_locked();unlock_color();
+    update((struct plan){.idle=1});
+    CHECK(reset_calls==resets_before+1);
     case_done("asymmetric_and_idle");
 
     configure(4,1,80,160,200);update((struct plan){.result=2});

@@ -2,6 +2,7 @@
 
 This checks manual-stop/automatic-start coordination, not ARM, HTTP or suspend.
 """
+from wsl_paths import wsl_path
 import argparse
 import json
 import os
@@ -93,7 +94,7 @@ def main():
     if args.worker:
         print(json.dumps(worker()))
         return
-    path = '/mnt/'+ROOT.drive[0].lower()+ROOT.as_posix()[2:]+'/tools/probe_sd_manual_stop.py'
+    path = wsl_path(ROOT)+'/tools/probe_sd_manual_stop.py'
     result = subprocess.run(['wsl.exe', '-e', 'python3', path, '--worker'],
                             capture_output=True, text=True, encoding='utf-8', timeout=90)
     if result.returncode:

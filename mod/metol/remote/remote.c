@@ -92,10 +92,14 @@ static void focus_input(void) {
     }
     if (chosen) XSetInputFocus(display, chosen, RevertToPointerRoot, CurrentTime);
 }
+static void refresh_input_mapping(void) {
+    XEvent event;
+    while (XCheckTypedEvent(display,MappingNotify,&event)) XRefreshKeyboardMapping(&event.xmapping);
+}
 static int inject_x11(const char *query) {
     struct mg_str query_string=mg_mk_str(query);
     char value[80]; const char *actions[]={"key","keydown","keyup"};
-    focus_input();
+    refresh_input_mapping();focus_input();
     for (int action=0; action<3; action++) {
         int length=mg_get_http_var(&query_string, actions[action], value, sizeof value);
         if (length<0) continue;
@@ -104,12 +108,31 @@ static int inject_x11(const char *query) {
         KeySym symbol=XStringToKeysym(value);
         if (symbol==NoSymbol) return 400;
         KeyCode key=XKeysymToKeycode(display,symbol);
+        /* Match the standalone simulator's spare-key binding, only when the
+         * laboratory launcher explicitly enables it. Camera mappings stay put. */
+        char bind[8];const char *lab=getenv("NX_REMOTE_LAB_INPUT");
+        if (!key && action==0 && lab && !strcmp(lab,"1") && !held_keys[255] &&
+            mg_get_http_var(&query_string,"bind",bind,sizeof bind)==1 && bind[0]=='1') {
+            key=255;XChangeKeyboardMapping(display,key,1,&symbol,1);XSync(display,False);refresh_input_mapping();
+        }
         if (!key) return 400;
         if (action!=2) { held_keys[key]=1;XTestFakeKeyEvent(display,key,True,0); }
         if (action!=1) XTestFakeKeyEvent(display,key,False,0);
         input_alive=now_ms(); XSync(display,False);
         if (action!=1) held_keys[key]=0;
         fprintf(stderr,"[NX REMOTE] input action=%s key=%s code=%u\n",actions[action],value,key);
+        return 200;
+    }
+    if (mg_get_http_var(&query_string,"click",value,sizeof value)>=0) {
+        int x,y;char extra;
+        if (sscanf(value,"%d-%d%c",&x,&y,&extra)!=2 || x<0 || x>=800 || y<0 || y>=480) return 400;
+        int w=DisplayWidth(display,DefaultScreen(display)),hgt=DisplayHeight(display,DefaultScreen(display));
+        XTestFakeMotionEvent(display,-1,w==480 && hgt==800?479-y:x,w==480 && hgt==800?x:y,0);
+        /* One queued command keeps motion/down/up together. Preserve the
+         * standalone viewer's press/release delays and recovery ledger. */
+        held_buttons[1]=1;
+        XTestFakeButtonEvent(display,1,True,15);XTestFakeButtonEvent(display,1,False,50);
+        input_alive=now_ms();XSync(display,False);held_buttons[1]=0;
         return 200;
     }
     int released_button=0;
@@ -182,38 +205,57 @@ static void osd_reply(struct mg_connection *c,const uint32_t previous[BLOCKS]) {
 
 static void json_string(struct mg_connection *c,const char *value) {
     mg_printf_http_chunk(c,"\"");
-    for (const unsigned char *p=(const unsigned char *)value;*p;p++) {
+    const unsigned char *p=(const unsigned char *)value,*run=p;
+    for (;*p;p++) {
+        if (*p!='"' && *p!='\\' && *p>=32) continue;
+        if (p!=run) mg_send_http_chunk(c,(const char *)run,(size_t)(p-run));
         if (*p=='"' || *p=='\\') mg_printf_http_chunk(c,"\\%c",*p);
-        else if (*p<32) mg_printf_http_chunk(c,"\\u%04x",*p);
-        else mg_send_http_chunk(c,(const char *)p,1);
+        else mg_printf_http_chunk(c,"\\u%04x",*p);
+        run=p+1;
     }
+    if (p!=run) mg_send_http_chunk(c,(const char *)run,(size_t)(p-run));
     mg_printf_http_chunk(c,"\"");
 }
-static int media_path(const char *relative,char *result) {
-    char base[PATH_MAX],candidate[PATH_MAX];
-    if (media_paused) return 0;
+static int media_path_from_base(const char *base,const char *relative,char *result) {
+    char candidate[PATH_MAX];
     if (*relative=='/' || strchr(relative,'\\')) return 0;
-    if (!realpath(media_root,base)) return 0;
     int n=snprintf(candidate,sizeof candidate,"%s/%s",base,relative);
     if (n<0 || n>=(int)sizeof candidate || !realpath(candidate,result)) return 0;
     size_t size=strlen(base);
     return !strncmp(result,base,size) && (!result[size] || result[size]=='/');
 }
+static int media_path(const char *relative,char *result) {
+    char base[PATH_MAX];
+    return !media_paused && realpath(media_root,base) && media_path_from_base(base,relative,result);
+}
 static void dirlist(struct mg_connection *c,struct http_message *h) {
-    char relative[1024]="",path[PATH_MAX];
-    if (mg_get_http_var(&h->query_string,"p",relative,sizeof relative)<-1 || !media_path(relative,path)) { reply(c,404,"{\"ok\":false,\"err\":\"media directory unavailable\"}");return; }
+    char relative[1024]="",base[PATH_MAX],path[PATH_MAX];
+    if (mg_get_http_var(&h->query_string,"p",relative,sizeof relative)<-1 || media_paused ||
+        !realpath(media_root,base) || !media_path_from_base(base,relative,path)) { reply(c,404,"{\"ok\":false,\"err\":\"media directory unavailable\"}");return; }
     struct dirent **entries;int count=scandir(path,&entries,NULL,alphasort);
     if (count<0) { reply(c,404,"{\"ok\":false,\"err\":\"directory unavailable\"}");return; }
+    struct directory_item { int kind;off_t size; };
+    struct directory_item *items=calloc(count?count:1,sizeof *items);
+    if (!items) {
+        for (int i=0;i<count;i++) free(entries[i]);
+        free(entries);reply(c,503,"{\"ok\":false,\"err\":\"directory memory unavailable\"}");return;
+    }
+    /* Resolve and stat each visible entry once. All three JSON sections use
+     * this snapshot, preserving alphabetical order and symlink containment. */
+    for (int i=0;i<count;i++) {
+        if (entries[i]->d_name[0]=='.') continue;
+        char child[PATH_MAX],joined[PATH_MAX];struct stat st;
+        int n=snprintf(joined,sizeof joined,"%s%s%s",relative,*relative?"/":"",entries[i]->d_name);
+        if (n<0 || n>=(int)sizeof joined || !media_path_from_base(base,joined,child) || stat(child,&st)) continue;
+        items[i].kind=S_ISDIR(st.st_mode)?1:S_ISREG(st.st_mode)?2:0;
+        items[i].size=st.st_size;
+    }
     mg_printf(c,"HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nTransfer-Encoding: chunked\r\nCache-Control: no-store\r\n\r\n");
     mg_printf_http_chunk(c,"{\"ok\":true,\"path\":");json_string(c,relative);
     for (int isdir=1;isdir>=0;isdir--) {
         mg_printf_http_chunk(c,isdir?",\"dirs\":[":",\"files\":[");int comma=0;
         for (int i=0;i<count;i++) {
-            if (entries[i]->d_name[0]=='.') continue;
-            char child[PATH_MAX],joined[PATH_MAX];struct stat st;
-            int n=snprintf(joined,sizeof joined,"%s%s%s",relative,*relative?"/":"",entries[i]->d_name);
-            if (n<0 || n>=(int)sizeof joined || !media_path(joined,child) || stat(child,&st)) continue;
-            if ((isdir && !S_ISDIR(st.st_mode)) || (!isdir && !S_ISREG(st.st_mode))) continue;
+            if (items[i].kind!=(isdir?1:2)) continue;
             if (comma++) mg_printf_http_chunk(c,",");
             json_string(c,entries[i]->d_name);
         }
@@ -221,16 +263,13 @@ static void dirlist(struct mg_connection *c,struct http_message *h) {
     }
     mg_printf_http_chunk(c,",\"sizes\":{");int comma=0;
     for (int i=0;i<count;i++) {
-        if (entries[i]->d_name[0]=='.') continue;
-        char child[PATH_MAX],joined[PATH_MAX];struct stat st;
-        int n=snprintf(joined,sizeof joined,"%s%s%s",relative,*relative?"/":"",entries[i]->d_name);
-        if (n<0 || n>=(int)sizeof joined || !media_path(joined,child) || stat(child,&st) || !S_ISREG(st.st_mode)) continue;
+        if (items[i].kind!=2) continue;
         if (comma++) mg_printf_http_chunk(c,",");
-        json_string(c,entries[i]->d_name);mg_printf_http_chunk(c,":%lld",(long long)st.st_size);
+        json_string(c,entries[i]->d_name);mg_printf_http_chunk(c,":%lld",(long long)items[i].size);
     }
     mg_printf_http_chunk(c,"}");
     for (int i=0;i<count;i++) free(entries[i]);
-    free(entries);
+    free(entries);free(items);
     mg_printf_http_chunk(c,"}");mg_send_http_chunk(c,"",0);
 }
 static void serve_media_path(struct mg_connection *c,struct http_message *h,const char *path,const char *type) {

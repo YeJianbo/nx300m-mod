@@ -12,7 +12,7 @@ typedef struct {
     int16_t input[9], output[9];
     i32 setter_input[9];
 } source_rgb_path;
-typedef struct { void *identity; unsigned int generation, updates; int eligible; } source_rgb_node;
+typedef struct { void *identity; unsigned int generation, updates, refresh_generation; int eligible; } source_rgb_node;
 typedef struct { unsigned int generation; int modified, state_known, error; } source_rgb_owner;
 typedef struct { unsigned int generation, setter_calls; int modified, state_known, last_result, error; } source_rgb_hardware;
 typedef struct {
@@ -26,6 +26,10 @@ static source_rgb_hardware source_rgb_capture_hardware, source_rgb_preview_hardw
 static source_rgb_owner source_rgb_capture_cache_owner, source_rgb_preview_cache_owner;
 static unsigned int source_rgb_values[3]={100,100,100};
 static unsigned int source_rgb_enabled, source_rgb_generation=1, source_rgb_last_request;
+static unsigned int source_rgb_refresh_generation=1;
+static void source_rgb_invalidate_native_locked(void) {
+    if(++source_rgb_refresh_generation==0) source_rgb_refresh_generation=1;
+}
 static int source_rgb_ready_written, source_rgb_preview_seen;
 static __thread source_rgb_transaction *source_rgb_current;
 
@@ -84,7 +88,7 @@ static void source_rgb_cached_setter_result_locked(int capture,int result) {
     source_rgb_owner *owner=capture?&source_rgb_capture_cache_owner:&source_rgb_preview_cache_owner;
     source_rgb_record_hardware_locked(capture,owner,result);
 }
-/* Called with color_lock still held at the genuine setter boundary. Updating
+/* Called with the short state lock after the serialized genuine setter. Updating
  * this record later at Update return would let an older thread relabel a newer
  * write. Cached custom-row replays carry the owner captured with their base. */
 static void source_rgb_setter_result_locked(int capture,const color_matrix *matrix,
@@ -123,14 +127,17 @@ static void source_rgb_run_update(void *self,void *parameters,
     transaction.capture=capture;
     lock_color();
     observed->generation=source_rgb_generation;observed->enabled=source_rgb_enabled;
+    unsigned int refresh_generation=source_rgb_refresh_generation;
     for (int i=0;i<3;++i) observed->values[i]=source_rgb_values[i];
     unlock_color();
     observed->eligible=!observed->enabled || chroma_supported_pasm();
     if (nx500_rgb_recipe_codes(observed->codes,observed->values)) observed->error=-122;
     source_rgb_node *node=capture?&source_rgb_capture_node:&source_rgb_preview_node;
     lock_color();
-    int changed=node->identity!=self || node->generation!=observed->generation || node->eligible!=observed->eligible;
+    int changed=node->identity!=self || node->generation!=observed->generation || node->eligible!=observed->eligible ||
+        node->refresh_generation!=refresh_generation;
     node->identity=self;node->generation=observed->generation;node->eligible=observed->eligible;
+    node->refresh_generation=refresh_generation;
     observed->sequence=++node->updates;
     unlock_color();
     if (changed && reset) reset(self);
@@ -209,7 +216,7 @@ static void source_rgb_poll_request(void) {
     fclose(file);
     if (!id || id==source_rgb_last_request) return;
     source_rgb_last_request=id;
-    int result=fields!=6?-100:(unsigned int)time((long *)0)>expires?-108:operation>2?-101:
+    int result=fields!=6?-100:(unsigned int)color_time((long *)0)>expires?-108:operation>2?-101:
                values[0]>200 || values[1]>200 || values[2]>200?-102:0;
     if (!result && operation==1 && !chroma_supported_pasm()) result=-112;
     lock_color();
@@ -242,6 +249,7 @@ static void source_rgb_initialize(void) {
     source_rgb_capture_cache_owner=(source_rgb_owner){0}; source_rgb_preview_cache_owner=(source_rgb_owner){0};
     source_rgb_current=(void *)0;
     source_rgb_enabled=0;source_rgb_generation=1;source_rgb_last_request=0;source_rgb_ready_written=0;
+    source_rgb_refresh_generation=1;
     source_rgb_preview_seen=0;
     for (int i=0;i<3;++i) source_rgb_values[i]=100;
 }

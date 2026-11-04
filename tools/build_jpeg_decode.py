@@ -3,6 +3,7 @@
 No simulator restart, image installation, encoder build or media-state changes.
 """
 from __future__ import annotations
+from wsl_paths import wsl_path
 
 import argparse
 import io
@@ -133,9 +134,7 @@ int main(int argc,char **argv) {
 '''
 
 
-def wsl_path(path: Path) -> str:
-    path = path.resolve()
-    return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def stock_headers() -> None:

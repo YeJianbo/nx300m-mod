@@ -5,7 +5,7 @@ import re
 import shlex
 import subprocess
 
-from build_ycc_probe import wsl_path
+from wsl_paths import wsl_path
 from inspect_gamma_hook import Stock
 from inspect_recipe_tables import read_symbol
 from capstone import Cs, CS_ARCH_ARM, CS_MODE_ARM

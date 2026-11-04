@@ -7,7 +7,7 @@ import shlex
 import struct
 import subprocess
 
-from build_ycc_probe import wsl_path
+from wsl_paths import wsl_path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT/'outputs/metol'

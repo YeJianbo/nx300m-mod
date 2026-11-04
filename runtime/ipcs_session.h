@@ -1,6 +1,16 @@
 #ifndef NX_IPCS_SESSION_H
 #define NX_IPCS_SESSION_H
 
+/* Only the verified 1.15 IRQ-result failure (-3) permits one locked cleanup
+ * attempt. A generic -1 cannot identify which resources were acquired. */
+#define NX_IPS_OPEN_IRQ_ERROR (-3)
+#ifndef NX_IPS_RETRY_MS
+#define NX_IPS_RETRY_MS 2000U
+#endif
+#ifndef NX_IPS_RECOVERY_LIMIT
+#define NX_IPS_RECOVERY_LIMIT 3U
+#endif
+
 /* A reference is a power lifetime, never an IPCS operation/channel lease. */
 enum nx_ips_state { NX_IPS_IDLE, NX_IPS_OPENING, NX_IPS_READY,
                     NX_IPS_DRAINING, NX_IPS_FAILED };
@@ -23,6 +33,7 @@ struct nx_ips {
     unsigned blockers[NX_IPS_REASONS];
     unsigned opens, closes, frames, busy, lock_busy, idle_releases;
     unsigned open_errors, close_errors, unlock_errors, drain_timeouts;
+    unsigned recoveries, recovery_closes, last_error_ms;
     int error;
 };
 void nx_ips_init(struct nx_ips *, const struct nx_ips_api *);

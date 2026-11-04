@@ -3,6 +3,7 @@
 The IQ cache and shooting mode are explicit fixtures. This confirms original
 policy behavior, not a live meter, sensor gain or physical exposure.
 """
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import shlex
@@ -99,7 +100,7 @@ def main():
     (OUT/'auto-iso-policy-probe.c').write_text(PROBE,encoding='utf-8')
     (OUT/'auto-iso-policy-crt0.S').write_text(CRT,encoding='utf-8')
     (OUT/'auto-iso-bridge-probe.c').write_text(BRIDGE_PROBE,encoding='utf-8')
-    project='/mnt/'+ROOT.drive[0].lower()+ROOT.as_posix()[2:]
+    project=wsl_path(ROOT)
     script=f'''set -eu
 cd {shlex.quote(project)}
 tc=/opt/nx300m-toolchain/usr

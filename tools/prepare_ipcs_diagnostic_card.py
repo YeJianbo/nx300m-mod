@@ -6,6 +6,7 @@ import json
 from pathlib import Path, PurePosixPath
 import zipfile
 import lut_build_contract
+from cube_to_d4 import DEFAULT_METHOD
 
 import prepare_lut_test_card as card
 
@@ -14,10 +15,13 @@ BASE = ROOT/'outputs/deployment/smartfilter-session'
 OUT = BASE/'diagnostic-card'
 
 
-def prepare():
+def prepare(*, lut_method=DEFAULT_METHOD):
     vm = BASE/'arm-vm'
     checked = json.loads((vm/'report.json').read_text(encoding='utf-8'))
     required = ('passed', 'private_vm_stopped', 'button_wrapper_arms_real_session_calltrace',
+                'loader_wakes_controller_without_first_frame',
+                'admission_file_cache_reused_across_commands',
+                'admission_new_process_requires_full_hash',
                 'native_stop_callback_and_memory_matching_executed',
                 'asynchronous_stop_callback_wakes_controller',
                 'unchanged_map_resumes_without_capture',
@@ -74,13 +78,14 @@ def prepare():
     still_vm = still/'arm-vm'
     still_checked = json.loads((still_vm/'report.json').read_text(encoding='utf-8'))
     if not all(still_checked.get(key) is True for key in
-               ('passed','private_vm_stopped','shared_ram_binding_checked','known_image_recovery_checked')):
+               ('passed','private_vm_stopped','shared_ram_binding_checked','known_image_recovery_checked',
+                'unchanged_selection_read_cached','selection_cache_same_size_edits_invalid_delete_recovery_checked')):
         raise RuntimeError('Still LUT installation/readiness checks are incomplete')
     for name, source in (('bin/lut_live_loader.arm',still/'lut_live_loader.arm'),
                          ('lut_ram_blob.bin',still/'lut_ram_blob.bin')):
         if source.read_bytes() != (still_vm/'source-files'/name).read_bytes():
             raise RuntimeError('Still LUT differs from its ARM evidence: '+name)
-    panel = ROOT/'outputs/performance/menu-event-loop/lut-control-menu-final'
+    panel = ROOT/'outputs/performance/lut-menu-entry/wait-vm'
     panel_checked = json.loads((panel/'report.json').read_text(encoding='utf-8'))
     panel_binary = (ROOT/'outputs/metol/nxui.arm').read_bytes()
     if (not all(panel_checked.get(key) is True for key in
@@ -89,13 +94,21 @@ def prepare():
                   'normal_menu_debug_navigation_and_preview_stop'))
             or hashlib.sha256(panel_binary).hexdigest() != panel_checked.get('candidate_sha256')):
         raise RuntimeError('Panel differs from its checked ARM event-loop fix')
-    selection = ROOT/'outputs/performance/menu-event-loop/lut-selection/menu-final/report.json'
+    selection = ROOT/'outputs/performance/lut-menu-entry/selection-vm/report.json'
     selection_checked = json.loads(selection.read_text(encoding='utf-8'))
     if (not all(selection_checked.get(key) is True for key in ('passed', 'private_vm_stopped',
                  'browsing_waits_for_confirmation', 'only_final_choice_submitted_once',
-                 'full_catalogue_keyboard_and_touch_select_mono', 'off_preview_explains_selection_required'))
-            or hashlib.sha256(panel_binary).hexdigest() != selection_checked.get('candidate_sha256')):
+                 'full_catalogue_keyboard_and_touch_select_mono', 'off_preview_explains_selection_required',
+                 'direct_launcher_does_not_call_adapter_or_restore_selection', 'saved_choice_visible_without_camera_mutation'))
+            or hashlib.sha256(panel_binary).hexdigest() != selection_checked.get('candidate_sha256')
+            or hashlib.sha256((ROOT/'mod/deployment/mfw/lut-panel.sh').read_bytes()).hexdigest() != selection_checked.get('lut_panel_sha256')):
         raise RuntimeError('Panel differs from its checked native ARM LUT selection')
+    entry_checked = json.loads((ROOT/'outputs/performance/lut-menu-entry/arm-vm/report.json').read_text(encoding='utf-8'))
+    if (not all(entry_checked.get(key) is True for key in ('passed','private_vm_stopped',
+                 'same_process_window_and_font_reused','browse_does_not_call_engine','return_and_reopen_without_apply',
+                 'confirmation_uses_data_root'))
+            or hashlib.sha256(panel_binary).hexdigest() != entry_checked.get('candidate_sha256')):
+        raise RuntimeError('Panel differs from its checked in-process LUT navigation')
     sources = {
         'ipcs-diagnostic/bin/smartfilter_loader.arm': ('bin/smartfilter_loader.arm', BASE/'smartfilter_loader.arm'),
         'ipcs-diagnostic/bin/smartfilter_probe_launcher.arm': ('bin/smartfilter_probe_launcher.arm', BASE/'smartfilter_probe_launcher.arm'),
@@ -126,7 +139,7 @@ def prepare():
     for source in sorted((still/'compat').glob('blob-*.bin')):
         package['nx300m-mod/lib/lut-compat/'+source.name] = source.read_bytes()
     from build_lut_color_test import build as catalogue_build, OUT as catalogue_out
-    catalogue = catalogue_build()
+    catalogue = catalogue_build(method=lut_method)
     data_root = catalogue_out/'sd/nx300m-mod'
     for source in data_root.rglob('*'):
         if source.is_file():
@@ -166,6 +179,7 @@ def prepare():
     report = dict(archive=str(archive), abi=7, build=build['build'],
                   session_mode=1, diagnostics_enabled_by_default=False, per_call_open_diagnostic=True,
                   still_lut_build=lut_build_contract.identity()['build'], catalogue_looks=catalogue['looks'],
+                  lut_compiler_method=catalogue['compiler_method'],
                   physical_performance_measured=False, abi4_preview_binaries_replaced=False,
                   still_components_paired=True,
                   arm_report=str(vm/'report.json'), panel_report=str(panel/'report.json'),
@@ -218,6 +232,7 @@ def deploy(package, report, serial, select_look=None):
                     diagnostics_enabled_by_default=False,
                     per_call_open_diagnostic=True, abi4_preview_binaries_preserved=True,
                     lut_catalogue_looks=report['catalogue_looks'],
+                    lut_compiler_method=report['lut_compiler_method'],
                     still_lut_build=report['still_lut_build'], physical_camera_tested=False,
                     selected_startup_look=select_look)
     card.save(path, deployed)
@@ -229,8 +244,10 @@ if __name__ == '__main__':
     parser.add_argument('--deploy', action='store_true')
     parser.add_argument('--serial', default='LOCAL_REDACTED')
     parser.add_argument('--select-look', help='Explicit startup LUT selection for this deployment')
+    parser.add_argument('--lut-method', choices=('fit','legacy'), default=DEFAULT_METHOD,
+                        help='离线编译正式库；legacy 恢复旧采样算法')
     args = parser.parse_args()
-    package, report = prepare()
+    package, report = prepare(lut_method=args.lut_method)
     print(f"Prepared {len(package)} files, ABI {report['abi']}, build {report['build']}, Session=1", flush=True)
     if args.deploy:
         deploy(package, report, args.serial.replace('-', '').upper(), args.select_look)

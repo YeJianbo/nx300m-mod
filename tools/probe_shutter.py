@@ -1,4 +1,5 @@
 """Run the Allegro ABI with original ARM GPIO libraries and explicit test edges."""
+from wsl_paths import wsl_path
 import json
 import argparse
 from pathlib import Path
@@ -14,7 +15,7 @@ def main():
     parser.add_argument('--motion', action='store_true', help='Check the optional ideal rotor and asynchronous IRQ wake')
     args = parser.parse_args()
     motion = '-E NX300M_SHUTTER_MOTION=ideal-8-sector -E NX300M_SHUTTER_PARK=10 -E NX300M_SHUTTER_STEP_US=20000' if args.motion else ''
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

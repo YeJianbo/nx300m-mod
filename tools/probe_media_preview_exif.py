@@ -6,7 +6,7 @@ import shlex
 import subprocess
 
 from PIL import Image
-from build_ycc_probe import wsl_path
+from wsl_paths import wsl_path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT/'outputs/metol/media-preview-exif'

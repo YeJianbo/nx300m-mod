@@ -1,4 +1,5 @@
 """Execute the fetched upstream CPU kernels locally, never their camera daemon."""
+from wsl_paths import wsl_path as wsl
 from pathlib import Path
 import json
 import hashlib
@@ -72,9 +73,7 @@ int main(int argc,char **argv) {
 '''
 
 
-def wsl(path):
-    p=Path(path).resolve().as_posix()
-    return '/mnt/'+p[0].lower()+p[2:]
+
 
 
 def run(command, *, timeout=120):

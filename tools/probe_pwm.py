@@ -1,4 +1,5 @@
 """Check finite PWM waits against original NX300M ARM libudd instructions."""
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import shlex
@@ -6,7 +7,7 @@ import subprocess
 PROJECT = Path(__file__).resolve().parents[1]
 GUEST = '/opt/nx300m-lab/stock-1.15'
 def main():
-    base = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

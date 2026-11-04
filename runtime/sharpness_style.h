@@ -41,8 +41,9 @@ static void sharpness_prepare_update(void *self, void (*reset)(void *)) {
 static int sharpness_forward_setter(void *parameters, int capture) {
     int (*original)(void *)=dlsym((void *)-1,capture?"ipcs_edge_enhancement_param":"ipcm_edge_enhancement_param");
     if(!color_process_current()) return original?original(parameters):-120;
-    lock_color();
+    color_io_enter(capture,COLOR_EDGE);
     int result=original?original(parameters):-120;
+    lock_color();
     sharpness_hardware_state *hardware=capture?&sharpness_capture_hardware:&sharpness_preview_hardware;
     if(original) { ++hardware->calls;hardware->available=1;++hardware->write_sequence; }
     /* A capture SetParam may submit more than one edge group. Keep the
@@ -58,6 +59,7 @@ static int sharpness_forward_setter(void *parameters, int capture) {
         if(result) sharpness_current->setter_error=result;
     }
     unlock_color();
+    color_io_leave(capture,COLOR_EDGE);
     return result;
 }
 int ipcs_edge_enhancement_param(void *parameters) { return sharpness_forward_setter(parameters,1); }
@@ -137,7 +139,7 @@ static void sharpness_poll_request(void) {
     fclose(file);
     if(!id||id==sharpness_last_request) return;
     sharpness_last_request=id;
-    int result=fields!=4?-100:(unsigned int)time((long *)0)>expires?-108:operation>2?-101:level>20?-102:0;
+    int result=fields!=4?-100:(unsigned int)color_time((long *)0)>expires?-108:operation>2?-101:level>20?-102:0;
     if(!result && operation==1 && !chroma_supported_pasm()) result=-112;
     lock_color();
     if(!result && operation!=2) {

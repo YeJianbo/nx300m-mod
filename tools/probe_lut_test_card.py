@@ -1,4 +1,5 @@
 """Reproduce the observed Wi-Fi request mismatch using the production shell worker and a fake tool."""
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import subprocess
@@ -47,7 +48,7 @@ print(json.dumps({'passed': True, 'production_shell_worker': True, 'fake_camera_
 def main():
     project = Path(__file__).resolve().parents[1]
     source = project / 'mod/deployment/mfw/autoexec-lens-wifi-mem.sh'
-    guest_source = '/mnt/' + source.drive[0].lower() + source.as_posix()[2:]
+    guest_source = wsl_path(source)
     run = subprocess.run(['wsl.exe', '-d', 'Debian', '-e', 'python3', '-c', GUEST, guest_source], capture_output=True, text=True)
     if run.returncode:
         raise RuntimeError(f'Wi-Fi request worker probe exit {run.returncode}: {run.stderr}')

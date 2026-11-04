@@ -1,4 +1,5 @@
 """Check the failing stock SMA remain ioctl without starting or replacing a camera."""
+from wsl_paths import wsl_path
 import json
 from pathlib import Path
 import shlex
@@ -18,7 +19,7 @@ def main():
                     '-std=c99', '-O2', '-Wall', '-Wextra', '-Werror', '-fPIC', '-ffreestanding',
                     '-fno-builtin', '-fno-stack-protector', '-nostdlib', '-shared', '-fuse-ld=lld',
                     'runtime/device_preview.c', '-o', str(OUTPUT/'sma-remain-device.so')], cwd=PROJECT, check=True)
-    base = '/mnt/'+PROJECT.drive[0].lower()+PROJECT.as_posix()[2:]
+    base = wsl_path(PROJECT)
     script = f'''set -eu
 cd {shlex.quote(base)}
 tc=/opt/nx300m-toolchain/usr

@@ -3,6 +3,7 @@
 The build verifies original ELF identities and links only the stock glibc ABI.
 It neither changes a running camera nor starts/reuses any ARM VM.
 """
+from wsl_paths import wsl_path as wsl
 import argparse
 import hashlib
 import io
@@ -21,9 +22,7 @@ EXPECTED = {'update': 0x350DC0, 'reset': 0x350E0C,
             'vtable_slot': 0x3BFD08, 'lut_got': 0x3C2AB4, 'lut': 0x955C8}
 
 
-def wsl(path):
-    path = Path(path).resolve()
-    return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
+
 
 
 def elf_record(path, wanted):

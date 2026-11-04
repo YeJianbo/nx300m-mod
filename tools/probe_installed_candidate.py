@@ -3,6 +3,7 @@
 Reuses the established original-app lifecycle probe. No host camera namespace,
 physical device, stock hibernation script or firmware updater is executed.
 """
+from wsl_paths import wsl_path
 import argparse
 import gzip
 import hashlib
@@ -197,7 +198,7 @@ def main():
             boot_candidate(archive)
             return
         # The serial bridge transfers binary stdin; no photos enter this archive.
-        guest = '/mnt/' + PROJECT.drive[0].lower() + PROJECT.as_posix()[2:]
+        guest = wsl_path(PROJECT)
         result = subprocess.run(['wsl.exe', '-u', 'root', '-e', 'python3', guest + '/tools/probe_sd_vm.py',
                                  'upload-worker', guest + '/' + archive.relative_to(PROJECT).as_posix()],
                                 capture_output=True, timeout=80)
