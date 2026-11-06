@@ -27,7 +27,7 @@ SKIP_TOOLS = {'inspect_codex_sessions.py', 'parse_transcript.py',
 TEXT_EXTS = {'.py', '.c', '.h', '.ld', '.sh', '.ps1', '.md', '.txt', '.json',
              '.xml', '.kt', '.java', '.kts', '.properties', '.toml', '.lock',
              '.yaml', '.yml', '.html', '.css', '.js', '.ts', '.proto', '.in',
-             '.bat', '.pro', '.nx300m', '.cube', '.d4lut'}
+             '.bat', '.pro', '.nx300m', '.cube', '.d4lut', '.rs'}
 BINARY_ASSETS = {
     'mod/metol/assets/lut-reference.png',
     'mod/metol/assets/lut-reference-landscape.png',

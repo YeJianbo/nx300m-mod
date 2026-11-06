@@ -1,0 +1,50 @@
+"""Assemble the public first-install payload with original procedural LUTs."""
+from pathlib import Path
+import hashlib
+import json
+
+from installer_backend import verify_backend
+from nx300m_installer import safe_path
+
+ROOT = Path(__file__).resolve().parents[1]
+BASE = ROOT / 'outputs/releases/windows-updater-20261106'
+
+
+def build():
+    source = BASE / 'first-install'
+    manifest = json.loads((source/'manifest.json').read_text(encoding='utf-8'))
+    original = ROOT/'outputs/looks/original-release'
+    if not (original/'manifest.json').is_file():
+        raise ValueError('请先运行 build_original_looks.py')
+    files = {}
+    for name, rec in manifest['files'].items():
+        if name.startswith('nx300m-mod/looks/') or name in ('nx300m-mod/looks.txt','nx300m-mod/looks-cycle.txt'):
+            continue
+        data = safe_path(source/'payload',name).read_bytes()
+        if hashlib.sha256(data).hexdigest()!=rec['sha256']:
+            raise ValueError('Source differs: '+name)
+        files[name]=data
+    for folder in original.iterdir():
+        if not folder.is_dir(): continue
+        meta=json.loads((folder/'look.json').read_text(encoding='utf-8'))
+        if meta.get('source_kind')!='original-procedural' or meta.get('license')!='CC0-1.0':
+            raise ValueError('Unapproved look: '+folder.name)
+        for name in ('look.json','table.d4lut'):
+            files['nx300m-mod/looks/'+folder.name+'/'+name]=(folder/name).read_bytes()
+    files['nx300m-mod/looks.txt']=(original/'looks.txt').read_bytes()
+    files['nx300m-mod/looks-cycle.txt']=files['nx300m-mod/looks.txt']
+    backend=verify_backend(files.__getitem__)
+    destination=BASE/'public-first-install'
+    destination.mkdir(parents=True,exist_ok=True)
+    entries={}
+    for name,data in files.items():
+        target=safe_path(destination/'payload',name);target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+        entries[name]={'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+    result={'schema':1,'kind':'nx300m-first-install-local-candidate','distribution':'public-original-looks',
+            'files':entries,'backend':backend,'physical_first_install_verified':False}
+    (destination/'manifest.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+    print('PUBLIC_FIRST_INSTALL='+str(destination))
+    return destination
+
+
+if __name__=='__main__': build()
