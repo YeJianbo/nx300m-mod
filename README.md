@@ -2,7 +2,7 @@
 
 为三星 NX300M 增加机内 LUT、手机相册与遥控、拍摄参数扩展和 Quick Share 分享。相机端通过 NX300M 1.15 / MFW 的脚本入口加载，手机端基于 NXConnectForNX500 适配。
 
-**开始使用：**[中文使用指南](docs/USER_GUIDE.md) · [下载测试版](https://github.com/YeJianbo/nx300m-mod/releases) · [安装与回退](docs/INSTALL.md)。当前 Release 提供匹配现有后端的菜单升级包，完整首装及 Android APK 不在本次附件中。
+**开始使用：**[中文使用指南](docs/USER_GUIDE.md) · [下载测试版](https://github.com/YeJianbo/nx300m-mod/releases) · [安装与回退](docs/INSTALL.md)。当前 Release 提供 Windows 安装工具、原创 LUT 包，以及 [NXConnect 0.20.35 APK](https://github.com/YeJianbo/nx300m-mod/releases/download/v0.1.0-preview.3/NXConnect-NX300M-v0.20.35.apk)。
 
 **使用前请读：**本项目非三星官方项目，测试版可能出现拍摄中断、异常退出或文件损坏，请先备份并在重要拍摄前验证。NX300 可能兼容但尚未验证，不保证其他机型或固件版本适用。详见 [使用风险与版权说明](docs/RISKS_AND_RIGHTS.md)；第三方代码和素材继续遵守各自许可证。
 
@@ -22,7 +22,7 @@
 
 ### Android App
 
-当前源码版本 **0.20.33 / 81**。
+当前源码版本 **0.20.35 / 83**。
 
 - **界面重做**：采用 One UI 8.5 / 9 风格，统一折叠标题、浮动栏、底部弹框、详情排版、图标、明暗主题和页面过渡。
 - **连接**：增加 NX300M 服务识别、自动发现、手动地址、WLAN 连接、NFC 配对入口和断线状态更新。

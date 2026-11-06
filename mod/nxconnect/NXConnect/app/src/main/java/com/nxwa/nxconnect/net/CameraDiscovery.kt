@@ -64,7 +64,7 @@ object CameraDiscovery {
                 Result.Found(ip, info, daemonPort = daemonPort, cgiPort = cgiPort, network = network)
         }
         data class HttpOnly(val hint: String) : Probe()
-        object Dead : Probe()
+        data class Dead(val reason: String) : Probe()
     }
 
     private class Scan(
@@ -95,7 +95,7 @@ object CameraDiscovery {
                 when (val p = probe(ip, binder = binderFor(net))) {
                     is Probe.Daemon -> return@withContext p.found(ip, net)
                     is Probe.HttpOnly -> scan.httpOnly.add(Pair(ip, p))
-                    Probe.Dead -> Unit
+                    is Probe.Dead -> Unit
                 }
             }
             return@withContext scan.httpOnly.firstOrNull()?.let { (_, p) -> Result.CameraWithoutDaemon(ip, p.hint) }
@@ -133,7 +133,7 @@ object CameraDiscovery {
                             scan.tried++
                         }
 
-                        Probe.Dead -> {
+                        is Probe.Dead -> {
                             scan.tried++
                             Log.w(TAG, "广播里的 ${b.ip} 无法通过 HTTP 访问")
                         }
@@ -203,7 +203,7 @@ object CameraDiscovery {
                         when (p) {
                             is Probe.Daemon -> scan.found.add(Pair(ip, p))
                             is Probe.HttpOnly -> scan.httpOnly.add(Pair(ip, p))
-                            Probe.Dead -> Unit
+                            is Probe.Dead -> Unit
                         }
                     }
                 }
@@ -245,12 +245,13 @@ object CameraDiscovery {
         fallbackCandidatesForTest(localIpv4, gateway)
 
     /** 显式端口只验证该端口；未指定时优先 8781，并兼容旧服务 80。 */
-    suspend fun verify(ip: String, port: Int? = null, network: Network? = NetworkBinder.boundNetwork): Result {
+    suspend fun verify(ip: String, port: Int? = null, network: Network? = NetworkBinder.boundNetwork,
+                       onDiagnostic: (String) -> Unit = {}): Result {
         val target = ip.trim()
-        return when (val p = probe(target, port?.let { listOf(it) } ?: DAEMON_PORTS, binderFor(network))) {
+        return when (val p = probe(target, port?.let { listOf(it) } ?: DAEMON_PORTS, binderFor(network), onDiagnostic)) {
             is Probe.Daemon -> p.found(target, network)
             is Probe.HttpOnly -> Result.CameraWithoutDaemon(target, p.hint)
-            Probe.Dead -> Result.NotFound(1, "地址 $target${port?.let { ":$it" }.orEmpty()} 无响应")
+            is Probe.Dead -> Result.NotFound(1, "地址 $target${port?.let { ":$it" }.orEmpty()} 无响应：${p.reason}")
         }
     }
 
@@ -347,19 +348,35 @@ object CameraDiscovery {
         return NxNetworkFacts.KNOWN_IPS.filter { it !in tried }
     }
 
-    private suspend fun probe(ip: String, ports: List<Int> = DAEMON_PORTS, binder: HttpBinder = HttpBinder.None): Probe {
+    private suspend fun probe(ip: String, ports: List<Int> = DAEMON_PORTS, binder: HttpBinder = HttpBinder.None,
+                              onDiagnostic: (String) -> Unit = {}): Probe {
+        val reached = mutableSetOf<Int>()
+        val errors = mutableListOf<String>()
         // 先查所有候选端口的 API，避免原厂 80 的普通页面盖过独立服务 8781。
         for (port in ports) {
             currentCoroutineContext().ensureActive()
             val base = if (port == 80) "http://$ip" else "http://$ip:$port"
+            onDiagnostic("连接探测 $base/api/v1/camera/info")
             val info = try {
                 withTimeoutOrNull(2_500) {
                     val raw = NxHttp.getText("$base/api/v1/camera/info", 2_200, binder)
+                    reached += port
+                    onDiagnostic("端口 $port 已返回 HTTP，检查相机身份")
                     parseInfo(raw).takeIf { !it.model.isNullOrBlank() }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                val cause = e.cause ?: e
+                val detail = when (cause) {
+                    is java.net.SocketTimeoutException -> "连接或读取超时"
+                    is java.net.ConnectException -> "连接失败（${cause.message}）"
+                    is java.net.NoRouteToHostException -> "网络没有到相机的路由"
+                    is java.net.UnknownHostException -> "无法解析相机地址"
+                    else -> "${cause.javaClass.simpleName}: ${cause.message}"
+                }
+                errors += "$port $detail"
+                onDiagnostic("端口 $port：$detail")
                 null
             }
             if (info != null) {
@@ -367,7 +384,9 @@ object CameraDiscovery {
             }
         }
 
-        for (port in ports) {
+        // A failed socket to this same host/port cannot be diagnosed by opening
+        // it again at /. Only inspect the home page after an HTTP response.
+        for (port in ports.filter { it in reached }) {
             currentCoroutineContext().ensureActive()
             val base = if (port == 80) "http://$ip" else "http://$ip:$port"
             val plain = try {
@@ -386,7 +405,7 @@ object CameraDiscovery {
                 return Probe.HttpOnly(hint)
             }
         }
-        return Probe.Dead
+        return Probe.Dead(errors.joinToString("；").ifEmpty { "相机服务未返回可识别的信息" })
     }
 
     /** 新原生服务集成相册；旧 NX-WA 服务的 CGI 仍使用独立 8080。 */

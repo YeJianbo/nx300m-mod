@@ -66,25 +66,48 @@ object NetworkBinder {
     }
 
     /** 手动输入地址时，优先选择实际覆盖目标网段的 Wi-Fi/以太网。 */
-    fun networkForAddress(ctx: Context, address: String): Network? {
+    fun networkForAddress(ctx: Context, address: String): Network? =
+        networksForAddress(ctx, address).firstOrNull()
+
+    fun networksForAddress(ctx: Context, address: String): List<Network> {
         val octets = address.trim().split('.').map { it.toIntOrNull() }
         val target = if (octets.size == 4 && octets.all { it != null && it in 0..255 }) {
             InetAddress.getByAddress(octets.map { it!!.toByte() }.toByteArray())
         } else null
-        val cm = connectivity(ctx) ?: return null
+        val cm = connectivity(ctx) ?: return emptyList()
         val candidates = candidateNetworks(ctx).filter { network ->
             val caps = runCatching { cm.getNetworkCapabilities(network) }.getOrNull()
-            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
-                caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+            caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) &&
+                linkProperties(ctx, network)?.linkAddresses.orEmpty().any {
+                    it.address is Inet4Address && !it.address.isAnyLocalAddress &&
+                        !it.address.isLoopbackAddress && !it.address.isLinkLocalAddress
+                }
         }
         // A default route covers every IP, so it cannot identify the camera's LAN.
         // Keep the existing camera/no-internet ordering when no specific route matches.
-        return candidates.maxByOrNull { network ->
+        return candidates.sortedByDescending { network ->
             if (target == null) -1 else linkProperties(ctx, network)?.routes.orEmpty()
                 .map { it.destination }
                 .filter { it.address is Inet4Address && it.prefixLength > 0 && it.contains(target) }
                 .maxOfOrNull { it.prefixLength } ?: -1
         }
+    }
+
+    /** Only called for connection attempts/diagnostics, never polled. */
+    fun describe(ctx: Context, network: Network?): String {
+        if (network == null) return "系统路由（本机联调）"
+        val caps = runCatching { connectivity(ctx)?.getNetworkCapabilities(network) }.getOrNull()
+        val props = linkProperties(ctx, network)
+        val transport = when {
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true -> "VPN"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "WLAN"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "有线"
+            else -> "其他"
+        }
+        val local = props?.linkAddresses.orEmpty().filter { it.address is Inet4Address }.joinToString()
+        return "$transport network=$network interface=${props?.interfaceName} IPv4=$local gateway=${gatewayIpv4(ctx, network)}"
     }
 
     /** 路由列表通常先给出直连网段；其 gateway=0.0.0.0 并非相机地址。 */

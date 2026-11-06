@@ -15,6 +15,7 @@ import android.content.Context
 import android.net.Network
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.Proxy
 
 /**
  * Android 实现：把请求绑定到相机所在的网络。
@@ -27,7 +28,8 @@ class AndroidHttpBinder(private val network: Network?) : HttpBinder {
     constructor(ctx: Context, network: Network? = NetworkBinder.boundNetwork) : this(network)
 
     override fun openConnection(url: URL): HttpURLConnection =
-        (network?.openConnection(url) ?: url.openConnection()) as HttpURLConnection
+        // Camera LAN traffic must not inherit a system WLAN HTTP proxy.
+        (network?.openConnection(url, Proxy.NO_PROXY) ?: url.openConnection(Proxy.NO_PROXY)) as HttpURLConnection
 
     override fun bind(conn: HttpURLConnection) = Unit
 }

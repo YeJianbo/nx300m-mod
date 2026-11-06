@@ -23,10 +23,12 @@ import com.nxwa.nxconnect.net.CameraDiscovery
 import com.nxwa.nxconnect.net.NetworkBinder
 import com.nxwa.nxconnect.net.NfcWifiCredential
 import com.nxwa.nxconnect.net.identifyCameraService
+import com.nxwa.nxconnect.NxApp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
@@ -58,7 +60,8 @@ class CameraPairing(private val activity: AppCompatActivity,
     }
     private var systemSaveAttempt=0
     private var systemSavePending=false
-    private var systemSaveSsid: String?=null
+    private data class SavedJoin(val attempt:Int, val ssid:String, val password:String, val wpa3:Boolean)
+    private var systemSaveJoin:SavedJoin?=null
     /** SSID the user added via the system dialog; survives until the Activity dies. */
     var boundSsid: String?=null
         private set
@@ -70,6 +73,7 @@ class CameraPairing(private val activity: AppCompatActivity,
         timeout?.let { handler.removeCallbacks(it) };timeout=null
         receiver?.let { runCatching { activity.unregisterReceiver(it) } };receiver=null;scanning=false
         systemSavePending=false
+        systemSaveJoin=null
     }
     fun start() {
         if(scanning)return
@@ -119,17 +123,35 @@ class CameraPairing(private val activity: AppCompatActivity,
         val currentAttempt=attempt
         // The phone is already on this SSID (joined in system settings earlier):
         // identify directly instead of asking to save it again.
-        if (isCurrentConnection(ssid)) { startIdentification(ssid,currentAttempt); return }
+        if (currentNetworks(ssid).isNotEmpty()) { startIdentification(ssid,currentAttempt); return }
         if (Build.VERSION.SDK_INT >= 30 && joinViaSystemSave(ssid,password,wpa3,currentAttempt)) return
         joinViaSpecifier(ssid,password,wpa3,currentAttempt)
     }
 
-    private fun isCurrentConnection(ssid:String): Boolean {
-        val current=runCatching {
+    /** Match the selected SSID and a usable IPv4 before probing any service. */
+    private fun currentNetworks(ssid:String): List<Network> {
+        val ctx=activity.applicationContext
+        val wifiInfo=runCatching {
             (activity.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
-                .connectionInfo?.ssid?.removeSurrounding("\"")
+                .connectionInfo
         }.getOrNull()
-        return !current.isNullOrEmpty() && current!="<unknown ssid>" && current==ssid
+        val primarySsid=wifiInfo?.ssid?.removeSurrounding("\"")
+        val primaryIp=wifiInfo?.ipAddress ?: 0
+        val primaryAddress=(0..3).joinToString(".") { ((primaryIp ushr (it*8)) and 255).toString() }
+        val cm=NetworkBinder.connectivity(ctx)
+        return NetworkBinder.candidateNetworks(ctx).filter { net ->
+            val caps=runCatching { cm?.getNetworkCapabilities(net) }.getOrNull()
+            if(caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)!=true ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@filter false
+            val addresses=NetworkBinder.linkProperties(ctx,net)?.linkAddresses.orEmpty()
+                .map { it.address }.filterIsInstance<java.net.Inet4Address>()
+                .filter { !it.isAnyLocalAddress && !it.isLoopbackAddress && !it.isLinkLocalAddress }
+            if(addresses.isEmpty()) return@filter false
+            val actualSsid=if(Build.VERSION.SDK_INT>=29)
+                (caps.transportInfo as? android.net.wifi.WifiInfo)?.ssid?.removeSurrounding("\"") else null
+            (CameraWifi.isCurrent(net) && CameraWifi.ssid==ssid) || actualSsid==ssid ||
+                (primarySsid==ssid && primaryIp!=0 && addresses.any { it.hostAddress==primaryAddress })
+        }
     }
 
     /** Returns false when the system add-networks entry is unavailable, falling back to the specifier. */
@@ -144,18 +166,36 @@ class CameraPairing(private val activity: AppCompatActivity,
         val intent=Intent(android.provider.Settings.ACTION_WIFI_ADD_NETWORKS)
             .putParcelableArrayListExtra(android.provider.Settings.EXTRA_WIFI_NETWORK_LIST, arrayListOf(suggestion))
         systemSaveAttempt=currentAttempt
-        systemSaveSsid=ssid
+        systemSaveJoin=SavedJoin(currentAttempt,ssid,password,wpa3)
         systemSavePending=true
         status("请在系统弹窗允许添加并连接 $ssid")
         return try { systemSaveLauncher.launch(intent); true }
-        catch(e:Exception) { systemSavePending=false; false }
+        catch(e:Exception) { systemSavePending=false; systemSaveJoin=null; false }
     }
 
     private fun onSystemSaved(ok:Boolean) {
+        val pending=systemSaveJoin ?: return
+        systemSaveJoin=null
         systemSavePending=false
         if(systemSaveAttempt!=attempt||activity.isFinishing||activity.isDestroyed)return
         if(!ok) { failed();status("未添加相机网络，可重试或在系统 WLAN 设置中手动连接");return }
-        startIdentification(systemSaveSsid ?: "",attempt)
+        NxApp.log("相机 WLAN 已保存，等待实际关联与 IPv4")
+        status("相机 WLAN 已保存，正在连接 ${pending.ssid}…")
+        identification=activity.lifecycleScope.launch {
+            // Saving a WLAN does not ask Android to switch away from a network
+            // with internet. Allow an in-flight system switch to finish, then
+            // explicitly request the selected WLAN instead of probing the old one.
+            repeat(8) {
+                if(pending.attempt!=attempt||activity.isFinishing||activity.isDestroyed)return@launch
+                if(currentNetworks(pending.ssid).isNotEmpty()) {
+                    startIdentification(pending.ssid,pending.attempt)
+                    return@launch
+                }
+                delay(250)
+            }
+            if(pending.attempt!=attempt||activity.isFinishing||activity.isDestroyed)return@launch
+            joinViaSpecifier(pending.ssid,pending.password,pending.wpa3,pending.attempt)
+        }
     }
 
     /**
@@ -169,10 +209,10 @@ class CameraPairing(private val activity: AppCompatActivity,
             val match=try { withContext(Dispatchers.IO) {
                 identifyCameraService(
                     isCurrent = { currentAttempt == attempt && !activity.isFinishing && !activity.isDestroyed },
-                    candidates = { savedCandidates() },
+                    candidates = { savedCandidates(ssid) },
                     probe = { ip ->
                         currentCoroutineContext().ensureActive()
-                        probeAcrossNetworks(ip)
+                        probeAcrossNetworks(ip,ssid)
                     },
                 )
             } } catch (e: CancellationException) { throw e }
@@ -196,14 +236,11 @@ class CameraPairing(private val activity: AppCompatActivity,
         }
     }
 
-    /** Gateway, subnet and remembered addresses across every current WLAN/ethernet network. */
-    private fun savedCandidates(): List<String> {
+    /** Only inspect the selected WLAN, never the home router during a handover. */
+    private fun savedCandidates(ssid:String): List<String> {
         val ctx=activity.applicationContext
-        val cm=NetworkBinder.connectivity(ctx)
-        val networks=NetworkBinder.candidateNetworks(ctx).filter { net ->
-            runCatching { cm?.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
-                .getOrDefault(false)
-        }
+        val networks=currentNetworks(ssid)
+        if(networks.isEmpty()) return emptyList()
         val gateways=LinkedHashSet<String>()
         val locals=LinkedHashSet<String>()
         for(net in networks) {
@@ -221,28 +258,23 @@ class CameraPairing(private val activity: AppCompatActivity,
     }
 
     /** Verify one address on the network whose routes cover it first, then WLAN/ethernet order. */
-    private suspend fun probeAcrossNetworks(ip:String): CameraDiscovery.Result.Found? {
-        val ctx=activity.applicationContext
-        val ordered=buildList {
-            NetworkBinder.networkForAddress(ctx, ip)?.let(::add)
-            addAll(NetworkBinder.candidateNetworks(ctx))
-        }.distinct()
-        for(net in ordered) {
+    private suspend fun probeAcrossNetworks(ip:String,ssid:String): CameraDiscovery.Result.Found? {
+        for(net in currentNetworks(ssid)) {
             currentCoroutineContext().ensureActive()
-            val caps=runCatching { NetworkBinder.connectivity(ctx)?.getNetworkCapabilities(net) }.getOrNull()
-            if(caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true &&
-                caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) != true) continue
             val found=CameraDiscovery.verify(ip, network=net) as? CameraDiscovery.Result.Found
-            if(found!=null) return found
+            if(found!=null && net in currentNetworks(ssid)) return found
         }
         return null
     }
 
     private fun joinViaSpecifier(ssid:String,password:String,wpa3:Boolean,currentAttempt:Int) {
+        NxApp.log("请求系统连接相机 WLAN（等待批准和 IPv4）")
         status("请在系统弹窗允许连接 $ssid")
         try { CameraWifi.join(activity.applicationContext,ssid,password,wpa3,wifiOwner) result@{ network,error->
             if(currentAttempt!=attempt||activity.isFinishing||activity.isDestroyed)return@result
             if(network==null) { failed();status(error ?: "连接失败");return@result }
+            boundSsid=ssid
+            NxApp.log("相机 WLAN 就绪：${NetworkBinder.describe(activity,network)}")
             status("已加入 $ssid，正在识别相机…")
             identification=activity.lifecycleScope.launch {
                 val match=try { withContext(Dispatchers.IO) {

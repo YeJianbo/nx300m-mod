@@ -13,6 +13,7 @@ package com.nxwa.nxconnect.net
 
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.Proxy
 
 /**
  * 把连接绑定到某个网络。
@@ -27,7 +28,7 @@ interface HttpBinder {
 
     /** 在建立连接时选择网络；旧实现仍可通过 bind 配置连接。 */
     fun openConnection(url: URL): HttpURLConnection =
-        (url.openConnection() as HttpURLConnection).also { bind(it) }
+        (url.openConnection(Proxy.NO_PROXY) as HttpURLConnection).also { bind(it) }
 
     /** 测试与桌面环境的空实现 */
     object None : HttpBinder {

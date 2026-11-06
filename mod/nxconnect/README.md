@@ -1,6 +1,8 @@
 # NXConnect NX300M 适配
 
-基于 [Katsiy/NXConnectForNX500](https://github.com/Katsiy/NXConnectForNX500) 改造，当前版本 **0.20.31 / 79**。
+基于 [Katsiy/NXConnectForNX500](https://github.com/Katsiy/NXConnectForNX500) 改造，当前版本 **0.20.35 / 83**。
+
+[下载 APK](https://github.com/YeJianbo/nx300m-mod/releases/download/v0.1.0-preview.3/NXConnect-NX300M-v0.20.35.apk)。本版在保存相机 WLAN 后确认实际关联，未连接时发起系统连接请求，取得 IPv4 后才识别服务。构建、签名与 9 项软件服务识别检查通过；真实手机关联尚待验证。连接步骤见 [Android 说明](../../docs/NXCONNECT.md)。
 
 ## 相比上游的主要改动
 

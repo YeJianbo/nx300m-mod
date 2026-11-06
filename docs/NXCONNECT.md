@@ -4,7 +4,9 @@ NXConnect 连接 NX300M 的服务，提供相册、遥控、相机设置和 LUT 
 
 ## 连接
 
-手机连接相机 Wi-Fi 后，在 App 中搜索或手动输入相机地址。0.20.34 在 Android 11+ 使用系统添加网络弹窗，Android 10 保留应用请求网络的入口，并在取得 IPv4 后识别服务；HTTP 请求使用相机对应的 Network。系统批准、真实 WLAN 关联及相机服务可达需分别确认。
+在 App 中选择相机 Wi-Fi，按系统提示确认后自动识别服务，也可手动输入相机地址。0.20.35 修复 Android 11+ 添加网络成功后没有确保实际连接的问题：先检查所选 SSID 和 IPv4，尚未关联时主动发起系统连接请求；Android 10 沿用系统请求网络入口。HTTP 请求使用相机对应的 Network，绕过系统 HTTP 代理。系统保存、真实 WLAN 关联及相机服务可达分别判断。
+
+[下载 NXConnect 0.20.35 APK](https://github.com/YeJianbo/nx300m-mod/releases/download/v0.1.0-preview.3/NXConnect-NX300M-v0.20.35.apk)。可覆盖安装旧版。release 构建、签名及 9 项软件服务识别检查通过，真实手机关联仍待验证。相机需先进入原厂遥控取景器。
 
 用户报告的“直接连接失败、相机相关界面卡住且无法关机”仍未关闭。当前相机 MOD 的手机页只显示网络信息，没有开启独立热点的功能；普通拍摄界面下持续联网传图尚未接通。现有链路仍依赖原厂 Remote Viewfinder。实现、历史测试和缺失证据见 [连接核查](NXCONNECT_CONNECTION_STATUS_2026-11-06.md)。
 
