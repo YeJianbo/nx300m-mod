@@ -23,6 +23,7 @@ def main():
         "nx300m-mod/licenses/Nuklear-MIT.txt": ROOT / "work/reference/metol/test_server/nxui/vendor/LICENSE",
         "nx300m-mod/mfw-panel.sh": ROOT / "mod/deployment/mfw/panel.sh",
         "nx300m-mod/mfw-panel-actions.sh": ROOT / "mod/deployment/mfw/panel-actions.sh",
+        "nx300m-mod/camera_control.sh": ROOT / "mod/deployment/camera_control.sh",
         "nx300m-mod/gui_mfw.NX300M": ROOT / "mod/deployment/mfw/gui_mfw.NX300M",
         "nx300m-mod/gui_preview.NX300M": ROOT / "mod/deployment/mfw/gui_preview.NX300M",
         "nx300m-mod/fonts/fonts.conf.in": ROOT / "mod/deployment/mfw/fonts.conf.in",

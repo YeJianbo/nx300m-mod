@@ -3,6 +3,8 @@ struct nx_ui_lens {char id[64],label[128];int min,max;};
 static struct nx_ui_lens feature_lenses[64];
 static int feature_lens_count,feature_lens_selected=-1,feature_focal;
 static int feature_fw_loaded,feature_iso_loaded,feature_preview_enabled,feature_mode_locked=-1;
+static int feature_animation_mode=-1,feature_iso_lock=-1,feature_current_mode=-1;
+static int feature_auto_iso_max;
 static char feature_values[NXUI_MAX_ITEMS][128];
 static unsigned char feature_disabled[NXUI_MAX_ITEMS];
 static int feature_ready(const char *prefix,const char *module) {
@@ -20,12 +22,31 @@ static void feature_snapshot(void) {
     char path[NXUI_PATH],line[256];
     feature_fw_loaded=feature_ready("nx300m-firmware-mod","/camera_firmware_mod.so");
     feature_iso_loaded=feature_ready("nx300m-exposure","/exposure_controls.so");
-    feature_mode_locked=-1;
+    feature_mode_locked=feature_animation_mode=feature_iso_lock=feature_current_mode=-1;
     FILE *in=fopen("/var/run/nx300m-firmware-mod-response","r");
     if(in){long values[26];int i=0;while(i<26&&fscanf(in,"%ld",&values[i])==1)i++;fclose(in);
-        if(i==26&&values[1]==0&&values[2]==feature_fw_loaded)feature_mode_locked=(int)values[13];}
+        if(i==26&&values[1]==0&&values[2]==feature_fw_loaded){
+            /* Response layout per FIRMWARE_ENTRY_CONTROLS.md: values[3]=current
+             * mode, [13]=dial lock, [14]=animation, [16]=ISO lock. -1 elsewhere
+             * means the bridge never answered, never a fabricated default. */
+            feature_mode_locked=(int)values[13];
+            feature_animation_mode=(int)values[14];
+            feature_iso_lock=(int)values[16];
+            feature_current_mode=(int)values[3];
+        }}
+    fprintf(stderr,"FW_STATE loaded=%d current=%d locked=%d animation=%d iso=%d\n",
+        feature_fw_loaded,feature_current_mode,feature_mode_locked,feature_animation_mode,feature_iso_lock);
     in=fopen("/var/run/nx300m-preview-backend","r");feature_preview_enabled=0;
     if(in){if(fgets(line,sizeof line,in))feature_preview_enabled=!strncmp(line,"smartfilter",11);fclose(in);}
+    /* Persisted Auto ISO ceiling preference (exposure bridge domain). Zero
+     * means no saved extension; the live ceiling is only shown by the action's
+     * real read-back, never fabricated here. */
+    feature_auto_iso_max=0;
+    snprintf(path,sizeof path,"%s/.state/fw-auto-iso-max",nx_ui_data_root());
+    in=fopen(path,"r");
+    if(in){int ceiling=0;if(fscanf(in,"%d",&ceiling)==1&&
+        (ceiling==3200||ceiling==6400||ceiling==12800||ceiling==25600))feature_auto_iso_max=ceiling;
+        fclose(in);}
     feature_lens_count=0;feature_lens_selected=-1;feature_focal=0;
     snprintf(path,sizeof path,"%s/lenses.txt",nx_ui_data_root());in=fopen(path,"r");
     if(in){while(feature_lens_count<64&&fgets(line,sizeof line,in)){
@@ -38,6 +59,11 @@ static void feature_snapshot(void) {
         if(fscanf(in,"%63s %d",id,&focal)==2)for(int i=0;i<feature_lens_count;i++)if(!strcmp(id,feature_lenses[i].id)&&focal>=feature_lenses[i].min&&focal<=feature_lenses[i].max){feature_lens_selected=i;feature_focal=focal;break;}
         fclose(in);
     }
+}
+static const char *feature_mode_name(int mode) {
+    switch(mode){case 1:return "SMART";case 2:return "P";case 3:return "A";case 4:return "S";
+    case 5:return "M";case 6:return "BULB";case 7:return "iFn";case 8:return "SMARTPRO";
+    case 30:return "Wi-Fi";default:return mode<0?"未读回":"未知";}
 }
 static void feature_add(const char *label,const char *action,const char *value,int enabled) {
     if(item_count>=NXUI_MAX_ITEMS)return;
@@ -59,13 +85,26 @@ static void feature_page(int page_id) {
     }else if(page_id==4){
         feature_add("A 挡自动快门范围","unavailable","尚未接入",0);
         feature_add("P 挡自动快门范围","unavailable","尚未接入",0);
-        feature_add("Auto ISO 6400","unavailable",feature_iso_loaded?"控制入口待接入":"模块未加载",0);
-        feature_add("Auto ISO 12800","unavailable",feature_iso_loaded?"控制入口待接入":"模块未加载",0);
-        feature_add("Auto ISO 25600","unavailable","尚未实机验证",0);
+        feature_add("Auto ISO 6400 上限锁定","fw-auto-iso",
+            feature_iso_lock==6400?"开":feature_iso_lock==0?"关":feature_fw_loaded?"未读回":"模块未加载",feature_fw_loaded);
+        /* Cycle the extension ceiling over verified stock enums only; the
+         * shown value is the saved preference, and each action's FW_MOD line
+         * carries the real bridge read-back. */
+        {const char *row_action,*row_value;
+         if(feature_auto_iso_max==12800){row_action="fw-auto-iso-max-25600";row_value="已存 12800 · 点按升 25600";}
+         else if(feature_auto_iso_max==25600){row_action="fw-auto-iso-max-3200";row_value="已存 25600 · 点按恢复 3200";}
+         else {row_action="fw-auto-iso-max-12800";row_value=feature_auto_iso_max==3200?"已存 3200 · 点按升 12800":feature_auto_iso_max==6400?"已存 6400 · 点按升 12800":feature_iso_loaded?"未读回 · 点按设 12800":"模块未加载";}
+         feature_add("Auto ISO 扩展上限",row_action,row_value,feature_iso_loaded);}
         feature_add("曝光模块状态","status","查看实际加载状态",1);
     }else if(page_id==5){
-        feature_add("顶部模式拨盘锁定","unavailable",feature_fw_loaded?"机内控制入口待接入":"模块未加载",0);
-        feature_add("模式切换动画","unavailable",feature_fw_loaded?"机内控制入口待接入":"模块未加载",0);
+        feature_add("顶部模式拨盘锁定","fw-mode-lock",
+            feature_mode_locked==1?"开":feature_mode_locked==0?"关":"未读回",feature_fw_loaded);
+        feature_add("模式切换动画","fw-animation",
+            feature_animation_mode==0?"原厂":feature_animation_mode==1?"瞬切":feature_animation_mode==2?"隐藏":"未读回",feature_fw_loaded);
+        feature_add("Auto ISO 6400 上限锁定","fw-auto-iso",
+            feature_iso_lock==6400?"开":feature_iso_lock==0?"关":"未读回",feature_fw_loaded);
+        {char mode_value[128];snprintf(mode_value,sizeof mode_value,"当前 %s · 点按切 P/A/S/M",feature_mode_name(feature_current_mode));
+         feature_add("软件切档","fw-mode",mode_value,feature_fw_loaded&&feature_current_mode>=0);}
         char flag[NXUI_PATH];snprintf(flag,sizeof flag,"%s/DISABLED",nx_ui_data_root());
         feature_add("MOD 开机自动启动",access(flag,F_OK)?"disable-autostart":"enable-autostart",access(flag,F_OK)?"开":"关",1);
         feature_add("模块状态","modules","查看",1);feature_add("调试与日志","debug","进入",1);
@@ -92,6 +131,45 @@ static int feature_action(const char *action) {
     if(!strcmp(action,"connection")){feature_page(7);start_mfw_action("network-info");return 1;}
     if(!strcmp(action,"modules")){feature_page(8);start_mfw_action("status");return 1;}
     if(!strcmp(action,"unavailable")){message("当前不可用");return 1;}
+    /* Firmware control toggles: the concrete request value comes from the
+     * read-back bridge state, never from the label. */
+    if(!strncmp(action,"fw-",3)) {
+        if(mfw_readonly){message("截图模式不执行操作");return 1;}
+        /* The Auto ISO ceiling lives in the exposure module, not the firmware
+         * control bridge; check the module that actually owns the action. */
+        if(!strncmp(action,"fw-auto-iso-max-",16)) {
+            if(!feature_iso_loaded){message("曝光控制模块未加载");return 1;}
+        }
+        else if(!feature_fw_loaded){message("固件控制模块未加载");return 1;}
+        int retry_slot=mfw_fw_slot(action);
+        if(retry_slot>=0&&mfw_fw_retry[retry_slot][0]) {
+            start_mfw_action(mfw_fw_retry[retry_slot]);return 1;
+        }
+        if(!strcmp(action,"fw-mode-lock"))
+            start_mfw_action(feature_mode_locked==1?"fw-mode-lock-off":"fw-mode-lock-on");
+        else if(!strcmp(action,"fw-animation")) {
+            int next=feature_animation_mode<0?1:(feature_animation_mode+1)%3;
+            char request[32];snprintf(request,sizeof request,"fw-animation-%d",next);
+            start_mfw_action(request);
+        }
+        else if(!strcmp(action,"fw-auto-iso"))
+            start_mfw_action(feature_iso_lock==6400?"fw-auto-iso-0":"fw-auto-iso-6400");
+        else if(!strcmp(action,"fw-auto-iso-max-12800")||!strcmp(action,"fw-auto-iso-max-25600")||
+                !strcmp(action,"fw-auto-iso-max-3200"))
+            start_mfw_action(action);
+        else if(!strcmp(action,"fw-mode")) {
+            if(feature_current_mode<0){message("模式未读回");return 1;}
+            /* Cycle the P/A/S/M photo modes only; SMART/BULB/iFn/Wi-Fi keep
+             * their physical dial positions. */
+            static const char *names[]={"P","A","S","M"};
+            static const int values[]={2,3,4,5};
+            int next=0;
+            for(int i=0;i<4;i++)if(feature_current_mode==values[i])next=(i+1)%4;
+            char request[32];snprintf(request,sizeof request,"fw-mode-%s",names[next]);
+            start_mfw_action(request);
+        }
+        return 1;
+    }
     if(!strncmp(action,"lens-",5)&&strcmp(action,"lens-focal")){
         char *end;long index=strtol(action+5,&end,10);int clear=!strcmp(action,"lens-clear");
         if(!clear&&(*end||index<0||index>=feature_lens_count))return 0;

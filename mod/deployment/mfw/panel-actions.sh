@@ -5,6 +5,7 @@ set -f
 [ "$#" -eq 1 ] || exit 64
 case $1 in
     status|network-info|disable-autostart|enable-autostart|preview-toggle|preview-enable|preview-s2-enable|preview-probe-once|preview-identity|preview-monochrome|preview-monochrome-timing|preview-sync|preview-stop|preview-restore|preview-status|preview-diag-export) action=$1 ;;
+    fw-*) action=$1 ;;
     *) exit 64 ;;
 esac
 . "${NX300M_MOD_ROOT:-/mnt/mmc/nx300m-mod}/common.sh"
@@ -40,6 +41,107 @@ if [ "$action" = network-info ]; then
     printf 'NXConnect 点“查找相机”；NFC 需手机读取到兼容标签。\n'
     exit 0
 fi
+# Firmware control requests reuse the verified camera_control.sh bridge client.
+# They touch neither media nor preview leases; only the small preference record
+# reaches the card, for firmware-mod-restore.sh to re-apply at boot.
+case $action in
+    fw-*)
+        control=${NX300M_MOD_ROOT:-$(dirname "$0")}/camera_control.sh
+        [ -f "$control" ] && [ ! -L "$control" ] || { printf 'camera_control.sh 不在安装目录\n' >&2; exit 69; }
+        case $action in
+            fw-auto-iso-max-12800|fw-auto-iso-max-25600|fw-auto-iso-max-3200)
+                # Distinct bridge: the exposure module (not firmware-mod) owns
+                # the Auto ISO ceiling. 0x003b000e/10/11 are verified stock
+                # enums (auto-iso-policy-probe); 3200 restores the stock
+                # ceiling (software "off" for the extension). The readback
+                # must confirm the exact raw value.
+                case $action in
+                    fw-auto-iso-max-12800) ceiling_value=12800; ceiling_raw=003b0010; text='Auto ISO 上限已设为 12800' ;;
+                    fw-auto-iso-max-25600) ceiling_value=25600; ceiling_raw=003b0011; text='Auto ISO 上限已设为 25600' ;;
+                    fw-auto-iso-max-3200)  ceiling_value=3200;  ceiling_raw=003b000e; text='Auto ISO 上限已恢复原厂 3200' ;;
+                esac
+                line=$(/bin/sh "$control" auto-iso "$ceiling_value") || exit 1
+                set -- $line
+                case $# in 6|12|14|15) ;; *) printf '曝光桥响应格式异常\n' >&2; exit 70 ;; esac
+                [ "$4" = "$ceiling_raw" ] || { printf 'Auto ISO 读回不一致：%s\n' "$4" >&2; exit 70; }
+                printf 'FW_MOD %s · 原厂读回 %s\n' "$text" "$4"
+                data=${NX300M_MOD_SOURCE_ROOT:-${NX300M_MOD_ROOT:-}}
+                case $data in
+                    /*) if mkdir -p "$data/.state" 2>/dev/null &&
+                           [ -d "$data/.state" ] && [ ! -L "$data/.state" ]; then
+                            target="$data/.state/fw-auto-iso-max"
+                            if [ ! -L "$target" ] && { [ ! -e "$target" ] || [ -f "$target" ]; }; then
+                                tmp="$data/.state/fw-auto-iso-max.tmp.$$"
+                                if printf '%s\n' "$ceiling_value" > "$tmp" 2>/dev/null &&
+                                   mv "$tmp" "$target" 2>/dev/null &&
+                                   [ -f "$target" ] && [ ! -L "$target" ]; then
+                                    exit 0
+                                fi
+                                rm -f "$tmp" 2>/dev/null || :
+                            fi
+                        fi ;;
+                esac
+                printf 'FW_MOD PERSIST-WARNING: %s · 原厂读回 %s（已应用、未保存）\n' "$text" "$4"
+                exit 75 ;;
+            fw-mode-lock-on)  op=mode-lock; value=1;    text='拨盘锁定已开启' ;;
+            fw-mode-lock-off) op=mode-lock; value=0;    text='拨盘锁定已关闭' ;;
+            fw-animation-0)   op=animation; value=0;    text='动画恢复原厂' ;;
+            fw-animation-1)   op=animation; value=1;    text='动画已设为瞬切' ;;
+            fw-animation-2)   op=animation; value=2;    text='动画已设为隐藏拨盘' ;;
+            fw-auto-iso-0)    op=iso-lock;  value=0;    text='Auto ISO 上限锁已解除' ;;
+            fw-auto-iso-6400) op=iso-lock;  value=6400; text='Auto ISO 上限已锁定 6400' ;;
+            fw-mode-P) op=mode; value=P; text='已切到 P 挡' ;;
+            fw-mode-A) op=mode; value=A; text='已切到 A 挡' ;;
+            fw-mode-S) op=mode; value=S; text='已切到 S 挡' ;;
+            fw-mode-M) op=mode; value=M; text='已切到 M 挡' ;;
+            *) exit 64 ;;
+        esac
+        pref=
+        case $op in mode-lock) pref=fw-mode-lock ;; animation) pref=fw-animation ;; iso-lock) pref=fw-auto-iso-lock ;; esac
+        line=$(/bin/sh "$control" "$op" "$value") || exit 1
+        set -- $line
+        [ "$#" -eq 26 ] || { printf '固件桥响应格式异常\n' >&2; exit 70; }
+        mode_name=
+        case $4 in
+            1) mode_name=SMART ;; 2) mode_name=P ;; 3) mode_name=A ;; 4) mode_name=S ;;
+            5) mode_name=M ;; 6) mode_name=BULB ;; 7) mode_name=iFn ;; 8) mode_name=SMARTPRO ;;
+            30) mode_name=Wi-Fi ;; *) mode_name="模式$4" ;;
+        esac
+        if [ -n "$pref" ]; then
+            data=${NX300M_MOD_SOURCE_ROOT:-${NX300M_MOD_ROOT:-}}
+            persist_ok=0
+            case $data in
+                /*)
+                    if mkdir -p "$data/.state" 2>/dev/null &&
+                       [ -d "$data/.state" ] && [ ! -L "$data/.state" ]; then
+                        target="$data/.state/$pref"
+                        # H4+dangling: refuse ANY symlink first — `-e` is false
+                        # for a dangling link, so the link test must come
+                        # before the existence test. Then allow only an
+                        # absent or plain regular-file target. Checked rename
+                        # only: a concurrent swap between check and mv is
+                        # outside this boundary.
+                        if [ ! -L "$target" ] && { [ ! -e "$target" ] || [ -f "$target" ]; }; then
+                            tmp="$data/.state/$pref.tmp.$$"
+                            if printf '%s\n' "$value" > "$tmp" 2>/dev/null &&
+                               mv "$tmp" "$target" 2>/dev/null &&
+                               [ -f "$target" ] && [ ! -L "$target" ]; then
+                                persist_ok=1
+                            else
+                                rm -f "$tmp" 2>/dev/null || :
+                            fi
+                        fi
+                    fi
+                    ;;
+            esac
+            if [ "$persist_ok" -ne 1 ]; then
+                printf 'FW_MOD PERSIST-WARNING: %s · 原厂读回 %s（已应用、未保存）\n' "$text" "$mode_name"
+                exit 75
+            fi
+        fi
+        printf 'FW_MOD %s · 原厂读回 %s\n' "$text" "$mode_name"
+        exit 0 ;;
+esac
 # The probe UI must not hold a preview/media lease. Only its detached RAM job
 # obtains them after READY/ACK; no wait for apply or export belongs to the UI.
 continuous=0
@@ -62,6 +164,14 @@ case $action in
         script=$ROOT/smartfilter-preview.sh
         [ -r "$script" ] && [ ! -L "$script" ] || { printf 'RAM preview wrapper unavailable\n' >&2; exit 1; }
         exec /bin/sh "$script" probe-once ;;
+esac
+# Serialize explicit preview changes with the finite boot restore. Keep the
+# descriptor in this parent only: loader/engine descendants must not inherit it.
+case $action in
+    preview-toggle|preview-s2-enable|preview-stop|preview-restore|preview-sync)
+        exec 5>"$STATE/lut-boot.lock" || fail 'cannot open boot restore lock'
+        flock -n 5 || fail '预览正在开机恢复，请稍候再操作'
+        ;;
 esac
 # Coordinate even read-only source status with the remote's media pause. The
 # lock is in RAM for the staged runtime, never on the card being handed off.
@@ -156,7 +266,7 @@ case $action in
             '
             exit 0
         fi
-        /bin/sh "$script" "$operation"
+        /bin/sh "$script" "$operation" 5>&-
         case $operation in
             enable-s2-stock) printf 'S2 原样已请求；保持原厂滤镜关闭。单位表处理仅允许独立单帧探针。\n' ;;
             restore) printf '预览已关闭。S2 为软停，完全退出需正常关机重启。\n' ;;

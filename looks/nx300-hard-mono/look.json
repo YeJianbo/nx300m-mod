@@ -1,6 +1,6 @@
 {
   "id": "nx300-hard-mono",
-  "label": "Hard Mono",
+  "label": "硬调黑白",
   "source_kind": "cube",
   "source_path": ".\\scratch\\hard-mono.cube",
   "input_space": "unspecified",

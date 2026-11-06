@@ -48,7 +48,44 @@ static int service_control(const char *name,const char *operation,int optional) 
         execl("/bin/sh","sh",script,operation,(char *)0);_exit(127);
     }
     int status=0;pid_t done=-1;
-    if(child>0) do {done=waitpid(child,&status,0);} while(done<0&&errno==EINTR);
+    if(child>0) {
+        /* Bound the engine-side wait so a slow chain cannot hang the panel.
+         * Recovery state machine: idle -> requested(fork) -> running(within
+         * the outer budget below) -> draining/recovering(past this budget:
+         * the inner launcher/loader own their own 30s+ budgets, recovery
+         * workers and the uncertainty guard) -> confirmed/failed(reaped
+         * below) or uncertain(deadline hit). Reaching the deadline NEVER
+         * kills the chain: killing only the shell would orphan the loader's
+         * recovery worker before the launcher can publish its guard, and the
+         * outcome must be reported as uncertain, not failed or recovered. */
+        unsigned long long budget=20000;
+        { const char *override=getenv("NX_LUT_CONTROL_BUDGET_MS");
+          if(override&&*override){long v=atol(override);if(v>=100)budget=(unsigned long long)v;} }
+        unsigned long long deadline=control_ms()+budget;
+        while(done<0) {
+            done=waitpid(child,&status,WNOHANG);
+            if(done==child)break;
+            if(done<0&&errno!=EINTR)break;
+            if(done==0) {
+                done=-1;
+                if(control_ms()>=deadline)break;
+                usleep(20000);
+            }
+        }
+        if(done!=child) {
+            /* Abandon, do not signal: the orphaned chain finishes under its
+             * own owner (launcher publishes the uncertainty guard on ITS 30s
+             * budget; scripts refuse re-entry while the guard exists). The
+             * engine lock is not inherited past exec, so it releases with
+             * this process. Residual: an orphan that hangs forever outside
+             * the preview chain still needs a future janitor. */
+            fprintf(stderr,"LUT_CONTROL script=%s operation=%s phase=timeout-uncertain child=%ld\n",
+                    name,operation,(long)child);
+            fprintf(stderr,"CONTROL-UNCERTAIN script=%s operation=%s; chain left running for its recovery owner\n",
+                    name,operation);
+            return 4;
+        }
+    }
     int result=child>0&&done==child&&WIFEXITED(status)?WEXITSTATUS(status):4;
     fprintf(stderr,"LUT_CONTROL script=%s operation=%s phase=end rc=%d elapsed_ms=%llu\n",name,operation,result,control_ms()-started);
     return result;
@@ -238,8 +275,11 @@ static int action(int argc,char **argv) {
         result=nx_tune_cache(argv[2],&tune,strength,path);if(result)return result;
         result=stage(path,strength);
         /* A failed preview sync still leaves the Still selection staged. */
-        if((!result||result==6)&&!nx_tune_save(argv[2],&tune,strength))
-            fputs("PERSIST-WARNING per-look tuning was not saved\n",stderr);
+        if(!result||result==6) {
+            int saved=nx_tune_save(argv[2],&tune,strength);
+            if(!saved)fputs("PERSIST-WARNING per-look tuning was not saved\n",stderr);
+            else if(saved<0)fputs("PERSIST-UNCONFIRMED per-look tuning written but directory sync failed\n",stderr);
+        }
         return result;
     }
     return 2;

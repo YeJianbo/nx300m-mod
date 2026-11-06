@@ -23,7 +23,7 @@ from elftools.elf.elffile import ELFFile
 PROJECT = Path(__file__).resolve().parents[1]
 OUTPUT = PROJECT / 'outputs/deployment/sd-bundle'
 SCRIPTS = ('common.sh', 'start.sh', 'stop.sh', 'service.sh', 'panel.sh', 'quickshare-panel.sh',
-           'ram-start.sh', 'mfw-ram-stage.sh')
+           'ram-start.sh', 'mfw-ram-stage.sh', 'firmware-mod-restore.sh')
 RAM_SCRIPTS = {'ram-start.sh': 'mfw/autoexec-services.sh', 'mfw-ram-stage.sh': 'mfw/ram-stage.sh'}
 SWITCH_SCRIPTS = (
     'toggle_dial_lock.sh', 'off_toggle_dial_lock.sh',

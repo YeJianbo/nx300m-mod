@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -445,8 +446,41 @@ static inline int nx_lut_sync_preview(void) {
         execve("/bin/sh",args,environ);_exit(127);
     }
     int status=0;pid_t done=-1;
-    if (child>0) do {done=waitpid(child,&status,0);} while (done<0&&errno==EINTR);
+    if (child>0) {
+        /* Bound the engine-side wait only. The inner chain owns its own
+         * control budget: smartfilter-probe-launcher --run 30 publishes the
+         * uncertainty guard without killing, the loader refuses to terminate
+         * a live recovery tracer, and the preview scripts refuse re-entry
+         * while the guard exists. Reaching the outer deadline therefore
+         * abandons the chain to that owner instead of killing the shell:
+         * killing here would orphan the recovery worker before the launcher
+         * can publish its guard. Recovery state machine: idle -> requested
+         * -> running -> draining/recovering -> confirmed/failed/uncertain;
+         * "uncertain" is never reported as failed or recovered. */
+        unsigned long long budget=15000;
+        { const char *override=getenv("NX_LUT_SYNC_BUDGET_MS");
+          if(override&&*override){long v=atol(override);if(v>=100)budget=(unsigned long long)v;} }
+        unsigned long long deadline=nx_lut_control_ms()+budget;
+        while(done<0) {
+            done=waitpid(child,&status,WNOHANG);
+            if(done==child)break;
+            if(done<0&&errno!=EINTR)break;
+            if(done==0) {
+                done=-1;
+                if(nx_lut_control_ms()>=deadline)break;
+                usleep(20000);
+            }
+        }
+        if(done!=child) {
+            fputs("PREVIEW-UNCERTAIN outer deadline reached; SmartFilter chain left running for its recovery owner\n",stderr);
+            if(!access("/tmp/nx300m-smartfilter-preview.uncertain",F_OK))
+                fputs("PREVIEW-UNCERTAIN uncertainty guard already published by the launcher\n",stderr);
+            return 6;
+        }
+    }
     if (child<0 || done!=child || !WIFEXITED(status) || WEXITSTATUS(status)) {
+        if(!access("/tmp/nx300m-smartfilter-preview.uncertain",F_OK))
+            fputs("PREVIEW-UNCERTAIN script failed and the launcher uncertainty guard is present; do not re-arm before it is resolved\n",stderr);
         fputs("PREVIEW-WARNING SmartFilter sync failed; still selection retained\n",stderr);return 6;
     }
     return 0;
@@ -522,7 +556,12 @@ static inline int nx_lut_restore_selection(void) {
     return 5;
 }
 static inline int nx_lut_lock(int nonblocking,int exclusive) {
-    int fd=open("/var/run/nx300m-lut-engine.lock",O_RDONLY|O_CREAT,0600);if (fd<0) return -1;
+    /* CLOEXEC: control children must not inherit the engine lock across
+     * exec. service_control's child closes inherited fds itself; the sync
+     * child execs directly, so without CLOEXEC an abandoned chain would
+     * keep the flock after this engine exits. Ownership stays with the
+     * engine process only. */
+    int fd=open("/var/run/nx300m-lut-engine.lock",O_RDONLY|O_CREAT|O_CLOEXEC,0600);if (fd<0) return -1;
     if (flock(fd,(exclusive?LOCK_EX:LOCK_SH)|(nonblocking?LOCK_NB:0))) { int error=errno;close(fd);errno=error;return -1; }
     return fd;
 }

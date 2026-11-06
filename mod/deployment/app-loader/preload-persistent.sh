@@ -33,5 +33,13 @@ nx300m_launch_persistent_app() {
     NX300M_MOD_ROOT=/mnt/mmc/nx300m-mod
     LD_PRELOAD=$nx300m_preload${LD_PRELOAD:+:$LD_PRELOAD}
     export NX300M_MOD_ROOT LD_PRELOAD
+    # Saved firmware control preferences are re-applied once the bridge is up.
+    # The child must not inherit the preload chain or the camera's stdin, and
+    # this exec must never wait for it.
+    if [ -f "$NX300M_MOD_ROOT/firmware-mod-restore.sh" ] &&
+        [ ! -L "$NX300M_MOD_ROOT/firmware-mod-restore.sh" ] &&
+        [ -r "$NX300M_MOD_ROOT/firmware-mod-restore.sh" ]; then
+        LD_PRELOAD= /bin/sh "$NX300M_MOD_ROOT/firmware-mod-restore.sh" </dev/null >/dev/null 2>&1 &
+    fi
     exec "$@"
 }

@@ -65,7 +65,6 @@ for variant in baseline current dry; do
         attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
     done
     /perf/close.arm key Return
-    if [ "$variant" != baseline ]; then /perf/close.arm key Menu; fi
     wait "$panel"
     grep '^EXIT ' /perf/$variant.log
 done
@@ -86,7 +85,7 @@ for variant in apply-viewfinder apply-failure; do
     if [ "$fail" = 1 ]; then
         for key in XF86HomePage Right; do /perf/close.arm key "$key"; done
     fi
-    /perf/close.arm tap 586 26
+    /perf/close.arm tap 740 26
     attempt=0
     until [ -s /perf/backend-started.txt ]; do
         kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
@@ -120,7 +119,6 @@ until grep -q '^FIRST_FRAME ' /perf/off.log; do
     attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
 done
 /perf/close.arm tap 160 26
-/perf/close.arm key Menu
 wait "$panel"
 grep -q '^disable$' /perf/off-action.txt
 grep -q 'LUT_DISABLED' /perf/off.log

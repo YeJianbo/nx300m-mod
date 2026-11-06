@@ -47,6 +47,10 @@ SECRETS = re.compile(
 
 def allowed(p: Path) -> bool:
     rel = p.relative_to(ROOT)
+    # This directory is a generated local probe run (C, shell and ARM output).
+    # The reusable entry point is tools/probe_state_exit_acceptance.py.
+    if rel.parts[:2] == ('tools', 'state-exit'):
+        return False
     if SKIP_DIRS.intersection(rel.parts) or p.name in SKIP_NAMES:
         return False
     if p.is_symlink() or p.suffix.lower() in {'.jks', '.keystore', '.pem', '.key', '.log'}:

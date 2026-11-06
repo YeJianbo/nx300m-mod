@@ -57,6 +57,11 @@ if [ -e "$ROOT/TRACE_HTTP" ]; then
 fi
 # The startup script has its own bounded wait and exact-process ownership.
 # Close this worker's entry lock in its descendants.
+# Imaging restore does not depend on HTTP readiness. Start it as soon as RAM
+# staging/replacement has finished, rather than after the daemon's wait.
+if [ -f "$ROOT/lut-boot.sh" ] && [ ! -L "$ROOT/lut-boot.sh" ]; then
+    /bin/sh "$ROOT/lut-boot.sh" </dev/null >> "$STATE/lut-boot.log" 2>&1 7>&- &
+fi
 if [ "$restart_service" = 1 ]; then
     NX300M_AUTO_START=0 /bin/sh "$ROOT/start.sh" 7>&-
 else
@@ -68,12 +73,6 @@ printf 'start_exit=%s\n' "$result"
 if [ "$result" -ne 0 ]; then
     printf 'Startup failed; inspect remote.log and supervisor.log. No camera restart attempted.\n'
     exit "$result"
-fi
-
-# Restore saved imaging controls outside the HTTP loop and panel launch path.
-# This worker exits after one bounded attempt; it is not a resident service.
-if [ -f "$ROOT/lut-boot.sh" ] && [ ! -L "$ROOT/lut-boot.sh" ]; then
-    /bin/sh "$ROOT/lut-boot.sh" </dev/null >> "$STATE/lut-boot.log" 2>&1 7>&- &
 fi
 
 inspect_remote() {

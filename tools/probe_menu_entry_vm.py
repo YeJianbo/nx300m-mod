@@ -127,10 +127,11 @@ def prepare(out):
     arm_vm.write_json(out/'inputs.json',inputs)
     source = out/'source/metol/remote'
     shutil.copytree(PROJECT/'mod/metol/remote',source)
-    for name in ('mod_paths.h','lut_engine_shared.h'):
+    for name in ('mod_paths.h','lut_engine_shared.h','lut_tune.h','lut_tune_cache.h','nx_atomic_write.h'):
         shutil.copyfile(PROJECT/'mod/metol'/name,source.parent/name)
     (out/'runtime').mkdir()
     shutil.copyfile(PROJECT/'runtime/lut_ram_blob.h',out/'runtime/lut_ram_blob.h')
+    shutil.copyfile(PROJECT/'runtime/lut_ram_blob_build.h',out/'runtime/lut_ram_blob_build.h')
     header = source/'menu_key.h'
     original = header.read_text()
     start, end = original.index('static int menu_key_device('), original.index('static void menu_key_child(')

@@ -68,17 +68,9 @@ static inline int nx_tune_cache(const char *id,const struct nx_lut_tune *t,unsig
     (void)strength;
     int n=snprintf(path,256,"%s/table.d4lut",directory);return n>0&&n<256?0:4;
 }
+/* Shared fixed-slot persistence for the UI, CLI and App. */
 static inline int nx_tune_save(const char *id,const struct nx_lut_tune *t,unsigned strength) {
-    char directory[512],file[640];struct stat st;
-    struct nx_lut_tune saved;unsigned previous;
-    if(nx_tune_load(nx_lut_data_root(),id,&saved,&previous)&&previous==strength&&!memcmp(&saved,t,sizeof saved))return 1;
-    snprintf(directory,sizeof directory,"%s/.state",nx_lut_data_root());
-    if(mkdir(directory,0700)&&errno!=EEXIST)return 0;
-    if(lstat(directory,&st)||!S_ISDIR(st.st_mode))return 0;
-    snprintf(file,sizeof file,"%s/lut-tune-%s",directory,id);
-    int fd=open(file,O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0600);if(fd<0)return 0;
-    FILE *out=fdopen(fd,"w");if(!out){close(fd);return 0;}
-    int ok=nx_tune_print(out,id,t,strength);if(fflush(out)||fsync(fd))ok=0;if(fclose(out))ok=0;
-    fd=open(directory,O_RDONLY|O_DIRECTORY);if(fd<0)return 0;if(fsync(fd))ok=0;close(fd);return ok;
+    if(!nx_lut_id_valid(id))return 0;
+    return nx_tune_preset_save(nx_lut_data_root(),id,t,strength);
 }
 #endif

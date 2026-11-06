@@ -30,7 +30,9 @@
 #include "nxui_services.h"
 #include "mod_paths.h"
 #include "lut_tune.h"
+#include "nx_atomic_write.h"
 #include "lut_reference_interp.h"
+#include "nxui_preview_state.h"
 extern Bool XTestFakeKeyEvent(Display *, unsigned int, Bool, unsigned long);
 /* glibc 2.13 exposes the versioned ARM stat64 entry points. */
 extern int __xstat64(int, const char *, struct stat64 *);
@@ -48,13 +50,34 @@ static const char *mfw_menu_root, *mfw_menu_engine;
 static int mfw_lut_quick, mfw_return_requested;
 static char mfw_lut_root[NXUI_PATH], mfw_lut_engine[NXUI_PATH];
 static long long lut_page_requested;
+/* Continuous-input rasterization gate: paints are held to ~15 Hz during a
+ * drag/wheel burst; 0 means no hold (single keys paint immediately). */
+static long long lut_paint_hold;
 static const char *mfw_stock_key;
 static char mfw_status[1024];
+/* An applied control with a failed preference write must retry the same value,
+ * rather than toggling the now-changed firmware state back again. */
+static char mfw_fw_action[64],mfw_fw_retry[4][64];
+static int mfw_fw_slot(const char *action) {
+    if(!strncmp(action,"fw-mode-lock",12))return 0;
+    if(!strncmp(action,"fw-animation",12))return 1;
+    if(!strncmp(action,"fw-auto-iso-max",15))return 3;
+    if(!strncmp(action,"fw-auto-iso",11))return 2;
+    return -1;
+}
 static int lut_strength = 100;
 static int lut_draft;
 static int lut_leave_dialog,lut_leave_target,lut_leave_option,lut_submit_failed,lut_saved_config;
 static int lut_exit_after_save;
+/* Leave intent scheduled behind a queued/in-flight request: after the current
+ * task completes, all remaining drafts flush and only full success honors
+ * this target (1=quit to viewfinder, 2=return to menu). 0=none scheduled. */
+static int lut_leave_flush_after;
+/* Favorite feedback state, defined here because leave/switch paths above the
+ * panel header include clear it. Distinct from lut_submit_failed. */
+static int lut_favorite_notice;
 static long long lut_apply_tick;
+/* lut_origin_* is the last request the camera accepted, not a row number. */
 static int lut_origin_selected,lut_origin_strength;
 static struct nx_lut_tune lut_origin_tune;
 static int lut_reference_scene,lut_reference_original,lut_reference_press,lut_list_open,lut_list_cursor;
@@ -64,9 +87,29 @@ static long long lut_reference_pressed_at;
 static void resize_panel(void);
 static struct nx_lut_tune lut_tune;
 static int lut_edit, lut_field, lut_category, lut_category_focus, lut_reference_dirty=1;
+static int lut_toolbar_focus=-1;
+static int lut_preview_shown=-1;
+static long long lut_preview_due,lut_preview_until;
 static int lut_brand[NXUI_MAX_RECIPES],lut_favorite[NXUI_MAX_RECIPES];
-static const char *lut_categories[]={"全部","收藏","富士","奥巴","宾得","松下","理光","索尼","自制"};
-static int lut_category_count[9];
+static const char *lut_categories[]={"全部","收藏","富士","奥巴","宾得","松下","理光","索尼","自制","胶片模拟"};
+enum { NX_LUT_CATEGORY_COUNT=sizeof lut_categories/sizeof *lut_categories };
+static int lut_category_count[NX_LUT_CATEGORY_COUNT];
+/* Per-look edit drafts keyed by the stable look id, never by row order. Only
+ * looks whose buffer differs from their persisted baseline occupy a slot. */
+#define NX_LUT_DRAFT_MAX 64
+struct nx_lut_look_draft { char key[64]; struct nx_lut_tune tune; int strength,durability_pending; };
+static struct nx_lut_look_draft lut_look_drafts[NX_LUT_DRAFT_MAX];
+static int lut_look_draft_count;
+static struct nx_lut_tune lut_base_tune;  /* persisted baseline of the selected look */
+static int lut_base_strength;
+/* Confirmed LUT requests are immutable snapshots: pending = confirmed and
+ * waiting for dispatch, inflight = owned by the running child. Parameters are
+ * copied at confirm time and never re-read from the live edit buffer. */
+struct nx_lut_request { char key[64]; struct nx_lut_tune tune; int strength,exit_after,is_off; unsigned generation; };
+static struct nx_lut_request lut_request_pending;
+static struct nx_lut_request lut_request_inflight;
+static int lut_request_pending_valid,lut_request_inflight_valid;
+static unsigned lut_request_serial;
 static void lut_load_tune(void);
 static void lut_init_groups(void);
 static void lut_step(int delta);
@@ -76,12 +119,134 @@ static void lut_save_navigation(void);
 static int lut_field_supported(int field);
 static int lut_in_group(int index);
 static void feature_snapshot(void);
+static void message(const char *s);
+static int lut_draft_slot(const char *key);
+static int lut_current_dirty(void) {
+    if(selected<=0)return 0;
+    int slot=lut_draft_slot(recipes[selected].key);
+    return lut_strength!=lut_base_strength||memcmp(&lut_tune,&lut_base_tune,sizeof lut_tune)||
+        (slot>=0&&lut_look_drafts[slot].durability_pending);
+}
 static int lut_has_changes(void) {
-    return selected!=lut_origin_selected||lut_strength!=lut_origin_strength||memcmp(&lut_tune,&lut_origin_tune,sizeof lut_tune);
+    return lut_current_dirty()||lut_look_draft_count>0;
+}
+static int lut_matches_applied(void) {
+    return selected==lut_origin_selected&&(!selected||
+        (lut_strength==lut_origin_strength&&!memcmp(&lut_tune,&lut_origin_tune,sizeof lut_tune)));
 }
 static void close_choice(void) {
     if (lut_mode && lut_has_changes() && !queue.close_requested) lut_request_leave(1);
     else queue.close_requested = 1;
+}
+static int lut_draft_slot(const char *key) {
+    for(int i=0;i<lut_look_draft_count;i++)if(!strcmp(lut_look_drafts[i].key,key))return i;
+    return -1;
+}
+static void lut_draft_drop(const char *key) {
+    int slot=lut_draft_slot(key);
+    if(slot<0)return;
+    memmove(lut_look_drafts+slot,lut_look_drafts+slot+1,(size_t)(lut_look_draft_count-slot-1)*sizeof *lut_look_drafts);
+    lut_look_draft_count--;
+}
+/* Write one draft to the card with the same atomic layout the engine reads.
+ * Keys that cannot be a safe filename stay memory-only. */
+static int lut_draft_persist_one(struct nx_lut_look_draft *draft) {
+    int saved=nx_tune_preset_save(root,draft->key,&draft->tune,(unsigned)draft->strength);
+    if(saved)draft->durability_pending=saved!=1;
+    if(saved!=1)fprintf(stderr,"LUT_DRAFT_PERSIST key=%s saved=%d\n",draft->key,saved);
+    return saved==1;
+}
+/* Persist every stashed draft; successfully saved ones leave the table. */
+static int lut_drafts_flush(void) {
+    int failed=0;
+    for(int i=0;i<lut_look_draft_count;) {
+        if(lut_draft_persist_one(&lut_look_drafts[i]))
+            lut_draft_drop(lut_look_drafts[i].key);
+        else {failed++;i++;}
+    }
+    return failed;
+}
+/* H2: the engine reported PERSIST-UNCONFIRMED — content was published by
+ * rename but directory durability is unproven. Keep the request's own draft
+ * with durability_pending so an identical retry performs a real write, and
+ * never treat the save as confirmed. */
+static void lut_draft_mark_unconfirmed(const struct nx_lut_request *request) {
+    int slot;
+    if(request->is_off||strchr(request->key,'/')||strstr(request->key,".."))return;
+    slot=lut_draft_slot(request->key);
+    if(slot<0) {
+        if(lut_look_draft_count>=NX_LUT_DRAFT_MAX)return;
+        slot=lut_look_draft_count++;
+        snprintf(lut_look_drafts[slot].key,sizeof lut_look_drafts[slot].key,"%s",request->key);
+    }
+    lut_look_drafts[slot].tune=request->tune;lut_look_drafts[slot].strength=request->strength;
+    lut_look_drafts[slot].durability_pending=1;
+    if(!strcmp(recipes[selected].key,request->key))lut_draft=1;
+}
+static void lut_baseline_load(int index) {
+    struct nx_lut_tune disk={{0}};unsigned strength=100;
+    if(index>0)nx_tune_load(root,recipes[index].key,&disk,&strength);
+    lut_base_tune=disk;lut_base_strength=(int)strength;
+}
+/* Stash the selected look's edit buffer when navigation moves elsewhere. A
+ * buffer matching its persisted baseline removes any draft instead. */
+static int lut_draft_stash(void) {
+    if(!lut_mode||selected<=0)return 1;
+    const char *key=recipes[selected].key;
+    int slot=lut_draft_slot(key);
+    if(lut_strength==lut_base_strength&&!memcmp(&lut_tune,&lut_base_tune,sizeof lut_tune)&&
+       !(slot>=0&&lut_look_drafts[slot].durability_pending)) {
+        lut_draft_drop(key);return 1;
+    }
+    if(slot<0) {
+        if(lut_look_draft_count>=NX_LUT_DRAFT_MAX) {
+            /* Retain every edit if the card cannot accept the oldest one.
+             * Navigation stays on the current buffer until saving can retry. */
+            if(!lut_draft_persist_one(&lut_look_drafts[0])) {
+                fprintf(stderr,"LUT_DRAFT_OVERFLOW retained key=%s\n",lut_look_drafts[0].key);
+                message("草稿已满且保存未确认 · 请先保存或放弃调整");
+                return 0;
+            }
+            lut_draft_drop(lut_look_drafts[0].key);
+        }
+        slot=lut_look_draft_count++;
+        lut_look_drafts[slot].durability_pending=0;
+        snprintf(lut_look_drafts[slot].key,sizeof lut_look_drafts[slot].key,"%s",key);
+    }
+    lut_look_drafts[slot].tune=lut_tune;lut_look_drafts[slot].strength=lut_strength;
+    return 1;
+}
+/* Keep the outgoing look's edit, then restore the incoming look's own draft
+ * or its persisted values. Browsing never commits anything to the camera.
+ * The persisted state is read once per switch and doubles as the baseline. */
+static int lut_select_look(int index) {
+    if(index==selected)return 1;
+    if(!lut_draft_stash())return 0;
+    selected=index;
+    struct nx_lut_tune disk={{0}};unsigned strength=100;
+    if(index>0)nx_tune_load(root,recipes[index].key,&disk,&strength);
+    lut_base_tune=disk;lut_base_strength=(int)strength;
+    int slot=index>0?lut_draft_slot(recipes[index].key):-1;
+    if(slot>=0) {
+        lut_tune=lut_look_drafts[slot].tune;lut_strength=lut_look_drafts[slot].strength;
+        fprintf(stderr,"LUT_DRAFT_RESTORE key=%s strength=%d values=%d,%d,%d,%d,%d,%d,%d\n",recipes[index].key,lut_strength,
+            lut_tune.value[0],lut_tune.value[1],lut_tune.value[2],lut_tune.value[3],
+            lut_tune.value[4],lut_tune.value[5],lut_tune.value[6]);
+    } else {lut_tune=disk;lut_strength=(int)strength;}
+    lut_reference_dirty=1;
+    if(!lut_current_dirty()&&selected>0)lut_draft_drop(recipes[selected].key);
+    lut_draft=lut_current_dirty();
+    lut_favorite_notice=0;
+    return 1;
+}
+static int lut_request_index(const struct nx_lut_request *request) {
+    for(int i=0;i<count;i++)if(!strcmp(recipes[i].key,request->key))return i;
+    return -1;
+}
+/* Parameter identity only: exit intent and generation may differ on reuse. */
+static int lut_request_same(const struct nx_lut_request *a,const struct nx_lut_request *b) {
+    return !strcmp(a->key,b->key)&&a->strength==b->strength&&a->is_off==b->is_off&&
+        !memcmp(&a->tune,&b->tune,sizeof a->tune);
 }
 static int touch_x, touch_active;
 static long long close_flag_check;
@@ -113,9 +278,12 @@ static int panel_visibility = VisibilityFullyObscured, panel_raise_retry, panel_
  * Stock windows can also raise themselves or reclaim focus during a transition.
  * Camera navigation arrives as X KeyPress; an invisible panel must yield it. */
 static void request_s1_close(void) {
-    /* Shutter/focus preemption discards local edits and yields immediately. */
+    /* Shutter/focus preemption discards local edits and yields immediately.
+     * The discard scope is explicit: every per-look draft, not just the
+     * displayed one. */
     panel_yielded = 1;
-    lut_leave_dialog=lut_draft=0;queue.close_requested=1;
+    lut_leave_dialog=lut_draft=0;lut_look_draft_count=0;
+    queue.close_requested=1;
     nx_panel_input_hide(&panel_input);
 }
 
@@ -331,7 +499,7 @@ static void refresh_services(int force) {
     }
 }
 static void preview_status(void) {
-    if (lut_mode && lut_draft && !queue.close_requested)
+    if (lut_mode && !lut_matches_applied() && !queue.close_requested)
         snprintf(status, sizeof status, "已选择 %s · 按 OK 应用", recipes[selected].label);
     else if (child && busy_kind == 1 && queue.desired >= 0 && queue.desired != queue.running)
         snprintf(status, sizeof status, "已选择 %s · 等待当前预览完成", recipes[queue.desired].label);
@@ -388,18 +556,21 @@ static int load_lut_choices(const char *path) {
     if (n < 0) return 0;
     memset(recipes, 0, sizeof *recipes);
     strcpy(recipes[0].key, "__off"); strcpy(recipes[0].label, "关");
-    count = n+1; selected = lut_draft = lut_edit = lut_category_focus = 0; lut_strength = 100;
+    count = n+1; selected = lut_draft = lut_edit = lut_category_focus = 0; lut_strength = 100;lut_toolbar_focus=-1;
+    lut_preview_shown=-1;lut_preview_due=lut_preview_until=0;
     memset(&lut_tune,0,sizeof lut_tune);
     nx_queue_init(&queue);
     snprintf(status, sizeof status, "当前选择：关 · 原厂拍摄");
-    FILE *selection = fopen("/var/run/nx300m-lut-selection", "r");
+    char session[NXUI_PATH] = "", choice[NXUI_PATH];
+    FILE *in = fopen("/var/run/nx300m-lut-selection-session", "r");
+    int session_present=in!=NULL;
+    if(in){if(!fgets(session,sizeof session,in))session[0]=0;fclose(in);}
+    session[strcspn(session,"\r\n")]=0;
+    int own_session=session_present&&!strcmp(session,root);
+    FILE *selection = (!session_present||own_session)?fopen("/var/run/nx300m-lut-selection", "r"):NULL;
     int saved = 0;
     if (!selection) {
-        char session[NXUI_PATH] = "", choice[NXUI_PATH];
-        FILE *in = fopen("/var/run/nx300m-lut-selection-session", "r");
-        if (in) { if (!fgets(session, sizeof session, in)) session[0] = 0; fclose(in); }
-        session[strcspn(session, "\r\n")] = 0;
-        if (strcmp(session, root)) {
+        if (!own_session) {
             snprintf(choice, sizeof choice, "%s/.state/lut-choice", root);
             selection = fopen(choice, "r");
             if (!selection) {
@@ -409,11 +580,12 @@ static int load_lut_choices(const char *path) {
             saved = 1;
         }
     }
+    int matched=0;
     if (selection) {
         unsigned int generation, strength = 100; char table[256], candidate[256], base_id[64]="";
         if (fscanf(selection, "%u %255s %u", &generation, table, &strength) >= 2) {
             char *slash=strrchr(table,'/');
-            if(slash && !strcmp(slash,"/table.d4lut")) {
+            if(!strncmp(table,root,strlen(root))&&table[strlen(root)]=='/'&&slash && !strcmp(slash,"/table.d4lut")) {
                 char meta[512];snprintf(meta,sizeof meta,"%.*s/tune.txt",(int)(slash-table),table);
                 nx_tune_read(meta,base_id,&lut_tune,NULL);
             }
@@ -421,7 +593,7 @@ static int load_lut_choices(const char *path) {
                 int length = snprintf(candidate, sizeof candidate, "%s/looks/%.63s/table.d4lut", root, recipes[i].key);
                 if (length < 0 || length >= (int)sizeof candidate) continue;
                 if (!strcmp(table, candidate) || !strcmp(base_id,recipes[i].key)) {
-                    selected = i; lut_strength = strength <= 100 ? (int)strength : 100;
+                    selected = i; matched=1; lut_strength = strength <= 100 ? (int)strength : 100;
                     snprintf(status, sizeof status, "%s %s · 强度 %d%%%s", saved ? "上次选择" : "当前选择",
                         recipes[i].label, lut_strength, saved ? " · 按 OK 应用" : "");
                     break;
@@ -430,17 +602,34 @@ static int load_lut_choices(const char *path) {
         }
         fclose(selection);
     }
-    /* Saved preferences are loaded only for the displayed choice. */
-    int selection_strength=lut_strength;struct nx_lut_tune selection_tune=lut_tune;
-    lut_load_tune();lut_strength=selection_strength;
-    if(!nx_tune_zero(&selection_tune))lut_tune=selection_tune;
+    /* Direct tables mean zero adjustments, including when a different preset
+     * has since been saved with Fn. Never infer the active parameters from
+     * that preset. Snapshot the camera choice before restoring edit drafts. */
+    lut_origin_selected=saved?-1:selected;
+    lut_origin_strength=lut_strength;lut_origin_tune=lut_tune;
+    if(saved&&!matched)lut_origin_selected=-1;
+    /* Fn saves a preset without changing the active table. Show that preset
+     * on entry while keeping the camera snapshot above separate. */
+    if(selected>0){unsigned preset_strength=(unsigned)lut_strength;
+        if(nx_tune_load(root,recipes[selected].key,&lut_tune,&preset_strength))lut_strength=(int)preset_strength;}
+    /* The persisted card state is the tuning baseline; a surviving draft from
+     * an earlier panel visit still wins for its own look. */
+    lut_baseline_load(selected);
+    if(selected>0) {
+        int slot=lut_draft_slot(recipes[selected].key);
+        if(slot>=0) {lut_tune=lut_look_drafts[slot].tune;lut_strength=lut_look_drafts[slot].strength;}
+    }
     lut_init_groups();
     lut_category=selected?lut_brand[selected]:0;
     char category_file[NXUI_PATH];int category_value=-1;snprintf(category_file,sizeof category_file,"%s/.state/lut-category",root);
     FILE *category_in=fopen(category_file,"r");
     if(category_in){if(fscanf(category_in,"%d",&category_value)!=1)category_value=-1;fclose(category_in);}
-    if(category_value>=0&&category_value<9&&(category_value<=1||lut_category_count[category_value]))lut_category=category_value;
-    lut_origin_selected=selected;lut_origin_strength=lut_strength;lut_origin_tune=lut_tune;
+    if(selected&&category_value>=0&&category_value<NX_LUT_CATEGORY_COUNT&&
+       (category_value==0||(category_value==1?lut_favorite[selected]:lut_brand[selected]==category_value)))lut_category=category_value;
+    /* The remembered group/page must never highlight a different row or hide
+     * the current look on entry. Opening the panel is not an apply operation. */
+    lut_tab_start=-1;
+    lut_draft=lut_current_dirty();
     lut_leave_dialog=lut_submit_failed=0;lut_list_open=1;lut_saved_config=saved;
     lut_list_cursor=0;for(int i=1;i<selected;i++)if(lut_in_group(i))lut_list_cursor++;
     if(!saved){char saved_file[NXUI_PATH],saved_path[256],runtime_path[256];unsigned sg,ss,rg,rs;
@@ -454,7 +643,7 @@ static int load_lut_choices(const char *path) {
     lut_reference_dirty=1;
     const char *notice = getenv("NXUI_LUT_NOTICE");
     if (notice && *notice) snprintf(status, sizeof status, "%s", notice);
-    fprintf(stderr, "LUT_ENTRY index=%d key=%s strength=%d saved=%d\n", selected, recipes[selected].key, lut_strength, saved);
+    fprintf(stderr, "LUT_ENTRY index=%d key=%s strength=%d saved=%d group=%d active=%d\n", selected, recipes[selected].key, lut_strength, saved,lut_category,lut_origin_selected);
     fprintf(stderr,"LUT_TUNE key=%s values=%d,%d,%d,%d,%d,%d,%d\n",recipes[selected].key,
         lut_tune.value[0],lut_tune.value[1],lut_tune.value[2],lut_tune.value[3],lut_tune.value[4],lut_tune.value[5],lut_tune.value[6]);
     return 1;
@@ -492,57 +681,88 @@ static void return_mfw_menu(void) {
 }
 static void choose(int index) {
     if (count <= 0 || queue.close_requested) return;
-    int previous=selected;
-    selected = (index + count) % count;
-    if(lut_mode && selected!=previous)lut_load_tune();
-    if (lut_mode) fprintf(stderr, "LUT_CHOICE event=select index=%d key=%s running=%d\n",
-                          selected, recipes[selected].key, queue.running);
-    /* Browsing is local. Reconfiguring every intermediate row serializes
-     * expensive camera transactions and shows stale looks after closing. */
     if (lut_mode) {
+        /* While a confirmed request waits for its child, browsing is paused so
+         * the applying indicator always names the request being applied. */
+        if (queue.commit_requested || child) return;
+        int next=(index+count)%count;
+        if(next!=selected&&!lut_select_look(next))return;
+        fprintf(stderr, "LUT_CHOICE event=select index=%d key=%s running=%d\n",
+                          selected, recipes[selected].key, queue.running);
+        /* Browsing is local: drafts move with their own look and nothing is
+         * committed here. */
         lut_list_cursor=0;
         for(int i=1;i<selected;i++)if(lut_in_group(i))lut_list_cursor++;
-        lut_draft = 1;
         lut_reference_dirty=1;
         preview_status();
         return;
     }
+    selected = (index + count) % count;
     queue.applied = -1;
     nx_queue_select(&queue, selected, now_ms());
     preview_status();
 }
 static void confirm_lut(int target) {
     if (count <= 0 || queue.close_requested) return;
+    if(!lut_draft_stash())return;
+    /* H1: every exit-intent confirmation (OK/top save, close-LUT, return to
+     * menu) first persists ALL unsaved drafts; only the displayed request is
+     * committed to the camera. Fn (target 0) still saves the current look
+     * only. A partial flush failure keeps the remaining drafts and stays in
+     * the panel for an explicit retry. */
+    if(target&&lut_look_draft_count&&lut_drafts_flush()) {
+        lut_submit_failed=1;dirty=1;
+        message("部分调整保存未确认 · 请重试或继续编辑");
+        fprintf(stderr,"LUT_CONFIRM flush_failed remaining=%d target=%d\n",lut_look_draft_count,target);
+        return;
+    }
+    /* Freeze the confirmed request: identity, parameters and exit intent are
+     * copied here and never re-read from the live edit buffer afterwards. */
+    snprintf(lut_request_pending.key,sizeof lut_request_pending.key,"%s",recipes[selected].key);
+    lut_request_pending.tune=lut_tune;
+    lut_request_pending.strength=lut_strength;
+    lut_request_pending.exit_after=target;
+    lut_request_pending.is_off=!strcmp(recipes[selected].key,"__off");
+    lut_request_pending.generation=++lut_request_serial;
+    lut_request_pending_valid=1;
     lut_exit_after_save=target;
-    fprintf(stderr, "LUT_CHOICE event=confirm index=%d key=%s running=%d desired=%d\n",
-            selected, recipes[selected].key, queue.running, queue.desired);
+    fprintf(stderr, "LUT_CHOICE event=confirm index=%d key=%s strength=%d tune=%d,%d,%d,%d,%d,%d,%d exit=%d generation=%u running=%d desired=%d\n",
+            selected, lut_request_pending.key, lut_request_pending.strength,
+            lut_request_pending.tune.value[0],lut_request_pending.tune.value[1],lut_request_pending.tune.value[2],
+            lut_request_pending.tune.value[3],lut_request_pending.tune.value[4],lut_request_pending.tune.value[5],
+            lut_request_pending.tune.value[6], target, lut_request_pending.generation, queue.running, queue.desired);
     /* OK confirms the displayed choice even while an earlier control drains.
-     * Reuse that control when it already owns this exact choice; otherwise
-     * retain the new commit until the previous operation completes. */
-    if (child && busy_kind == 1 && queue.running == selected && queue.desired == selected) {
+     * Reuse only the identical request (same look AND parameters); the newest
+     * exit intent wins. The same look with different tuning is a new task and
+     * waits for the running one to finish. */
+    if (child && busy_kind == 1 && lut_request_inflight_valid &&
+        lut_request_same(&lut_request_inflight,&lut_request_pending)) {
         queue.committing = 1;
         queue.commit_requested = 0;
+        queue.desired = -1;
+        lut_request_inflight.exit_after = target;
     } else {
         queue.applied = -1;
         nx_queue_select(&queue, selected, now_ms()-NXUI_DEBOUNCE_MS);
         queue.commit_requested = 1;
     }
     queue.close_requested = 0;
-    lut_draft = 0;
+    lut_draft = lut_current_dirty();
     lut_submit_failed=0;lut_leave_dialog=0;
 }
 static void change_lut_strength(int delta) {
-    /* The queue identifies work by recipe index. Keep strength fixed while a
-     * child owns that index so its completion cannot mark a newer strength
-     * as applied without sending it to the engine. */
+    /* Strength edits stay in the selected look's own draft; a confirmed
+     * request owns its parameter copy, so no live value can reach it. */
     int next;
-    if (!lut_mode || child || queue.close_requested || count <= 0 || !strcmp(recipes[selected].key, "__off")) return;
+    if (!lut_mode || child || queue.commit_requested || queue.close_requested || count <= 0 ||
+        !strcmp(recipes[selected].key, "__off")) return;
     next = lut_strength + delta;
     if (next < 0) next = 0;
     if (next > 100) next = 100;
     if (next == lut_strength) return;
     lut_strength = next;
-    choose(selected);
+    lut_draft=lut_current_dirty();lut_reference_dirty=1;
+    preview_status();
 }
 static void read_output(void) {
     char buf[512]; ssize_t n;
@@ -567,13 +787,15 @@ static void exec_lut_engine(const char *action, const char *key) {
         return;
     }
     if (lut_mode && !strcmp(action, "apply")) {
+        /* Only the immutable inflight snapshot reaches the engine argv. */
+        const struct nx_lut_request *request=&lut_request_inflight;
         char strength[4],v[NX_TUNE_FIELDS][8];
-        snprintf(strength, sizeof strength, "%d", lut_strength);
-        for(int i=0;i<NX_TUNE_FIELDS;i++)snprintf(v[i],sizeof v[i],"%d",lut_tune.value[i]);
+        snprintf(strength, sizeof strength, "%d", request->strength);
+        for(int i=0;i<NX_TUNE_FIELDS;i++)snprintf(v[i],sizeof v[i],"%d",request->tune.value[i]);
         if (arm_runner && *arm_runner)
-            execl(arm_runner, arm_runner, "-cpu", "cortex-a9", "-L", "/", engine, action, key, strength,
+            execl(arm_runner, arm_runner, "-cpu", "cortex-a9", "-L", "/", engine, action, request->key, strength,
                 v[0],v[1],v[2],v[3],v[4],v[5],v[6],(char *)0);
-        else execl(engine, engine, action, key, strength,v[0],v[1],v[2],v[3],v[4],v[5],v[6],(char *)0);
+        else execl(engine, engine, action, request->key, strength,v[0],v[1],v[2],v[3],v[4],v[5],v[6],(char *)0);
         return;
     }
     if (arm_runner && *arm_runner)
@@ -583,17 +805,39 @@ static void exec_lut_engine(const char *action, const char *key) {
 static int start_child(int kind, int index, const char *command) {
     int pipefd[2]; pid_t pid;
     if (child) return 0;
-    if (kind == 1 && lut_mode)
-        fprintf(stderr, "LUT_SUBMIT index=%d key=%s strength=%d committing=%d\n",
-                index, recipes[index].key, lut_strength, queue.committing);
+    if (kind == 1 && lut_mode) {
+        /* The dispatch adopts the confirmed snapshot before forking. A row
+         * index that disagrees with the request is refused, never guessed. */
+        if (!lut_request_pending_valid || strcmp(recipes[index].key, lut_request_pending.key)) {
+            fprintf(stderr, "LUT_SUBMIT request_mismatch index=%d key=%s request=%s\n",
+                    index, recipes[index].key, lut_request_pending_valid ? lut_request_pending.key : "(none)");
+            queue.commit_requested = 0; queue.desired = -1;
+            nx_queue_done(&queue, 0);
+            message("确认请求与所选不一致 · 请重新确认");
+            return 1;
+        }
+        lut_request_inflight = lut_request_pending;
+        lut_request_inflight_valid = 1;
+        fprintf(stderr, "LUT_SUBMIT index=%d key=%s strength=%d tune=%d,%d,%d,%d,%d,%d,%d committing=%d generation=%u\n",
+                index, lut_request_inflight.key, lut_request_inflight.strength,
+                lut_request_inflight.tune.value[0],lut_request_inflight.tune.value[1],lut_request_inflight.tune.value[2],
+                lut_request_inflight.tune.value[3],lut_request_inflight.tune.value[4],lut_request_inflight.tune.value[5],
+                lut_request_inflight.tune.value[6], queue.committing, lut_request_inflight.generation);
+    }
     if (!live) {
         if (kind == 1) {
             nx_queue_done(&queue, 1);
             message("演示模式 · 已选择，未写入相机");
             if (queue.committing) {
-                if(!lut_mode||lut_exit_after_save==1)quit=1;
-                else if(lut_exit_after_save==2)mfw_return_requested=1;
-                if(lut_mode){lut_origin_selected=selected;lut_origin_strength=lut_strength;lut_origin_tune=lut_tune;lut_exit_after_save=0;}
+                if(!lut_mode||lut_request_inflight.exit_after==1)quit=1;
+                else if(lut_request_inflight.exit_after==2)mfw_return_requested=1;
+                if(lut_mode){
+                    lut_draft_drop(lut_request_inflight.key);
+                    lut_baseline_load(index);
+                    lut_origin_selected=index;lut_origin_strength=lut_request_inflight.strength;
+                    lut_origin_tune=lut_request_inflight.tune;
+                    lut_draft=lut_current_dirty();lut_exit_after_save=0;
+                }
             }
         } else message("演示模式 · 未执行菜单命令");
         return 1;
@@ -631,7 +875,9 @@ static int start_child(int kind, int index, const char *command) {
 }
 static int mfw_action_allowed(const char *action) {
     const char *allowed[] = {"status", "network-info", "lut", "menu", "gallery", "disable-autostart", "enable-autostart", "close",
-        "lenses","exposure","connection","settings", "preview", "debug", "back", "preview-toggle", "preview-enable", "preview-s2-enable", "preview-probe-once", "preview-identity", "preview-monochrome", "preview-monochrome-timing", "preview-sync", "preview-stop", "preview-restore", "preview-status", "preview-diag-export"};
+        "lenses","exposure","connection","settings", "preview", "debug", "back", "preview-toggle", "preview-enable", "preview-s2-enable", "preview-probe-once", "preview-identity", "preview-monochrome", "preview-monochrome-timing", "preview-sync", "preview-stop", "preview-restore", "preview-status", "preview-diag-export",
+        "fw-mode-lock-on","fw-mode-lock-off","fw-animation-0","fw-animation-1","fw-animation-2",
+        "fw-auto-iso-0","fw-auto-iso-6400","fw-auto-iso-max-12800","fw-auto-iso-max-25600","fw-auto-iso-max-3200","fw-mode-P","fw-mode-A","fw-mode-S","fw-mode-M"};
     for (unsigned int i = 0; i < sizeof allowed / sizeof *allowed; i++)
         if (!strcmp(action, allowed[i])) return 1;
     return 0;
@@ -679,6 +925,7 @@ static int start_mfw_action(const char *action) {
         _exit(127);
     }
     setpgid(pid, pid); close(pipefd[1]); fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+    snprintf(mfw_fw_action,sizeof mfw_fw_action,"%s",!strncmp(action,"fw-",3)?action:"");
     child_fd = pipefd[0]; child = pid; busy_kind = 5;
     mfw_child_preview = !strncmp(action, "preview-", 8);
     mfw_child_readonly = readonly;
@@ -793,9 +1040,32 @@ static void poll_child(void) {
         !strstr(output, "VERIFY-FAIL") && !strstr(output, "REJECT");
     fprintf(stderr, "BACKEND kind=%d ok=%d elapsed_ms=%lld output=%s\n", busy_kind, success, now_ms()-child_started, output);
     if (busy_kind == 5) {
+        int fw_slot=mfw_fw_slot(mfw_fw_action);
+        /* H3: the fixed FW_MOD result line may legally be preceded by shell
+         * diagnostics; locate the protocol marker anywhere in the output
+         * instead of trusting the first line. Exit 75 plus the marker pair
+         * still means "applied, preference not saved". */
+        const char *fw_result=strstr(output,"FW_MOD ");
+        int applied_unsaved=result>0&&!child_timed_out&&WIFEXITED(code)&&WEXITSTATUS(code)==75&&
+            fw_slot>=0&&fw_result&&strstr(output,"PERSIST-WARNING");
+        if(applied_unsaved) {
+            snprintf(mfw_fw_retry[fw_slot],sizeof mfw_fw_retry[fw_slot],"%s",mfw_fw_action);
+            if(mfw_preview==4||mfw_preview==5)feature_page(mfw_preview);
+            snprintf(mfw_status,sizeof mfw_status,"%.*s",(int)sizeof mfw_status-1,output);
+            message("已应用、未保存 · 再选此项重试保存");
+        } else
         if (success) {
-            snprintf(mfw_status, sizeof mfw_status, "%.*s", (int)sizeof(mfw_status)-1, output);
+            if(fw_slot>=0)mfw_fw_retry[fw_slot][0]=0;
+            snprintf(mfw_status, sizeof mfw_status, "%.*s", (int)sizeof mfw_status-1, output);
             message("");
+            /* A firmware control answered with read-back state: rebuild the
+             * settings/exposure page from the fresh response, keeping the
+             * result text visible. */
+            if ((mfw_preview==4 || mfw_preview==5) && fw_result) {
+                char keep[sizeof mfw_status];snprintf(keep,sizeof keep,"%s",mfw_status);
+                feature_page(mfw_preview);
+                snprintf(mfw_status,sizeof mfw_status,"%s",keep);
+            }
             if (mfw_child_preview && !mfw_child_readonly) {
                 if(lut_mode){mfw_status[0]=0;message("LUT 预览设置已更新");}
                 else queue.close_requested = 1;
@@ -815,28 +1085,84 @@ static void poll_child(void) {
         } else message("服务操作失败 · 请查看面板日志");
     } else if (busy_kind == 1) {
         was_commit = queue.committing;
+        int request_index = lut_mode && lut_request_inflight_valid ? lut_request_index(&lut_request_inflight) : busy_recipe;
+        if (request_index < 0) request_index = busy_recipe;
+        /* H2: four distinct persistence outcomes — applied+saved (plain
+         * success), PERSIST-WARNING (not saved), PERSIST-UNCONFIRMED
+         * (published by rename, directory durability unproven) and plain
+         * failure. Each keeps its own draft/retry semantics. */
+        int persist_unconfirmed=lut_mode&&strstr(output,"PERSIST-UNCONFIRMED");
         nx_queue_done(&queue, success);
-        if (queue.desired >= 0 && queue.desired != busy_recipe) preview_status();
+        if (queue.desired >= 0 && queue.desired != request_index) preview_status();
         else if (success) {
-            if (lut_mode && !strcmp(recipes[busy_recipe].key, "__off")) {
-                snprintf(status, sizeof status, "LUT 已关闭 · 原厂拍摄%s", strstr(output, "PERSIST-WARNING") ? " · 未保存到卡" : "");
+            if (lut_mode && lut_request_inflight_valid && lut_request_inflight.is_off) {
+                snprintf(status, sizeof status, "LUT 已关闭 · 原厂拍摄%s",
+                    persist_unconfirmed ? " · 保存耐久未确认" : strstr(output, "PERSIST-WARNING") ? " · 未保存到卡" : "");
             }
-            else if (lut_mode && strstr(output, "PERSIST-WARNING")) snprintf(status, sizeof status, "已暂存 %s · 未保存到卡，仅本次有效", recipes[busy_recipe].label);
-            else if (lut_mode) snprintf(status, sizeof status, "已暂存 %s · 强度 %d%% · 等待原厂 LUT 重载", recipes[busy_recipe].label, lut_strength);
+            else if (lut_mode && persist_unconfirmed) snprintf(status, sizeof status, "已应用 %s · 保存耐久未确认，可重试", recipes[request_index].label);
+            else if (lut_mode && strstr(output, "PERSIST-WARNING")) snprintf(status, sizeof status, "已暂存 %s · 未保存到卡，仅本次有效", recipes[request_index].label);
+            else if (lut_mode) snprintf(status, sizeof status, "已暂存 %s · 强度 %d%% · 等待原厂 LUT 重载", recipes[request_index].label, lut_request_inflight.strength);
             else snprintf(status, sizeof status, "预览已应用：%s", recipes[busy_recipe].label);
             dirty = 1;
         } else message(lut_mode && strstr(output, "PREVIEW-WARNING")
                        ? "照片 LUT 已选择，预览更新失败 · 可重新选择以重试"
                        : "应用失败 · 可重新选择以重试");
-        if(lut_mode&&!success){lut_submit_failed=1;lut_draft=lut_has_changes();lut_exit_after_save=0;}
-        if(was_commit&&success&&lut_mode&&!strstr(output,"PERSIST-WARNING")) {
-            lut_origin_selected=selected;lut_origin_strength=lut_strength;lut_origin_tune=lut_tune;
-            lut_draft=lut_submit_failed=0;lut_saved_config=1;dirty=1;
-            if(lut_exit_after_save==1)quit=1;
-            else if(lut_exit_after_save==2)mfw_return_requested=1;
+        if(lut_mode&&!success){
+            lut_submit_failed=1;lut_exit_after_save=0;lut_leave_flush_after=0;
+            /* Failure keeps every draft for an explicit retry and drops any
+             * queued redispatch, so stale parameters can never run alone. */
+            queue.desired=-1;queue.commit_requested=0;
+            if(lut_request_inflight_valid)lut_draft_mark_unconfirmed(&lut_request_inflight);
+        }
+        if(was_commit&&success&&lut_mode&&!strstr(output,"PERSIST-WARNING")&&!persist_unconfirmed&&lut_request_inflight_valid) {
+            /* The engine applied and persisted exactly this request; the
+             * writeback credits the request, never the live edit buffer. */
+            lut_draft_drop(lut_request_inflight.key);
+            lut_baseline_load(request_index);
+            lut_origin_selected=request_index;lut_origin_strength=lut_request_inflight.strength;
+            lut_origin_tune=lut_request_inflight.tune;
+            lut_draft=lut_current_dirty();lut_submit_failed=0;lut_saved_config=1;dirty=1;
+            /* A MENU leave scheduled during this task flushes the remaining
+             * drafts first; only full success honors the exit target. */
+            if(lut_leave_flush_after){
+                if(lut_drafts_flush()){
+                    lut_submit_failed=1;dirty=1;
+                    fprintf(stderr,"LUT_LEAVE_FLUSH_FAILED remaining=%d target=%d\n",lut_look_draft_count,lut_leave_flush_after);
+                    message("部分调整保存未确认 · 请重试或继续编辑");
+                } else {
+                    fprintf(stderr,"LUT_LEAVE_FLUSH_OK target=%d\n",lut_leave_flush_after);
+                    if(lut_leave_flush_after==1)quit=1;
+                    else if(lut_leave_flush_after==2)mfw_return_requested=1;
+                }
+                lut_leave_flush_after=0;
+            } else {
+                if(lut_request_inflight.exit_after==1)quit=1;
+                else if(lut_request_inflight.exit_after==2)mfw_return_requested=1;
+            }
             lut_exit_after_save=0;
+            lut_request_inflight_valid=0;
         }else if(was_commit&&success&&!lut_mode)quit=1;
-        if(lut_mode&&success&&strstr(output,"PERSIST-WARNING")){lut_submit_failed=2;lut_exit_after_save=0;}
+        if(lut_mode&&success&&strstr(output,"PERSIST-WARNING")){
+            lut_submit_failed=2;lut_exit_after_save=0;lut_leave_flush_after=0;
+            /* The engine could not save the per-look tuning: keep the
+             * committed look's own draft recoverable for an explicit retry. */
+            if(lut_request_inflight_valid)lut_draft_mark_unconfirmed(&lut_request_inflight);
+        }
+        if(lut_mode&&success&&persist_unconfirmed&&lut_request_inflight_valid) {
+            /* H2: the camera received the request and the file content is
+             * live, but directory durability is unproven. Credit the applied
+             * request, keep its draft as durability_pending for a real
+             * same-value retry, and stay in the panel. */
+            lut_draft_mark_unconfirmed(&lut_request_inflight);
+            lut_baseline_load(request_index);
+            lut_origin_selected=request_index;lut_origin_strength=lut_request_inflight.strength;
+            lut_origin_tune=lut_request_inflight.tune;
+            lut_submit_failed=1;lut_exit_after_save=0;lut_leave_flush_after=0;lut_saved_config=0;dirty=1;
+            queue.close_requested=0;queue.commit_requested=0;
+            fprintf(stderr,"LUT_PERSIST_UNCONFIRMED key=%s generation=%u\n",
+                lut_request_inflight.key,lut_request_inflight.generation);
+            if (panel_input.unmapped && !panel_show()) request_s1_close();
+        }
         if (was_commit && success && lut_mode && strstr(output, "PERSIST-WARNING") && !panel_yielded) {
             queue.close_requested = 0; queue.commit_requested = 0;
             if (panel_input.unmapped && !panel_show()) request_s1_close();
@@ -1367,6 +1693,14 @@ int main(int argc, char **argv) {
         alarm(5);
         XEvent event; fd_set fds; struct timeval wait; int index, pending, events = 0, refresh = 0, painted = 0;
         long long tick = now_ms(), delay = 60000, input_dequeued = -1;
+        /* Observe only a finite boot transition. Idle, restored panels retain
+         * their event-driven sleep; an external completion redraws once. */
+        if(lut_mode&&live&&tick>=lut_preview_due&&tick<lut_preview_until){
+            int observed=nx_preview_state(root);
+            if(observed!=lut_preview_shown)dirty=1;
+            lut_preview_due=tick+500;
+            if(observed!=NX_PREVIEW_WAIT&&observed!=NX_PREVIEW_BUSY)lut_preview_until=0;
+        }
         if (interrupted || (lifetime > 0 && now_ms()-started >= lifetime)) queue.close_requested = 1;
         /* 半按快门 S1：/dev/input/event0 code 125 (KEY_LEFTMETA) press ⇒ 关闭 */
         nx_panel_input_read_evdev(&panel_input, request_s1_close);
@@ -1380,12 +1714,24 @@ int main(int argc, char **argv) {
         }
         /* Leave unconsumed input in Xlib until its frame. Resetting Nuklear's
          * input while deferring draw would discard fast taps. Bound each batch
-         * and render to 10 Hz, including an expose/key-repeat event storm. */
+         * without extending a pending paint on each new input batch.
+         * continuous/discrete live at loop scope: the paint gate and the
+         * select deadline below need the latest burst classification. */
+        int continuous = 0, discrete = 0;
         if (tick >= next_frame) {
           nk_input_begin(ctx);
           while (events < 64 && XPending(display)) {
             XNextEvent(display, &event);
             events++;
+            /* Continuous drag/wheel bursts rasterize at ~15 Hz; input is still
+             * drained every frame and the final state always paints on the
+             * first frame after the burst ends. Single keys stay immediate. */
+            if (event.type == MotionNotify) continuous++;
+            else if (event.type == KeyPress) {
+                KeySym burst = XLookupKeysym(&event.xkey, 0);
+                if (burst == XF86XK_ScrollUp || burst == XF86XK_ScrollDown) continuous++;
+                else discrete++;
+            } else if (event.type == ButtonPress || event.type == ButtonRelease) discrete++;
             if (event.type == VisibilityNotify) {panel_visibility_event(&event); continue;}
             if (event.type == FocusIn || event.type == FocusOut) {
                 fprintf(stderr, "PANEL_FOCUS_EVENT type=%d mode=%d detail=%d\n", event.type, event.xfocus.mode, event.xfocus.detail);
@@ -1446,7 +1792,7 @@ int main(int argc, char **argv) {
                 KeySym key = XLookupKeysym(&event.xkey, 0);
                 /* Samsung's main wheel uses multimedia keysyms; its events
                  * only affect this focused panel, never the stock camera UI. */
-                if(lut_mode&&(lut_leave_dialog||lut_list_open)){lut_key(key);}
+                if(lut_mode&&(lut_leave_dialog||lut_list_open||lut_toolbar_focus>=0)){lut_key(key);}
                 else if (key == XK_Escape || key == XK_Menu) {
                     if (mfw_services && mfw_preview && !child) activate_mfw_item(-1);
                     else if(lut_mode)lut_request_leave(mfw_menu_root?2:1);
@@ -1523,6 +1869,12 @@ int main(int argc, char **argv) {
             if (event.type == ButtonPress || event.type == ButtonRelease) break;
           }
           nk_input_end(ctx);
+          /* Burst scheduling: the hold arms once per window and the paint gate
+           * below re-arms it AFTER painting, so sustained input still
+           * rasterizes at ~15 Hz instead of deferring forever. A discrete key
+           * breaks the hold and paints immediately. */
+          if (discrete) lut_paint_hold = 0;
+          else if (continuous >= 2 && lut_paint_hold <= 0) lut_paint_hold = tick + 66;
         }
         if(lut_mode&&lut_reference_press&&!lut_reference_original&&now_ms()-lut_reference_pressed_at>=300){lut_reference_original=1;lut_reference_dirty=dirty=1;}
         if (mfw_return_requested) { mfw_return_requested = 0; return_mfw_menu(); }
@@ -1547,10 +1899,17 @@ int main(int argc, char **argv) {
         if (!child && (!queue.close_requested || queue.commit_requested) && (index = nx_queue_take(&queue, now_ms())) >= 0)
             if (!start_child(1, index, NULL)) { nx_queue_done(&queue, 0); message("后端启动失败"); }
         if (tick >= next_frame && !quit && !queue.close_requested) {
-            if (dirty) {
+            /* A continuous drag/wheel burst defers rasterization to ~15 Hz;
+             * dirty stays set, so the frame after the burst always paints the
+             * final state. Single keys never enter this hold. */
+            if (dirty && tick >= lut_paint_hold) {
                 long long draw_started = now_ms(), elapsed;
                 if(refresh)xlib.surf->force_full=1;
                 dirty = 0; draw(); render_count++; painted = 1;
+                /* Paint first, then re-arm: sustained input keeps rasterizing
+                 * periodically instead of pushing the deadline forward. */
+                if (continuous >= 2 && !discrete) lut_paint_hold = draw_started + 66;
+                else lut_paint_hold = 0;
                 if (lut_mode && lut_page_requested) {
                     XSync(display, False);
                     fprintf(stderr, "LUT_PAGE pid=%ld shown_ms=%lld elapsed_ms=%lld\n",
@@ -1566,7 +1925,9 @@ int main(int argc, char **argv) {
                 nk_xsurf_blit(window, xlib.surf, (unsigned)width, (unsigned)height);
                 XFlush(display); blits++;
             }
-            if (events || painted || refresh) next_frame = now_ms() + 33;
+            /* Include rasterization in the frame budget. Adding another
+             * 33 ms after a slow draw unnecessarily delays queued input. */
+            if (events || painted || refresh) next_frame = tick + 33;
             if (trace_frames && (events || painted || refresh))
                 fprintf(stderr, "PANEL_FRAME pid=%ld dequeued_ms=%lld submitted_ms=%lld events=%d painted=%d exposed=%d\n",
                     (long)getpid(), input_dequeued, now_ms(), events, painted, refresh);
@@ -1577,6 +1938,8 @@ int main(int argc, char **argv) {
         if (child) delay = 100; /* only a running backend needs periodic reaping */
         if (lut_mode && (child || queue.commit_requested) && lut_apply_tick-tick < delay)
             delay = lut_apply_tick-tick;
+        if(lut_mode&&live&&tick<lut_preview_until&&lut_preview_due-tick<delay)
+            delay=lut_preview_due-tick;
         if(lut_mode&&lut_reference_press&&!lut_reference_original&&lut_reference_pressed_at+300-tick<delay)
             delay=lut_reference_pressed_at+300-tick;
         if (services_visible() && service_due - tick < delay) delay = service_due - tick;
@@ -1586,8 +1949,13 @@ int main(int argc, char **argv) {
             delay = started + lifetime - tick;
         /* A hidden panel waiting for its backend cannot draw. Its stale frame
          * deadline must not turn the child wait into a zero-timeout spin. */
-        if (!queue.close_requested && (dirty || pending) && next_frame - tick < delay)
-            delay = next_frame - tick;
+        if (!queue.close_requested) {
+            if (pending && next_frame - tick < delay) delay = next_frame - tick;
+            /* A paint needs both deadlines. Waking on the older frame
+             * deadline while the hold is active would busy-loop in select. */
+            long long paint_due = next_frame > lut_paint_hold ? next_frame : lut_paint_hold;
+            if (dirty && paint_due - tick < delay) delay = paint_due - tick;
+        }
         if (delay < 0) delay = 0;
         FD_ZERO(&fds);
         /* Pending events are already in the client queue. Watching a readable
@@ -1605,6 +1973,10 @@ int main(int argc, char **argv) {
         }
         wakeups++;
     }
+    if (trace_frames && lut_mode)
+        fprintf(stderr,"PANEL_FINAL selected=%d field=%d strength=%d tune=%d,%d,%d,%d,%d,%d,%d\n",
+            selected,lut_field,lut_strength,lut_tune.value[0],lut_tune.value[1],lut_tune.value[2],
+            lut_tune.value[3],lut_tune.value[4],lut_tune.value[5],lut_tune.value[6]);
     fprintf(stderr, "EXIT renders=%d elapsed_ms=%lld wakeups=%d blits=%d max_draw_ms=%lld\n",
         render_count, now_ms()-started, wakeups, blits, max_draw_ms);
     fprintf(stderr,"PANEL_UPLOAD full=%u partial=%u skipped=%u pixels=%llu\n",xlib.surf->full_uploads,

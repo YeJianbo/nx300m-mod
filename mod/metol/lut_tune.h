@@ -22,21 +22,32 @@ static inline int nx_tune_zero(const struct nx_lut_tune *t) {
     return 1;
 }
 /* Strict bounded parsing; a partial/corrupt preference never applies partly. */
-static inline int nx_tune_read(const char *file,char id[64],struct nx_lut_tune *t,unsigned *strength) {
-    FILE *in=fopen(file,"r");if(!in) return 0;
-    char body[256],extra;unsigned version,s;struct nx_lut_tune next;char key[64];
-    size_t n=fread(body,1,sizeof body-1,in);int overflow=fgetc(in)!=EOF,failed=ferror(in);fclose(in);
-    body[n]=0;if(overflow||failed||strlen(body)!=n) return 0;
+static inline int nx_tune_parse(const char *body,char id[64],struct nx_lut_tune *t,unsigned *strength) {
+    char extra;unsigned version,s;struct nx_lut_tune next;char key[64];
     int fields=sscanf(body,"%u %63s %d %d %d %d %d %d %d %u %c",&version,key,
         &next.value[0],&next.value[1],&next.value[2],&next.value[3],&next.value[4],&next.value[5],&next.value[6],&s,&extra);
     if(fields!=10||version!=1||!nx_tune_valid(&next)||s>100) return 0;
     strcpy(id,key);*t=next;if(strength)*strength=s;return 1;
 }
-static inline int nx_tune_print(FILE *out,const char *id,const struct nx_lut_tune *t,unsigned strength) {
-    return fprintf(out,"1 %s %d %d %d %d %d %d %d %u\n",id,t->value[0],t->value[1],t->value[2],
-        t->value[3],t->value[4],t->value[5],t->value[6],strength)>=0;
+static inline int nx_tune_read(const char *file,char id[64],struct nx_lut_tune *t,unsigned *strength) {
+    FILE *in=fopen(file,"r");if(!in) return 0;
+    char body[256];
+    size_t n=fread(body,1,sizeof body-1,in);int overflow=fgetc(in)!=EOF,failed=ferror(in);fclose(in);
+    body[n]=0;if(overflow||failed||strlen(body)!=n) return 0;
+    return nx_tune_parse(body,id,t,strength);
 }
+static inline int nx_tune_snprint(char *out,size_t size,const char *id,const struct nx_lut_tune *t,unsigned strength) {
+    int n=snprintf(out,size,"1 %s %d %d %d %d %d %d %d %u\n",id,t->value[0],t->value[1],t->value[2],
+        t->value[3],t->value[4],t->value[5],t->value[6],strength);
+    return n>0&&(size_t)n<size;
+}
+static inline int nx_tune_print(FILE *out,const char *id,const struct nx_lut_tune *t,unsigned strength) {
+    char line[192];
+    return nx_tune_snprint(line,sizeof line,id,t,strength)&&fputs(line,out)!=EOF;
+}
+#include "lut_tune_store.h"
 static inline int nx_tune_load(const char *root,const char *id,struct nx_lut_tune *t,unsigned *strength) {
+    if(nx_tune_preset_load(root,id,t,strength))return 1;
     char file[1024],key[64];struct nx_lut_tune next;unsigned s;
     if(snprintf(file,sizeof file,"%s/.state/lut-tune-%s",root,id)>=(int)sizeof file) return 0;
     if(!nx_tune_read(file,key,&next,&s)||strcmp(key,id)) return 0;
