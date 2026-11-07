@@ -10,6 +10,8 @@ import shutil
 
 from nx300m_installer import safe_path
 from installer_backend import verify_backend
+from manual_lens_wifi_payload import build_wifi_payload, verify_wifi_payload
+from release_payload import deployed_overlay, verify_complete
 
 ROOT = Path(__file__).resolve().parents[1]
 CARD = Path('H:/')
@@ -19,6 +21,7 @@ EVIDENCE = ROOT / 'outputs/review/2026-11-06-device-feedback/cold-boot-candidate
 
 def main():
     record = json.loads(EVIDENCE.read_text(encoding='utf-8'))
+    overlay = deployed_overlay(ROOT)
     prior_path = OUT / 'manifest.json'
     prior = json.loads(prior_path.read_text(encoding='utf-8')) if prior_path.is_file() else {}
     source_root = OUT / 'payload' if prior else CARD
@@ -31,13 +34,18 @@ def main():
         if '/.state/' in name: continue
         actual = hashlib.sha256(safe_path(source_root, name).read_bytes()).hexdigest()
         accepted = {expected}
+        if name in overlay:
+            accepted.add(hashlib.sha256(overlay[name]).hexdigest())
         if name == 'nx300m-mod/runtime-files.list':
             accepted.add(prior.get('files', {}).get(name, {}).get('sha256'))
         if actual not in accepted:
             raise ValueError('Card differs from tested backend: ' + name)
     for name, item in record['payload'].items():
         if name.endswith('RESTART_SERVICE'): continue
-        if hashlib.sha256(safe_path(source_root, name).read_bytes()).hexdigest() != item['sha256']:
+        accepted = {item['sha256']}
+        if name in overlay:
+            accepted.add(hashlib.sha256(overlay[name]).hexdigest())
+        if hashlib.sha256(safe_path(source_root, name).read_bytes()).hexdigest() not in accepted:
             raise ValueError('Card differs from candidate: ' + name)
     runtime = safe_path(source_root, 'nx300m-mod/runtime-files.list').read_text(encoding='ascii').splitlines()
     if len(runtime) != len(set(runtime)): raise ValueError('Duplicate runtime paths')
@@ -70,7 +78,11 @@ def main():
             if source.is_file(): files[relative] = source.read_bytes()
     if len(files['nx300m-mod/looks/nx300-adjust-base/table-stock3d.d4lut']) != 4380:
         raise ValueError('Factory baseline missing')
+    files.update(overlay)
+    files.update(build_wifi_payload(ROOT))
+    wifi = verify_wifi_payload(files.__getitem__)
     backend = verify_backend(files.__getitem__)
+    complete = verify_complete(files.__getitem__)
     OUT.mkdir(parents=True, exist_ok=True)
     entries = {}
     for name, data in files.items():
@@ -79,7 +91,9 @@ def main():
         destination.write_bytes(data)
         entries[name] = {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
     manifest = {'schema': 1, 'kind': 'nx300m-first-install-local-candidate',
-                'files': entries, 'backend': backend, 'physical_first_install_verified': False}
+                'files': entries, 'backend': backend, 'manual_lens_wifi': wifi,
+                'complete_runtime': complete,
+                'physical_first_install_verified': False}
     (OUT / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     print('FIRST_INSTALL_FILES=', len(files), 'directory=', OUT)
 

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import nx300m_installer as installer
 from installer_backend import verify_backend
+from manual_lens_wifi_payload import verify_wifi_payload
 
 ROOT = Path(__file__).resolve().parents[1]
 FIRST = ROOT / 'outputs/releases/windows-updater-20261106/first-install'
@@ -20,6 +21,13 @@ assert (payload / 'smartfilter-preview.sh').read_bytes() == (checked / 'source-f
 assert (payload / 'ipcs-diagnostic/lib/smartfilter_ram.bin').read_bytes() == (checked / 'source-files/smartfilter_ram.bin').read_bytes()
 broken = {name: (FIRST / 'payload' / name).read_bytes()
           for name in json.loads((FIRST / 'manifest.json').read_text(encoding='utf-8'))['files']}
+missing_wifi = dict(broken)
+missing_wifi.pop('nx300m-lens-debug/manual-lens-wifi-mem.arm')
+try:
+    verify_wifi_payload(missing_wifi.__getitem__)
+    raise AssertionError('missing no-lens Wi-Fi payload was accepted')
+except ValueError:
+    pass
 broken['nx300m-mod/runtime-files.list'] = b''.join(
     line for line in broken['nx300m-mod/runtime-files.list'].splitlines(keepends=True)
     if line.strip() not in (b'IPCS_OPEN_DIAGNOSTIC', b'IPCS_SESSION_PREVIEW'))
@@ -38,6 +46,7 @@ with tempfile.TemporaryDirectory() as tmp:
         manifest = json.loads((FIRST / 'manifest.json').read_text(encoding='utf-8'))
         for name, rec in manifest['files'].items():
             assert installer.checksum((card / name).read_bytes()) == rec['sha256']
+        verify_wifi_payload(lambda name: (card / name).read_bytes())
         assert photo.read_bytes() == b'photo'
         try:
             installer.install_first(card, IDENTITY)
@@ -54,5 +63,17 @@ with tempfile.TemporaryDirectory() as tmp:
         backup = installer.uninstall_mod(card, IDENTITY)
         assert not (card / 'autoexec.sh').exists() and not (card / 'nx300m-mod').exists()
         assert (backup / 'autoexec.sh').is_file() and (backup / 'nx300m-mod/looks.txt').is_file()
+        assert not (card / 'nx300m-lens-debug').exists()
+        assert (backup / 'nx300m-lens-debug/manual-lens-wifi-mem.arm').is_file()
         assert photo.read_bytes() == b'photo'
+        lens = card / 'nx300m-lens-debug'
+        lens.mkdir()
+        foreign = lens / 'keep.txt'
+        foreign.write_bytes(b'existing lens configuration')
+        try:
+            installer.install_first(card, IDENTITY)
+            raise AssertionError('existing lens directory was overwritten')
+        except ValueError:
+            pass
+        assert foreign.read_bytes() == b'existing lens configuration'
 print('first-install fixture: install, conflict refusal, reversible uninstall and photo preservation passed')

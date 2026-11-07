@@ -182,6 +182,25 @@ static int invalidate_lut_cache(int mem,unsigned tid,uint32_t iq,uint32_t *cache
         if(!poke(tid,*cache_address,&invalid,4)||!read_exact(mem,&actual,4,*cache_address)||actual!=invalid)return 0;}
     return 1;
 }
+static int same_admitted_file(const struct stat64 *a,const struct stat64 *b) {
+    return a->st_dev==b->st_dev&&a->st_ino==b->st_ino&&a->st_mode==b->st_mode&&
+        a->st_size==b->st_size&&a->st_mtim.tv_sec==b->st_mtim.tv_sec&&
+        a->st_mtim.tv_nsec==b->st_mtim.tv_nsec&&a->st_ctim.tv_sec==b->st_ctim.tv_sec&&
+        a->st_ctim.tv_nsec==b->st_ctim.tv_nsec;
+}
+static int refresh_admitted_image(struct image *im,const struct mapping *expected,const struct stat64 *file) {
+    struct stat64 st;
+    if(__fxstat64(3,im->fd,&st)||!same_admitted_file(&st,file))return 0;
+    for(unsigned i=0;i<nmaps;i++) {
+        struct mapping *m=&maps[i];
+        if(m->lo==expected->lo&&m->hi==expected->hi&&m->offset==expected->offset&&
+           m->inode==expected->inode&&m->devmajor==expected->devmajor&&m->devminor==expected->devminor&&
+           !strcmp(m->perm,expected->perm)&&!strcmp(m->path,expected->path)) {
+            im->first=m;return 1;
+        }
+    }
+    return 0;
+}
 static int mutate(unsigned pid,const char *command,const char *blob_path,const char *root,int fixture) {
     char path[128];if(!state_path(pid,path,sizeof path)){fprintf(stderr,"State directory must be tmpfs/ramfs; no target changed.\n");return 3;}
     struct live_state state;memset(&state,0,sizeof state);
@@ -192,30 +211,55 @@ static int mutate(unsigned pid,const char *command,const char *blob_path,const c
         }
         existing=1;
     }
-    if(!attach_all(pid)){int detached=detach_all();clear_markers(pid);fprintf(stderr,"Thread admission/attach failed; detached=%d; no slot write.\n",detached);return 3;}
     int rc=3,mem=-1,iq_ok=0,udd_ok=0,libc_ok=0,patched=0,state_written=0;
     const char *stage="process-identity";
     uint32_t owned_region=0,owned_size=0;
     int mapping_reused=0,already_installed=0,reuse_enabled=0;
     uint32_t restore_prev_a=0,restore_prev_b=0,restore_cache=0;int restore_attempted=0;
     struct image iq={0},udd={0},libc={0};iq.fd=udd.fd=libc.fd=-1;
-    struct stopped *main_thread=NULL;for(unsigned i=0;i<nstops;i++)if(stops[i].tid==pid)main_thread=&stops[i];
-    unsigned n=0;unsigned long long start=0;if(threads(pid,after,&n))for(unsigned i=0;i<n;i++)if(after[i].tid==pid)start=after[i].start;
+    struct stopped *main_thread=NULL;
+    struct thread identity;unsigned long long start=0,admission_at=now_ms(),stopped_at=0;
+    struct stat64 app_file,iq_file,udd_file,libc_file,check_file;
+    struct mapping iq_map,udd_map,libc_map;
+    if(!task_identity(pid,pid,&identity))goto done;
+    start=identity.start;
     snprintf(path,sizeof path,"/proc/%u/exe",pid);char exe[512];ssize_t len=readlink(path,exe,sizeof exe-1);if(len<0)goto done;exe[len]=0;
     if(fixture?(strcmp(base(exe),"lut_live_fixture.arm")&&strcmp(base(exe),"smartfilter_fixture.arm")):
        strcmp(base(exe),"di-camera-app-nx300")){fprintf(stderr,"Unexpected target executable.\n");goto done;}
-    if(!fixture){int appfd=open(path,O_RDONLY|O_CLOEXEC);int exact=appfd>=0&&file_hash(appfd,STOCK_APP_SIZE,STOCK_APP_SHA);
-        if(appfd>=0)close(appfd);
-        if(!exact){fprintf(stderr,"Camera executable is not the original NX300M 1.15 ELF.\n");goto done;}}
-    if(!main_thread||!start||!load_maps(pid))goto done;
+    /* Authenticate large files while all camera threads are running. Keep
+     * their descriptors and revalidate identity/mappings after attach, as
+     * the preview loader does; never hash NAND files in the stop window. */
+    int appfd=open(path,O_RDONLY|O_CLOEXEC);
+    int exact=appfd>=0&&!__fxstat64(3,appfd,&app_file)&&
+        (fixture||file_hash(appfd,STOCK_APP_SIZE,STOCK_APP_SHA))&&
+        !__fxstat64(3,appfd,&check_file)&&same_admitted_file(&app_file,&check_file);
+    if(appfd>=0)close(appfd);
+    if(!exact){fprintf(stderr,"Camera executable admission failed.\n");goto done;}
+    if(!start||!load_maps(pid))goto done;
     if(!restoring)for(unsigned i=0;i<nmaps;i++)if(strstr(maps[i].path,"lut_port")||strstr(maps[i].path,"lut_node_port"))goto done;
     stage="stock-ELF-and-code";
     iq_ok=image_open(pid,"libiq-fw-slpcam.so",STOCK_IQ_SIZE,STOCK_IQ_SHA,&iq);
     udd_ok=image_open(pid,"libudd.so.3.1",STOCK_UDD_SIZE,STOCK_UDD_SHA,&udd);
     libc_ok=image_open(pid,"libc-2.13.so",STOCK_LIBC_SIZE,STOCK_LIBC_SHA,&libc);
     if(!libc_ok)libc_ok=image_open(pid,"libc.so.6",STOCK_LIBC_SIZE,STOCK_LIBC_SHA,&libc);
+    if(!iq_ok||!udd_ok||!libc_ok||!dynamic_abi(&iq)||
+       __fxstat64(3,iq.fd,&iq_file)||__fxstat64(3,udd.fd,&udd_file)||__fxstat64(3,libc.fd,&libc_file))goto done;
+    iq_map=*iq.first;udd_map=*udd.first;libc_map=*libc.first;
+    fprintf(stderr,"Still control admission: elapsed_ms=%llu; camera running\n",now_ms()-admission_at);
+    if(abort_requested)goto done;
+    stopped_at=now_ms();
+    if(!attach_all(pid)){fprintf(stderr,"Thread admission/attach failed; no slot write.\n");goto done;}
+    for(unsigned i=0;i<nstops;i++)if(stops[i].tid==pid)main_thread=&stops[i];
+    if(!main_thread||!task_identity(pid,pid,&identity)||identity.start!=start||!load_maps(pid))goto done;
+    snprintf(path,sizeof path,"/proc/%u/exe",pid);appfd=open(path,O_RDONLY|O_CLOEXEC);
+    exact=appfd>=0&&!__fxstat64(3,appfd,&check_file)&&same_admitted_file(&app_file,&check_file);
+    if(appfd>=0)close(appfd);
+    if(!exact||!refresh_admitted_image(&iq,&iq_map,&iq_file)||
+       !refresh_admitted_image(&udd,&udd_map,&udd_file)||!refresh_admitted_image(&libc,&libc_map,&libc_file)) {
+        fprintf(stderr,"Process or authenticated mappings changed; no slot write.\n");goto done;
+    }
     snprintf(path,sizeof path,"/proc/%u/mem",pid);mem=open(path,O_RDONLY|O_CLOEXEC);
-    if(!iq_ok||!udd_ok||!libc_ok||mem<0||!dynamic_abi(&iq)||
+    if(mem<0||
        !code_check(mem,iq.bias+0x350dc0,stock_update)||!code_check(mem,iq.bias+0x350e0c,stock_reset)||
        !code_check(mem,udd.bias+0x955c8,stock_lut)||!code_check(mem,libc.bias+STOCK_SVC,stock_svc))goto done;
     stage="RW-slot-admission";
@@ -349,6 +393,7 @@ done:
     if(libc.fd>=0)close(libc.fd);
     if(transaction_poisoned){clear_markers(pid);fprintf(stderr,"FATAL: context recovery incomplete; no success claimed.\n");return 5;}
     if(!detach_all()){clear_markers(pid);fprintf(stderr,"FATAL: not all TIDs detached.\n");return 5;}
+    if(stopped_at)fprintf(stderr,"Still target stop window: %llu ms; file verification ran before attach.\n",now_ms()-stopped_at);
     if(known&&!rc){state_path(pid,path,sizeof path);unlink(path);}
     if(restoring||rc)clear_markers(pid);
     if(restoring&&!rc)printf("{\"command\":\"restore\",\"pid\":%u,\"restored\":true,\"mapping_retained\":true,\"cache_invalidated\":%s,\"ready\":false,\"image_verified\":false}\n",pid,restore_cache?"true":"false");

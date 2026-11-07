@@ -768,6 +768,12 @@ static void read_output(void) {
     char buf[512]; ssize_t n;
     if (child_fd < 0) return;
     while ((n = read(child_fd, buf, sizeof buf)) > 0) {
+        /* Control progress must survive power-off even if the native worker
+         * never returns. Do not wait for poll_child's final summary to log it. */
+        if ((busy_kind == 1 && lut_mode) || (busy_kind == 5 && mfw_child_preview)) {
+            fwrite(buf, 1, (size_t)n, stderr);
+            fflush(stderr);
+        }
         int keep = (int)n;
         if (keep > (int)sizeof(output)-1-output_len) keep = (int)sizeof(output)-1-output_len;
         if (keep > 0) { memcpy(output + output_len, buf, (size_t)keep); output_len += keep; }

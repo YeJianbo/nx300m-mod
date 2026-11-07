@@ -5,6 +5,7 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shutil
 import struct
@@ -18,6 +19,8 @@ import uuid
 import zipfile
 from datetime import datetime
 from installer_backend import verify_backend
+from manual_lens_wifi_payload import PREFIX as WIFI_PREFIX, verify_wifi_payload
+from release_payload import verify_complete
 
 BASE = Path(sys.executable if getattr(sys, 'frozen', False) else __file__).resolve().parent
 MANIFEST = BASE / 'manifest.json'
@@ -28,7 +31,7 @@ FIRST = BASE / 'first-install'
 def prepare_first(card, identity):
     if identity['filesystem'].upper() not in ('FAT32', 'EXFAT'):
         raise ValueError('请选择 FAT32 或 exFAT 存储卡。')
-    for name in ('autoexec.sh', 'nx300m-mod'):
+    for name in ('autoexec.sh', 'nx300m-mod', 'nx300m-lens-debug'):
         path = safe_path(card, name)
         if path.exists() or path.is_symlink():
             raise ValueError('卡上已有 ' + name + '，为保护现有配置，请使用升级流程或另一张卡。')
@@ -40,13 +43,13 @@ def prepare_first(card, identity):
         raise ValueError('首次安装文件不完整。')
     size = 0
     for name, rec in files.items():
-        if name != 'autoexec.sh' and not name.startswith('nx300m-mod/'):
+        if name != 'autoexec.sh' and not name.startswith(('nx300m-mod/', WIFI_PREFIX)):
             raise ValueError('安装包含不支持的路径：' + name)
         data = safe_path(FIRST / 'payload', name).read_bytes()
         if len(data) != rec['bytes'] or checksum(data) != rec['sha256']:
             raise ValueError('首次安装文件校验失败：' + name)
         size += len(data)
-    verify_backend(lambda name: safe_path(FIRST / 'payload', name).read_bytes())
+    verify_complete(lambda name: safe_path(FIRST / 'payload', name).read_bytes())
     if shutil.disk_usage(card).free < size + 4 * 1024 * 1024:
         raise ValueError('存储卡剩余空间不足。')
     return files
@@ -70,8 +73,9 @@ def install_first(card, identity):
             write_checked(target, data)
         if volume(str(card)) != identity:
             raise OSError('写入期间存储卡已变化。')
-        verify_backend(lambda name: safe_path(stage, name).read_bytes())
-        for name in ('nx300m-mod', 'autoexec.sh'):
+        verify_complete(lambda name: safe_path(stage, name).read_bytes())
+        # Both runtime directories must exist before publishing the boot entry.
+        for name in ('nx300m-lens-debug', 'nx300m-mod', 'autoexec.sh'):
             target = safe_path(card, name)
             if target.exists() or target.is_symlink():
                 raise OSError('目标已出现，已停止安装：' + name)
@@ -93,6 +97,14 @@ def uninstall_mod(card, identity):
         raise ValueError('启动脚本与本工具不匹配，无法自动卸载；请保留现有脚本。')
     if not mod.is_dir() or not safe_path(card, 'nx300m-mod/mfw-service-entry.sh').is_file():
         raise ValueError('未找到可识别的 MOD 目录。')
+    lens = safe_path(card, 'nx300m-lens-debug')
+    lens_owned = False
+    if lens.is_dir():
+        try:
+            verify_wifi_payload(lambda name: safe_path(card, name).read_bytes(), allow_stock=True)
+            lens_owned = True
+        except (OSError, ValueError):
+            pass  # Preserve an unrecognized directory; the root entry is removed.
     backup = safe_path(card, 'nx300m-mod-backup-' + uuid.uuid4().hex[:12])
     backup.mkdir()
     try:
@@ -102,6 +114,10 @@ def uninstall_mod(card, identity):
         if volume(str(card)) != identity:
             raise OSError('存储卡信息已变化。')
         os.rename(mod, backup / 'nx300m-mod')
+        if lens_owned:
+            if volume(str(card)) != identity:
+                raise OSError('存储卡信息已变化。')
+            os.rename(lens, backup / 'nx300m-lens-debug')
     except OSError as exc:
         raise OSError(f'{exc}\n卸载未完成；请保留卡上文件，检查备份目录 {backup}。') from exc
     return backup
@@ -155,13 +171,24 @@ def prepare(card):
         current = checksum(dest.read_bytes()) if dest.is_file() else None
         if dest.exists() and not dest.is_file():
             raise ValueError('目标不是普通文件：' + name)
+        if rec.get('preserve_existing') and current is not None:
+            data = dest.read_bytes()
+            valid = ((name == WIFI_PREFIX + 'WIFI_MEM_RUN_ID' and re.fullmatch(rb'[0-9A-Za-z-]{1,64}\n', data)) or
+                     (name == WIFI_PREFIX + 'WIFI_MEM_PROFILE' and data in (b'stock\n', b'manual-lens-wifi\n')))
+            if not valid:
+                raise ValueError('已有无线配置无效，请保留并检查：' + name)
+            continue
         if current not in rec['accepted']:
             raise ValueError('目标版本不匹配：' + name)
         data = safe_path(BASE, rec['asset']).read_bytes()
         if checksum(data) != rec['sha256']:
             raise ValueError('升级包校验失败：' + name)
         writes[name] = data
-    verify_backend(lambda name: writes[name] if name in writes else safe_path(card, name).read_bytes())
+    read = lambda name: writes[name] if name in writes else safe_path(card, name).read_bytes()
+    if info.get('complete_runtime'):
+        verify_complete(read, allow_stock_wifi=True)
+    else:
+        verify_backend(read)
     return writes
 
 
@@ -206,12 +233,16 @@ def apply(card, identity):
                          'installed_sha256': checksum(all_writes[name])}
     write_checked(backup / 'backup.json', json.dumps({'files': records}, indent=2).encode())
     try:
-        for name, data in all_writes.items():
-            if name == RESTART:
-                continue
+        names = [name for name in all_writes if name not in (RESTART, 'autoexec.sh')]
+        if 'autoexec.sh' in all_writes:
+            names.append('autoexec.sh')
+        for name in names:
+            data = all_writes[name]
             if volume(str(card))['serial'] != identity['serial']:
                 raise OSError('写入期间磁盘已更换')
-            write_checked(safe_path(card, name), data)
+            target = safe_path(card, name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_checked(target, data)
         verify_backend(lambda name: safe_path(card, name).read_bytes())
         if volume(str(card))['serial'] != identity['serial']:
             raise OSError('写入期间磁盘已更换')
@@ -228,15 +259,28 @@ def export_logs(card, destination, identity):
         for path in logs.iterdir():
             if path.is_file() and not path.is_symlink() and path.suffix.lower() in ('.log', '.txt'):
                 if not (getattr(path.stat(), 'st_file_attributes', 0) & 0x400):
-                    selected.append(path)
+                    selected.append((path, 'logs/' + path.name))
+    lens_logs = safe_path(card, 'nx300m-lens-debug/logs')
+    if lens_logs.is_dir():
+        for path in lens_logs.rglob('*'):
+            if not path.is_file() or path.suffix.lower() not in ('.log', '.txt', '.json'):
+                continue
+            try:
+                checked = safe_path(card, path.relative_to(card).as_posix())
+            except ValueError:
+                continue
+            selected.append((checked, 'lens-wifi/' + path.relative_to(lens_logs).as_posix()))
+    entry_log = safe_path(card, 'nx300m-lens-debug/wifi-mem-entry.log')
+    if entry_log.is_file():
+        selected.append((entry_log, 'lens-wifi/wifi-mem-entry.log'))
     with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as archive:
         archive.writestr('说明.txt', '日志可能包含相机、网络和电脑路径信息，请检查后再分享。\n未包含照片或完整配置。\n')
         archive.writestr('设备信息.json', json.dumps(identity, ensure_ascii=False, indent=2))
         local_log = BASE / 'installer.log'
         if local_log.is_file() and not local_log.is_symlink():
             archive.write(local_log, 'installer.log')
-        for path in selected:
-            archive.write(path, 'logs/' + path.name)
+        for path, name in selected:
+            archive.write(path, name)
     return len(selected)
 
 

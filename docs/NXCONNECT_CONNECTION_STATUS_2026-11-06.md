@@ -1,10 +1,12 @@
 # NXConnect 连接核查：2026-11-06
 
-结论：App 侧已有连接流程修复，真实无线关联失败与相机不能关机的问题仍未解决。11 月 6 日的菜单、预设和冷启动预览修复没有改 Android 连接代码，也没有完成相机独立热点接入。
+2026-11-07 手动镜头分享反馈后更新：首装遗漏的四项无线准入资源已补回 H: 并回读通过；随后已重打 v0.1.0-preview.4 完整 Windows 与 SD ZIP，并通过八项离线验收。机身补丁执行及原厂 RVF 401 仍待分别验证，详见 [当前交付状态](DEVICE_STATUS_2026-11-07.md)。下文保留此前检查时的卡状态和证据。
+
+结论：App 侧已修复 WLAN 保存后未确保关联的流程；用户随后报告 Mod 可连接，但原厂配对返回 HTTP 401，机身没有弹出允许提示，仍停在等待连接页。原厂授权拒绝的具体分支尚未确定。历史间歇性 HTTP 无响应、相机不能关机及独立热点接入仍未关闭。11 月 6 日早先的菜单、预设和冷启动预览修复没有改 Android 连接代码。
 
 ## 当前实现
 
-- 源码版本 `0.20.34 / 82`。`CameraPairing.kt` 的扫描选择与 NFC 凭据入口共用连接流程：Android 11+ 使用 `ACTION_WIFI_ADD_NETWORKS` 系统保存网络，已在对应 SSID 时直接识别；Android 10 保留 Specifier 请求。
+- 源码候选版本 `0.20.36 / 84`，GitHub 已发布 `0.20.35 / 83`。`CameraPairing.kt` 的扫描选择与 NFC 凭据入口共用连接流程：Android 11+ 使用 `ACTION_WIFI_ADD_NETWORKS` 系统保存网络，核对所选 SSID 和 IPv4，必要时明确请求连接该 WLAN；已关联时直接识别。Android 10 保留 Specifier 请求。
 - `CameraWifi.kt` 等待有效 IPv4，处理批准／DHCP 超时、取消、旧网络丢失与替换网络；已批准的请求保留。此入口服务 Android 10 及系统保存入口不可用时的兜底。
 - `NetworkBinder.kt` 按目标地址的实际网段选择网络；`AndroidHttpBinder.kt` 捕获相机对应的 `Network`，通过 `network.openConnection()` 建立 HTTP 请求。应用专用网络可以承载实际相机 HTTP，不能仅凭系统仍显示其他默认网络断言相机流量没走 WLAN。
 - 机身 `nxui_feature_pages.h` 的连接入口调用 `panel-actions.sh network-info`，仅执行只读地址查询和显示；没有热点、DHCP 开启或关闭动作。
@@ -81,4 +83,12 @@ health 与 camera/info 均能返回，而 App 失败，排查 App 的网络绑�
 
 此修改不证明相机热点或 8781 的间歇性失效已经修复；本机没有已连接的实体 Android 设备，真实系统弹窗、关联和 DHCP 需用上述最小流程确认。
 
-交付验证：release 构建退出 0；既有 `CameraServiceIdentificationTest` 4 项与 `DiscoveryAgainstFakeCameraTest` 5 项全部通过（仅软件服务识别，不是 Wi-Fi 关联测试）。APK 为 7,521,762 字节，v2 签名通过，与 0.20.34 使用相同证书，可覆盖安装。结果、APK 摘要与旧包备份在 `outputs/nxconnect/auto-connect-repair/`，没有写卡或上传发布。
+0.20.35 交付验证：release 构建退出 0；既有 `CameraServiceIdentificationTest` 4 项与 `DiscoveryAgainstFakeCameraTest` 5 项全部通过（仅软件服务识别，不是 Wi-Fi 关联测试）。APK 为 7,521,762 字节，v2 签名通过，与 0.20.34 使用相同证书，可覆盖安装。结果、APK 摘要与旧包备份在 `outputs/nxconnect/auto-connect-repair/`。随后已更新 GitHub main 与 `v0.1.0-preview.3` 的 APK、对应源码附件和校验；未写卡。
+
+## 0.20.36：原厂 401、无机身允许提示
+
+后续用户截图显示 Mod 已连接，但原厂 RVF 返回 HTTP 401。用户明确回复没有弹出“允许这台手机连接”，始终停在机身等待页。当前优先核对原厂前置访问控制与活动 RVF 身份状态，尚未确定实际命中分支；不将无线准入资源遗漏或 App 未调用配对列为已确认原因。
+
+本版修正空 HTTP 拒绝被误报为 XML EOF 的问题，分别报告设备描述、SCPD、GetInfomation 的失败阶段，日志包括请求开始、状态码和耗时。没有新增 401 循环重试，也没有改变原厂授权条件。本版的相册黑边修复与此问题独立，详见 `NXCONNECT.md`。
+
+候选 APK `outputs/nxconnect/NXConnect-NX300M-v0.20.36.apk` 已构建并通过 11 项定向软件检查，v2 签名与旧版一致。原厂等待页问题仍未关闭；需覆盖安装后自动连接一次，提供完整失败阶段或 App 日志，才能进一步区分授权分支。记录为 `outputs/nxconnect/preview-rvf-repair/report.json`。

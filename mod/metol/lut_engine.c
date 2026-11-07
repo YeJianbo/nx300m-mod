@@ -231,7 +231,9 @@ static int action(int argc,char **argv) {
          * Stock here must not start another stock-only preview session. */
         if(setenv("NX300M_LUT_SKIP_PREVIEW_SYNC","1",1)) return 4;
         int result=nx_lut_stock();if(result) return result;
-        result=service_control("smartfilter-preview.sh","restore",1);
+        /* Ordinary Off drains the same native preview session as restore,
+         * without attaching a second time just to export diagnostics. */
+        result=service_control("smartfilter-preview.sh","stop",1);
         if(result) { fputs("LUT_OFF_FAILED preview stop incomplete\n",stderr);return result; }
         if(!access(NX_LUT_RAM_MARKER,F_OK)||nx_lut_hook_ready()) {
             result=service_control("lut-load.sh","restore",0);

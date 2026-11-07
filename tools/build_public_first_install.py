@@ -5,6 +5,8 @@ import json
 
 from installer_backend import verify_backend
 from nx300m_installer import safe_path
+from manual_lens_wifi_payload import build_wifi_payload, verify_wifi_payload
+from release_payload import verify_complete, is_core
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / 'outputs/releases/windows-updater-20261106'
@@ -33,7 +35,13 @@ def build():
             files['nx300m-mod/looks/'+folder.name+'/'+name]=(folder/name).read_bytes()
     files['nx300m-mod/looks.txt']=(original/'looks.txt').read_bytes()
     files['nx300m-mod/looks-cycle.txt']=files['nx300m-mod/looks.txt']
+    files.update(build_wifi_payload(ROOT))
+    wifi=verify_wifi_payload(files.__getitem__)
     backend=verify_backend(files.__getitem__)
+    complete=verify_complete(files.__getitem__)
+    if any(files[name] != safe_path(source/'payload',name).read_bytes()
+           for name in files if is_core(name)):
+        raise ValueError('公开首装与完整首装的非 LUT 程序不同。')
     destination=BASE/'public-first-install'
     destination.mkdir(parents=True,exist_ok=True)
     entries={}
@@ -41,7 +49,8 @@ def build():
         target=safe_path(destination/'payload',name);target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
         entries[name]={'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}
     result={'schema':1,'kind':'nx300m-first-install-local-candidate','distribution':'public-original-looks',
-            'files':entries,'backend':backend,'physical_first_install_verified':False}
+            'files':entries,'backend':backend,'manual_lens_wifi':wifi,
+            'complete_runtime':complete,'physical_first_install_verified':False}
     (destination/'manifest.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     print('PUBLIC_FIRST_INSTALL='+str(destination))
     return destination
