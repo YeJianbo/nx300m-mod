@@ -1,5 +1,7 @@
 # 最快快门上限
 
+完整 A/P 区间的后续逆向见 [运行时控制接口](RUNTIME_CONTROL_INTERFACES.md#5-ap-自动快门区间实际是程序线求解)：最慢边界、程序线端点及后续 Auto ISO 偏移已经定位，尚未实现联合范围控制。
+
 已实现 NX300M 1.15 原厂 capture AE 的 **Tv 上界**钩子。默认关闭，启用后先执行真实原厂 getter，再返回 `min(原厂上界, 用户上界)`。没有修改最低快门偏好 `APPPREF_SHUTTER_SPEED_MIN_INDEX/AUTO`，也没有在机械快门或 PWM 阶段延长曝光。
 
 产物为 `outputs/controls/shutter_limit.so`，源码 `runtime/shutter_limit.c`。隔离 ARM probe 已验证原厂 getter 转发、时间表转换、关闭恢复与非法枚举拒绝。普通会话挂接和完整 AE 求解消费需要由启动器整合后继续验证；没有据此声称手动、特殊模式或物理曝光已经覆盖。

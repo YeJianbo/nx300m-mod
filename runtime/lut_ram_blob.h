@@ -14,4 +14,8 @@ struct nx_lut_ram_config {
 #define NX_LUT_RAM_ABI 1U
 #define NX_LUT_RAM_CONTEXT_STRIDE_V1 4660U
 #define NX_LUT_RAM_CONTEXT_STRIDE_DIAGNOSTIC_V1 4720U
+/* V3 adds per-context R4 frequency counters (stats_updates/ipcs_completes/
+ * publishes). The loader header carries the stride; readers accept V1,
+ * diagnostic and this stride. */
+#define NX_LUT_RAM_CONTEXT_STRIDE_STATS_V3 4732U
 #endif

@@ -15,6 +15,7 @@ nx300m_launch_persistent_app() {
         IFS= read -r nx300m_profile < "$nx300m_profile_file" || :
     fi
     case "$nx300m_profile" in
+        settings) nx300m_names='exposure_controls.so camera_firmware_mod.so' ;;
         services) nx300m_names='service-loader.so' ;;
         controls) nx300m_names='exposure_controls.so shutter_limit.so lcd-capture.so service-loader.so camera_firmware_mod.so' ;;
         color) nx300m_names='lut_port.so ui_mod.so color-style.so service-loader.so' ;;
@@ -31,6 +32,13 @@ nx300m_launch_persistent_app() {
         nx300m_preload=${nx300m_preload:+$nx300m_preload:}$nx300m_library
     done
     NX300M_MOD_ROOT=/mnt/mmc/nx300m-mod
+    # The independent MFW service already owns the panel shortcut. This
+    # profile adds controls only, with stock behaviour until saved settings
+    # are restored; it must not add a second Custom handler or LUT pipeline.
+    if [ "$nx300m_profile" = settings ]; then
+        NX300M_CUSTOM_SETTINGS=0 NX300M_DIAL_ANIMATION=0
+        export NX300M_CUSTOM_SETTINGS NX300M_DIAL_ANIMATION
+    fi
     LD_PRELOAD=$nx300m_preload${LD_PRELOAD:+:$LD_PRELOAD}
     export NX300M_MOD_ROOT LD_PRELOAD
     # Saved firmware control preferences are re-applied once the bridge is up.

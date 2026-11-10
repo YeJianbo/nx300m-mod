@@ -1,0 +1,324 @@
+[
+  {
+    "id": "fuitelum1",
+    "name": "彩色漏光 1",
+    "asset": "edge-defects/bord3_fuitelum1.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum2",
+    "name": "彩色漏光 2",
+    "asset": "edge-defects/bord3_fuitelum2.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum4d",
+    "name": "彩色漏光 3",
+    "asset": "edge-defects/bord3_fuitelum4d.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum5",
+    "name": "彩色漏光 4",
+    "asset": "edge-defects/bord3_fuitelum5.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum6b",
+    "name": "彩色漏光 5",
+    "asset": "edge-defects/bord3_fuitelum6b.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum7a",
+    "name": "彩色漏光 6",
+    "asset": "edge-defects/bord3_fuitelum7a.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum1c",
+    "name": "彩色漏光 7",
+    "asset": "edge-defects/bord2_fuite_lumiere1c.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum2b",
+    "name": "彩色漏光 8",
+    "asset": "edge-defects/bord2_fuite_lumiere2b.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum1BW",
+    "name": "白色漏光 1",
+    "asset": "edge-defects/bord3_fuitelum1.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum2BW",
+    "name": "白色漏光 2",
+    "asset": "edge-defects/bord3_fuitelum2.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum4dBW",
+    "name": "白色漏光 3",
+    "asset": "edge-defects/bord3_fuitelum4d.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum5BW",
+    "name": "白色漏光 4",
+    "asset": "edge-defects/bord3_fuitelum5.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum6bBW",
+    "name": "白色漏光 5",
+    "asset": "edge-defects/bord3_fuitelum6b.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum7aBW",
+    "name": "白色漏光 6",
+    "asset": "edge-defects/bord3_fuitelum7a.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum1cBW",
+    "name": "白色漏光 7",
+    "asset": "edge-defects/bord2_fuite_lumiere1c.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "fuitelum2bBW",
+    "name": "白色漏光 8",
+    "asset": "edge-defects/bord2_fuite_lumiere2b.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak01",
+    "name": "彩色漏光 9",
+    "asset": "edge-defects/LightLeak_01.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak02",
+    "name": "彩色漏光 10",
+    "asset": "edge-defects/LightLeak_02.png",
+    "grayscale": false,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak03",
+    "name": "彩色漏光 11",
+    "asset": "edge-defects/LightLeak_03.png",
+    "grayscale": false,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak04",
+    "name": "彩色漏光 12",
+    "asset": "edge-defects/LightLeak_04.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak05",
+    "name": "彩色漏光 13",
+    "asset": "edge-defects/LightLeak_05.png",
+    "grayscale": false,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak06",
+    "name": "彩色漏光 14",
+    "asset": "edge-defects/LightLeak_06.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak07",
+    "name": "彩色漏光 15",
+    "asset": "edge-defects/LightLeak_07.png",
+    "grayscale": false,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak08",
+    "name": "彩色漏光 16",
+    "asset": "edge-defects/LightLeak_08.png",
+    "grayscale": false,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak09",
+    "name": "彩色漏光 17",
+    "asset": "edge-defects/LightLeak_09.png",
+    "grayscale": false,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak10",
+    "name": "彩色漏光 18",
+    "asset": "edge-defects/LightLeak_10.png",
+    "grayscale": false,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak11",
+    "name": "彩色漏光 19",
+    "asset": "edge-defects/LightLeak_11.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak12",
+    "name": "彩色漏光 20",
+    "asset": "edge-defects/LightLeak_12.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak13",
+    "name": "彩色漏光 21",
+    "asset": "edge-defects/LightLeak_13.png",
+    "grayscale": false,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak14",
+    "name": "彩色漏光 22",
+    "asset": "edge-defects/LightLeak_14.png",
+    "grayscale": false,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak15",
+    "name": "彩色漏光 23",
+    "asset": "edge-defects/LightLeak_15.png",
+    "grayscale": false,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak01BW",
+    "name": "白色漏光 9",
+    "asset": "edge-defects/LightLeak_01.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak02BW",
+    "name": "白色漏光 10",
+    "asset": "edge-defects/LightLeak_02.png",
+    "grayscale": true,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak03BW",
+    "name": "白色漏光 11",
+    "asset": "edge-defects/LightLeak_03.png",
+    "grayscale": true,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak04BW",
+    "name": "白色漏光 12",
+    "asset": "edge-defects/LightLeak_04.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak05BW",
+    "name": "白色漏光 13",
+    "asset": "edge-defects/LightLeak_05.png",
+    "grayscale": true,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak06BW",
+    "name": "白色漏光 14",
+    "asset": "edge-defects/LightLeak_06.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak07BW",
+    "name": "白色漏光 15",
+    "asset": "edge-defects/LightLeak_07.png",
+    "grayscale": true,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak08BW",
+    "name": "白色漏光 16",
+    "asset": "edge-defects/LightLeak_08.png",
+    "grayscale": true,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak09BW",
+    "name": "白色漏光 17",
+    "asset": "edge-defects/LightLeak_09.png",
+    "grayscale": true,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak10BW",
+    "name": "白色漏光 18",
+    "asset": "edge-defects/LightLeak_10.png",
+    "grayscale": true,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak11BW",
+    "name": "白色漏光 19",
+    "asset": "edge-defects/LightLeak_11.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak12BW",
+    "name": "白色漏光 20",
+    "asset": "edge-defects/LightLeak_12.png",
+    "grayscale": true,
+    "isNotEdge": false
+  },
+  {
+    "id": "lightleak13BW",
+    "name": "白色漏光 21",
+    "asset": "edge-defects/LightLeak_13.png",
+    "grayscale": true,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak14BW",
+    "name": "白色漏光 22",
+    "asset": "edge-defects/LightLeak_14.png",
+    "grayscale": true,
+    "isNotEdge": true
+  },
+  {
+    "id": "lightleak15BW",
+    "name": "白色漏光 23",
+    "asset": "edge-defects/LightLeak_15.png",
+    "grayscale": true,
+    "isNotEdge": false
+  }
+]

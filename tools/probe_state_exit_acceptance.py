@@ -13,17 +13,20 @@ from wsl_paths import wsl_path
 spec = importlib.util.spec_from_file_location('state_probe', ROOT / 'tools/probe_lut_review_state_arm.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-out = Path(__file__).parent / 'state-exit'
+out = ROOT / 'outputs/review/2026-11-07-zcode/state-exit'
 out.mkdir(exist_ok=True)
 if (out / 'report.json').exists():
-    raise RuntimeError('Preserve earlier evidence')
+    raise RuntimeError('Preserve earlier evidence; move state-exit dir first')
 prefix = module.SOURCE.split('int main(void) {', 1)[0]
 prefix = prefix.replace('static int fail_directory_sync;', 'static int fail_directory_sync;\nstatic int inject_menu;')
 prefix = prefix.replace('    for(int n=0;child&&n<1000;n++)', '    if(inject_menu==1)lut_key(XK_Menu);\n    if(inject_menu==2){mfw_menu_root="mfw";lut_key(XK_Menu);mfw_menu_root=NULL;}\n    for(int n=0;child&&n<1000;n++)')
 main = r'''
+/* Persistence moved to the dual-slot NXTP1 preset store (lut-preset-<id>.0/.1);
+ * the old lut-tune-<id> filename no longer exists. Durability of the other
+ * look's draft = its preset loads back from either slot. */
 static int other_look_safe(void) {
-    char path[768];snprintf(path,sizeof path,"%s/.state/lut-tune-look-a",root);
-    return (!quit&&!mfw_return_requested)||access(path,F_OK)==0;
+    struct nx_lut_tune t;unsigned s;
+    return (!quit&&!mfw_return_requested)||nx_tune_preset_load(root,"look-a",&t,&s);
 }
 int main(void) {
     init_case();mfw_return_requested=0;mfw_preview=0;

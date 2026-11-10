@@ -35,6 +35,7 @@ class StockRvfClient(
     private val requestTimeoutMs: Int = 8_000,
     private val connectTimeoutMs: Int = 3_000,
     private val binder: HttpBinder = HttpBinder.None,
+    private val log: (String) -> Unit = {},
 ) : Closeable {
     private companion object {
         // HttpURLConnection may hold internal locks during a read. Neither cancellation nor
@@ -83,7 +84,7 @@ class StockRvfClient(
         ensureOpen()
         session?.let { return@withLock it }
         // This GET may wait for the camera's physical Allow/Reject confirmation.
-        val description = getXml(descriptor, pairingTimeoutMs)
+        val description = getXml(descriptor, pairingTimeoutMs, "设备描述")
         val base = description.documentElement.childText("URLBase")
             ?.let { cameraUrl(descriptor, it) } ?: descriptor
         val service = description.documentElement.descendants("service").firstNotNullOfOrNull { element ->
@@ -95,7 +96,7 @@ class StockRvfClient(
                 cameraUrl(base, element.requiredChild("controlURL")),
                 cameraUrl(base, element.requiredChild("SCPDURL")))
         } ?: throw ProtocolException("原厂设备描述没有 ContentDirectory 服务")
-        val scpd = getXml(service.scpd, requestTimeoutMs)
+        val scpd = getXml(service.scpd, requestTimeoutMs, "服务描述（SCPD）")
         val actionList = scpd.documentElement.child("actionList")
             ?: throw ProtocolException("原厂服务没有动作列表")
         val declared = actionList.children("action").associate { action ->
@@ -170,32 +171,44 @@ class StockRvfClient(
         }
         val body = """<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:$name xmlns:u="${escape(service.type)}">$args</u:$name></s:Body></s:Envelope>"""
         val response = request(service.control, timeoutMs, "POST", body.toByteArray(Charsets.UTF_8),
-            mapOf("SOAPACTION" to "\"${service.type}#$name\"", "Content-Type" to "text/xml; charset=\"utf-8\""))
-        val xml = responseXml(response)
+            mapOf("SOAPACTION" to "\"${service.type}#$name\"", "Content-Type" to "text/xml; charset=\"utf-8\""),
+            stage = name)
+        val xml = responseXml(response, name)
         if (xml.documentElement.descendants("${name}Response").isEmpty()) {
             throw ProtocolException("原厂 $name 响应缺少 ${name}Response", response.status)
         }
         return response.body.toString(Charsets.UTF_8) to xml
     }
 
-    private suspend fun getXml(url: URI, timeoutMs: Int): Document = responseXml(request(url, timeoutMs))
+    private suspend fun getXml(url: URI, timeoutMs: Int, stage: String): Document =
+        responseXml(request(url, timeoutMs, stage = stage), stage)
 
-    private fun responseXml(response: Response): Document {
+    private fun httpFailure(response: Response, stage: String): ProtocolException =
+        if (response.status == 401 || response.status == 403) {
+            ProtocolException("$stage：相机拒绝原厂遥控授权（HTTP ${response.status}）。请重新进入机身遥控取景器，在机身允许手机连接后手动重试", response.status)
+        } else ProtocolException("$stage：原厂遥控 HTTP ${response.status}", response.status)
+
+    private fun responseXml(response: Response, stage: String): Document {
+        // Stock authorization failures can have an empty body. Report the HTTP
+        // rejection rather than hiding it behind the XML parser's EOF error.
+        if (response.status !in 200..299 && response.body.isEmpty()) throw httpFailure(response, stage)
         val doc = try { parseXml(response.body) } catch (e: Exception) {
-            throw ProtocolException("原厂响应不是有效 XML（HTTP ${response.status}）：${e.message}", response.status)
+            if (response.status !in 200..299) throw httpFailure(response, stage)
+            throw ProtocolException("$stage：原厂响应不是有效 XML（HTTP ${response.status}）：${e.message}", response.status)
         }
         val fault = doc.documentElement.descendants("Fault").firstOrNull()
         if (fault != null) {
             val code = fault.firstText("errorCode") ?: fault.firstText("faultcode")
             val message = fault.firstText("errorDescription") ?: fault.firstText("faultstring") ?: "未知 SOAP 错误"
-            throw ProtocolException("原厂遥控拒绝请求${code?.let { "（$it）" }.orEmpty()}：$message", response.status, code)
+            throw ProtocolException("$stage：原厂遥控拒绝请求${code?.let { "（$it）" }.orEmpty()}：$message", response.status, code)
         }
-        if (response.status !in 200..299) throw ProtocolException("原厂遥控 HTTP ${response.status}", response.status)
+        if (response.status !in 200..299) throw httpFailure(response, stage)
         return doc
     }
 
     private suspend fun request(url: URI, timeoutMs: Int, method: String = "GET", body: ByteArray? = null,
-                                headers: Map<String, String> = emptyMap()): Response = suspendCancellableCoroutine { continuation ->
+                                headers: Map<String, String> = emptyMap(),
+                                stage: String = "原厂请求"): Response = suspendCancellableCoroutine { continuation ->
         val connection = binder.openConnection(url.toURL())
         val cancelRequest = {
             continuation.cancel(CancellationException("原厂遥控连接已取消"))
@@ -210,9 +223,11 @@ class StockRvfClient(
             return@suspendCancellableCoroutine
         }
         val worker = requestScope.launch(start = CoroutineStart.LAZY) {
+            val started = System.nanoTime()
             try {
                 currentCoroutineContext().ensureActive()
                 ensureOpen()
+                log("原厂遥控 $stage 请求开始")
                 connection.connectTimeout = connectTimeoutMs
                 connection.readTimeout = timeoutMs
                 connection.instanceFollowRedirects = false
@@ -229,6 +244,7 @@ class StockRvfClient(
                     connection.outputStream.use { it.write(body) }
                 }
                 val status = connection.responseCode
+                log("原厂遥控 $stage HTTP $status（${(System.nanoTime() - started) / 1_000_000}ms）")
                 if (status in 300..399) throw ProtocolException("原厂服务重定向被拒绝（HTTP $status）", status)
                 val stream = if (status >= 400) connection.errorStream else connection.inputStream
                 val bytes = stream?.use {
@@ -244,6 +260,7 @@ class StockRvfClient(
                 } ?: ByteArray(0)
                 if (continuation.isActive) continuation.resume(Response(status, bytes))
             } catch (e: Exception) {
+                if (continuation.isActive) log("原厂遥控 $stage 请求失败：${e.message}")
                 if (continuation.isActive) continuation.resumeWithException(e)
             } finally {
                 synchronized(pendingLock) { pending.remove(connection) }

@@ -202,8 +202,9 @@ exit 0
         raise RuntimeError('Real engine failure-injection run failed: '+(engine_run.stderr or engine_run.stdout)[-2000:])
     engine_rc=int((out/'engine-real.rc').read_text().strip())
     payload=(out/'engine-real.out').read_text(errors='replace')+'\n'+(out/'engine-real.err').read_text(errors='replace')
-    if 'PERSIST-UNCONFIRMED' not in payload:
-        raise RuntimeError('Real engine did not emit PERSIST-UNCONFIRMED under /.state dirsync failure: '+payload[-800:])
+    if 'PERSIST-UNCONFIRMED' not in payload and 'PERSIST-WARNING per-look tuning' not in payload:
+        raise RuntimeError('Real engine emitted neither PERSIST-UNCONFIRMED nor a per-look '
+                           'PERSIST-WARNING under /.state dirsync failure: '+payload[-800:])
     import json as _json
     literal=_json.dumps(payload)
     (out/'probe.c').write_text(SOURCE.replace('@NXUI@',wsl_path(ROOT/'mod/metol/nxui.c'))

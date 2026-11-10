@@ -17,9 +17,12 @@ static inline int nx_tune_key_valid(const char *key) {
     return 1;
 }
 static inline int nx_tune_regular_fd(int fd) {
-#if defined(__arm__) && defined(__GLIBC__)
-    extern int __fxstat64(int,int,struct stat64 *);
-    struct stat64 st;return !__fxstat64(3,fd,&st)&&S_ISREG(st.st_mode);
+    /* Only a regular-file check is needed here. Old ARM glibc under -std=c99
+     * does not inline fstat, so call the versioned entry directly where it
+     * exists and plain fstat elsewhere. */
+#if defined(__GLIBC__)
+    extern int __fxstat(int,int,struct stat *);
+    struct stat st;return !__fxstat(3,fd,&st)&&S_ISREG(st.st_mode);
 #else
     struct stat st;return !fstat(fd,&st)&&S_ISREG(st.st_mode);
 #endif

@@ -6,6 +6,7 @@ dependencies:
   - pyelftools
   - capstone
   - pillow
+  - pyside6>=6.9,<7
   - pip
   - pip:
       - ubi-reader>=0.8.16

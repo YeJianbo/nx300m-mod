@@ -1,10 +1,16 @@
-/* Event-driven LUT browser. No sensor readback or frame timer. */
+/* Input-driven controls and a static reference image. */
 #include "assets/lut_reference_rgb.h"
 static uint32_t lut_reference_pixels[NX_REF_W*NX_REF_H];
-static struct nx_cpu_image lut_reference={NX_REF_W,NX_REF_H,lut_reference_pixels};
+static struct nx_cpu_image lut_reference={NX_REF_W,NX_REF_H,lut_reference_pixels,0};
 static uint16_t lut_reference_table[2190];
+static uint16_t lut_reference_tuned[2190];
+static struct nx_lut_tune lut_reference_cached_tune;
+static int lut_reference_tuned_index=-1;
+static unsigned lut_reference_position[256],lut_reference_fraction[256];
+static int lut_reference_axes_ready;
 static int lut_reference_index=-1,lut_reference_valid;
 static int lut_reference_mono,lut_nav_dirty;
+static int lut_filtered[NXUI_MAX_RECIPES],lut_filtered_count,lut_filtered_category=-1;
 /* H5: expected favorite state while a write is published but its directory
  * durability is unconfirmed; re-tapping the same look retries the same
  * value instead of toggling the live state back. The visible-feedback flag
@@ -13,9 +19,28 @@ static int lut_reference_mono,lut_nav_dirty;
 static char lut_favorite_pending_key[64];
 static int lut_favorite_pending_add=-1;
 static int lut_field_supported(int field) {return selected&&!(field==2&&lut_reference_valid&&lut_reference_mono);}
+static int lut_custom_group_index(const char *group_id) {
+    for(int i=0;i<lut_custom_group_count;i++)if(!strcmp(lut_custom_group_id[i],group_id))return i;
+    return -1;
+}
+static const char *lut_category_label(int group) {
+    if(group<NX_LUT_CUSTOM_GROUP_BASE)return lut_categories[group];
+    int index=group-NX_LUT_CUSTOM_GROUP_BASE;
+    return index>=0&&index<lut_custom_group_count?lut_custom_group_label[index]:"";
+}
+static int lut_category_available(int group) {
+    if(group<0||group>=NX_LUT_CATEGORY_COUNT)return 0;
+    if(group<=1)return 1;
+    return lut_category_count[group]>0;
+}
 static void lut_save_navigation(void) {
     if(!lut_nav_dirty)return;
-    char value[16];snprintf(value,sizeof value,"%d\n",lut_category);
+    char value[64];
+    if(lut_category<NX_LUT_CUSTOM_GROUP_BASE)snprintf(value,sizeof value,"%d\n",lut_category);
+    else if(lut_category>=NX_LUT_CUSTOM_GROUP_BASE&&
+            lut_category<NX_LUT_CUSTOM_GROUP_BASE+lut_custom_group_count)
+        snprintf(value,sizeof value,"%s\n",lut_custom_group_id[lut_category-NX_LUT_CUSTOM_GROUP_BASE]);
+    else return;
     if(nx_ui_pref_write("lut-category",value))lut_nav_dirty=0;
 }
 static void lut_request_leave(int target) {
@@ -108,9 +133,47 @@ static int lut_detect_brand(int i) {
     if(strstr(key,"sony")||strstr(label,"索尼"))return 7;
     return 8;
 }
+static void lut_load_custom_groups(void) {
+    lut_custom_group_count=0;
+    memset(lut_custom_group_mask,0,sizeof lut_custom_group_mask);
+    memset(lut_custom_group_id,0,sizeof lut_custom_group_id);
+    memset(lut_custom_group_label,0,sizeof lut_custom_group_label);
+    char file[NXUI_PATH],line[256];
+    snprintf(file,sizeof file,"%s/.state/lut-groups.txt",root);
+    FILE *in=fopen(file,"r");
+    if(!in)return;
+    while(fgets(line,sizeof line,in)) {
+        line[strcspn(line,"\r\n")]=0;
+        if(line[0]=='G'&&line[1]=='|') {
+            char *group_id=line+2,*label=strchr(group_id,'|');
+            if(!label||lut_custom_group_count>=NX_LUT_CUSTOM_GROUP_MAX)continue;
+            *label++=0;
+            if(strncmp(group_id,"group-",6)||strlen(group_id)!=18||!*label||lut_custom_group_index(group_id)>=0)continue;
+            int index=lut_custom_group_count++;
+            snprintf(lut_custom_group_id[index],sizeof lut_custom_group_id[index],"%s",group_id);
+            snprintf(lut_custom_group_label[index],sizeof lut_custom_group_label[index],"%s",label);
+        }
+        else if(line[0]=='L'&&line[1]=='|') {
+            char *look_id=line+2,*groups=strchr(look_id,'|');
+            if(!groups)continue;
+            *groups++=0;
+            int look=-1;
+            for(int i=1;i<count;i++)if(!strcmp(recipes[i].key,look_id)){look=i;break;}
+            if(look<0)continue;
+            char *save=NULL;
+            for(char *group_id=strtok_r(groups,"|",&save);group_id;group_id=strtok_r(NULL,"|",&save)) {
+                int group=lut_custom_group_index(group_id);
+                if(group>=0)lut_custom_group_mask[look]|=1U<<group;
+            }
+        }
+    }
+    fclose(in);
+    fprintf(stderr,"LUT_CUSTOM_GROUPS count=%d\n",lut_custom_group_count);
+}
 static void lut_init_groups(void) {
     memset(lut_category_count,0,sizeof lut_category_count);
     memset(lut_favorite,0,sizeof lut_favorite);
+    lut_load_custom_groups();
     char file[NXUI_PATH],key[64];snprintf(file,sizeof file,"%s/.state/lut-favorites",root);
     FILE *in=fopen(file,"r");
     if(in) {
@@ -119,13 +182,32 @@ static void lut_init_groups(void) {
     }
     for(int i=0;i<count;i++) {
         lut_brand[i]=i?lut_detect_brand(i):0;
+        /* Explicit card groups own classified looks; name-based categories
+         * only classify looks without an assigned group. */
+        if(i&&lut_custom_group_mask[i])for(int group=0;group<lut_custom_group_count;group++)
+            if(lut_custom_group_mask[i]&(1U<<group)){lut_brand[i]=NX_LUT_CUSTOM_GROUP_BASE+group;break;}
         lut_category_count[0]++;
-        if(i)lut_category_count[lut_brand[i]]++;
+        if(i&&lut_brand[i]<NX_LUT_CUSTOM_GROUP_BASE)lut_category_count[lut_brand[i]]++;
         if(lut_favorite[i])lut_category_count[1]++;
+        if(i)for(int group=0;group<lut_custom_group_count;group++)
+            if(lut_custom_group_mask[i]&(1U<<group))lut_category_count[NX_LUT_CUSTOM_GROUP_BASE+group]++;
     }
+    lut_filtered_category=-1;
 }
-static int lut_in_group(int i) {
-    return i>0&&(lut_category==0 || (lut_category==1?lut_favorite[i]:lut_brand[i]==lut_category));
+static int lut_item_in_category(int i,int category) {
+    if(i<=0)return 0;
+    if(category==0)return 1;
+    if(category==1)return lut_favorite[i];
+    if(category<NX_LUT_CUSTOM_GROUP_BASE)return lut_brand[i]==category;
+    int group=category-NX_LUT_CUSTOM_GROUP_BASE;
+    return group>=0&&group<lut_custom_group_count&&(lut_custom_group_mask[i]&(1U<<group));
+}
+static int lut_in_group(int i) {return lut_item_in_category(i,lut_category);}
+static void lut_ensure_filtered(void) {
+    if(lut_filtered_category==lut_category)return;
+    lut_filtered_count=0;
+    for(int i=1;i<count;i++)if(lut_in_group(i))lut_filtered[lut_filtered_count++]=i;
+    lut_filtered_category=lut_category;
 }
 static void lut_step(int delta) {
     if(child||queue.commit_requested||queue.close_requested)return;
@@ -149,7 +231,7 @@ static void lut_next_category(int delta) {
     int next=lut_category;
     for(int i=0;i<NX_LUT_CATEGORY_COUNT;i++) {
         next=(next+delta+NX_LUT_CATEGORY_COUNT)%NX_LUT_CATEGORY_COUNT;
-        if(next<=1||lut_category_count[next]){lut_set_category(next);lut_category_focus=1;fprintf(stderr,"LUT_GROUP focus=1 group=%d\n",lut_category);return;}
+        if(lut_category_available(next)){lut_set_category(next);lut_category_focus=1;fprintf(stderr,"LUT_GROUP focus=1 group=%d\n",lut_category);return;}
     }
 }
 static void lut_adjust(int delta) {
@@ -166,8 +248,9 @@ static void lut_toolbar_activate(int index) {
     else if(index==1&&live){
         if(nx_preview_state(root)==NX_PREVIEW_BUSY){message("正在恢复预览 · 请稍候");dirty=1;return;}
         /* Submit the displayed intent, never a backend toggle whose meaning
-         * can reverse when the boot worker finishes between draw and click. */
-        const char *action=nx_preview_action(lut_preview_shown);
+         * can reverse when the boot worker finishes between draw and click.
+         * With the LUT off the toggle only records the preference. */
+        const char *action=nx_preview_action(lut_preview_shown,nx_preview_lut_applied(root));
         if(!start_mfw_action(action))message("预览操作未启动 · 请重试");
     }
     else if(index==2)lut_request_leave(mfw_menu_root?2:1);
@@ -201,10 +284,10 @@ static void lut_key(KeySym key) {
         dirty=1;return;
     }
     if(lut_list_open){
-        int options[NXUI_MAX_RECIPES],n=0;for(int i=1;i<count;i++)if(lut_in_group(i))options[n++]=i;
+        lut_ensure_filtered();int n=lut_filtered_count;
         if(up&&lut_list_cursor==0){lut_category_focus=1;fprintf(stderr,"LUT_GROUP focus=1 group=%d\n",lut_category);}
-        else if(n&&(left||right||up||down)){lut_list_cursor=(lut_list_cursor+(right||down?1:n-1))%n;choose(options[lut_list_cursor]);}
-        if(ok&&n){choose(options[lut_list_cursor%n]);confirm_lut(1);}
+        else if(n&&(left||right||up||down)){lut_list_cursor=(lut_list_cursor+(right||down?1:n-1))%n;choose(lut_filtered[lut_list_cursor]);}
+        if(ok&&n){choose(lut_filtered[lut_list_cursor%n]);confirm_lut(1);}
         if(key==XK_Menu||key==XK_Escape)lut_request_leave(mfw_menu_root?2:1);
         dirty=1;return;
     }
@@ -267,21 +350,35 @@ static void lut_update_reference(void) {
             if(lut_reference_valid){lut_reference_mono=1;for(unsigned i=0;i<729;i++)if(lut_reference_table[i]!=lut_reference_table[730+i]||lut_reference_table[i]!=lut_reference_table[1460+i]){lut_reference_mono=0;break;}}
         }
     }
-    uint16_t tuned[2190];if(lut_reference_valid)nx_tune_table(lut_reference_table,tuned,&lut_tune);
+    if(lut_reference_valid&&(lut_reference_tuned_index!=selected||
+       memcmp(&lut_reference_cached_tune,&lut_tune,sizeof lut_tune))) {
+        nx_tune_table(lut_reference_table,lut_reference_tuned,&lut_tune);
+        lut_reference_cached_tune=lut_tune;lut_reference_tuned_index=selected;
+    }
+    if(!lut_reference_axes_ready) {
+        for(unsigned i=0;i<256;i++) {
+            unsigned n=i*8,pos=n/255;
+            lut_reference_position[i]=pos==8?7:pos;
+            lut_reference_fraction[i]=pos==8?255:n%255;
+        }
+        lut_reference_axes_ready=1;
+    }
     for(unsigned i=0;i<NX_REF_W*NX_REF_H;i++) {
-        const unsigned char *src=nx_reference_rgb[lut_reference_scene]+3*i;unsigned output[3]={src[0],src[1],src[2]};
+        const unsigned char *src=nx_reference_rgb[lut_reference_scene]+3*i;
+        unsigned output[3]={src[0],src[1],src[2]};
         if(lut_reference_valid&&!lut_reference_original) {
             unsigned pos[3],f[3];
-            for(int c=0;c<3;c++){unsigned n=src[c]*8;pos[c]=n/255;f[c]=n%255;if(pos[c]==8){pos[c]=7;f[c]=255;}}
+            for(int c=0;c<3;c++){pos[c]=lut_reference_position[src[c]];f[c]=lut_reference_fraction[src[c]];}
             for(int c=0;c<3;c++) {
                 unsigned index=pos[0]*81+pos[1]*9+pos[2];
-                unsigned v=nx_ref_interpolate(tuned+c*730+index,f[0],f[1],f[2]);
+                unsigned v=nx_ref_interpolate(lut_reference_tuned+c*730+index,f[0],f[1],f[2]);
                 unsigned color=(v*255+511)/1023;
                 output[c]=(color*lut_strength+src[c]*(100-lut_strength)+50)/100;
             }
         }
         lut_reference_pixels[i]=0xff000000U|(output[0]<<16)|(output[1]<<8)|output[2];
     }
+    lut_reference.revision++;
 }
 static void lut_place(float x,float y,float w,float h) {nk_layout_space_push(ctx,nk_rect(x,y,w,h));}
 static int lut_button(const char *label,int active) {
@@ -380,7 +477,7 @@ static void draw_lut_panel(void) {
         lut_place(right-120,0,120,42);
         if(lut_toolbar_button("保存",3,1))lut_toolbar_activate(3);
         int groups[NX_LUT_CATEGORY_COUNT],ng=0;
-        for(int g=0;g<NX_LUT_CATEGORY_COUNT;g++)if(g<=1||lut_category_count[g])groups[ng++]=g;
+        for(int g=0;g<NX_LUT_CATEGORY_COUNT;g++)if(lut_category_available(g))groups[ng++]=g;
         int visible=ng<6?ng:6,category_position=0;for(int j=0;j<ng;j++)if(groups[j]==lut_category)category_position=j;
         if(lut_tab_start<0)lut_tab_start=category_position>=visible?ng-visible:0;
         float tab=(right-88-(visible-1)*4)/visible;
@@ -393,11 +490,12 @@ static void draw_lut_panel(void) {
                 ctx->style.button.border=3;
                 ctx->style.button.border_color=nk_rgb(191,224,255);
             }
-            if(lut_button(lut_categories[groups[j]],lut_category==groups[j]))lut_set_category(groups[j]);
+            if(lut_button(lut_category_label(groups[j]),lut_category==groups[j]))lut_set_category(groups[j]);
             ctx->style.button=category_button;
         }
         lut_place(right-40,50,40,38);if(nk_button_label(ctx,"›")){lut_tab_start+=visible;if(lut_tab_start>ng-visible)lut_tab_start=ng-visible;dirty=1;}
-        lut_place(0,100,308,180);nk_image(ctx,nk_image_ptr(&lut_reference));
+        lut_place(0,100,308,180);
+        nk_image(ctx,nk_image_ptr(&lut_reference));
         lut_place(0,284,308,46);nk_label_wrap(ctx,selected?recipes[selected].label:"LUT 已关闭 · 原厂拍摄");
         lut_place(0,336,100,44);if(nk_button_label(ctx,"上一款"))lut_step(-1);
         lut_place(104,336,100,44);
@@ -408,11 +506,11 @@ static void draw_lut_panel(void) {
         lut_place(158,388,150,44);
         if(nk_button_label(ctx,"重置当前")&&!child&&!queue.commit_requested&&selected){memset(&lut_tune,0,sizeof lut_tune);lut_strength=100;lut_draft=1;lut_reference_dirty=dirty=1;}
         if(lut_list_open){
-            int options[NXUI_MAX_RECIPES],total=0;for(int i=1;i<count;i++)if(lut_in_group(i))options[total++]=i;
+            lut_ensure_filtered();int total=lut_filtered_count;
             if(lut_list_cursor>=total)lut_list_cursor=total?total-1:0;
             int first=lut_list_cursor-3;if(first<0)first=0;if(first>total-7)first=total>7?total-7:0;
             for(int j=0;j<7&&first+j<total;j++){
-                int index=options[first+j];snprintf(line,sizeof line,"%s%s",lut_favorite[index]?"★ ":"",recipes[index].label);
+                int index=lut_filtered[first+j];snprintf(line,sizeof line,"%s%s",lut_favorite[index]?"★ ":"",recipes[index].label);
                 lut_place(338,100+j*48,right-338,44);
                 if(lut_button(line,selected==index)){lut_toolbar_focus=-1;lut_category_focus=0;lut_list_cursor=first+j;choose(index);dirty=1;}
             }

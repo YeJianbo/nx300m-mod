@@ -74,6 +74,29 @@ Android 应用部分使用了下列库，均通过 Gradle 依赖引入，未修�
 | Material Components for Android | Apache-2.0 |
 | Kotlin / kotlinx.coroutines | Apache-2.0 |
 
+## RAW 显影组件
+
+### LibRaw 0.22.3
+
+- 来源：https://www.libraw.org/ 与 https://github.com/LibRaw/LibRaw
+- 许可证：**LGPL-2.1 或 CDDL-1.0**，由使用者选择；许可证副本位于
+  `NXConnect/app/src/main/cpp/third_party/libraw/LICENSE.LGPL` 和
+  `LICENSE.CDDL`。
+- 使用方式：以静态库形式编译并链接，负责 SRW/DNG 解包、相机白平衡、相机色彩矩阵、
+  去马赛克和相机元数据读取。未使用 RawSpeed、OpenMP、Jasper 等可选组件。
+- 本仓库包含对应 LibRaw 源码和构建脚本，用户可按本项目源码重新编译。
+
+### AndroidLibRaw JNI wrapper
+
+- 来源：https://github.com/dburckh/AndroidLibRaw
+- 许可证：**LGPL-2.1**，副本位于
+  `NXConnect/app/src/main/cpp/androidlibraw/LICENSE`。
+- 使用方式：本项目保留其 JNI/AndroidBitmap 接口，并按当前 NDK、LibRaw 版本增加
+  相机信息读取和兼容性修正。对应的 Java 与 C++ 源码均随本仓库提供。
+
+RawTherapee、darktable 与 RapidRAW 仅作为 RAW 工作流和交互设计参考，未链接或
+复制其代码。DxO 专有实现没有纳入本项目。
+
 ---
 
 ## 免责声明

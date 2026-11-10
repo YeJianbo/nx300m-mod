@@ -16,6 +16,11 @@ struct context {
     u16 table[TOTAL];
     u32 source_branch, channel_order[3], order_count, writer_tids[3];
     u32 source_ptrs[3], forwarded_ptrs[3], trace_enabled;
+    /* R4 step-1 frequency counters: always incremented (memory writes in
+     * control context), reported only through the gated trace channel. Not
+     * part of the loader-visible ABI; the internal context layout stays
+     * private to this file. */
+    u32 stat_updates, stat_ipcs_completes, stat_publishes;
 };
 __attribute__((visibility("hidden"))) struct context nx_lut_ram_contexts[SLOTS];
 #define contexts nx_lut_ram_contexts
@@ -256,7 +261,8 @@ static int load_table(struct context *s,int stock) {
 /* Keep status writes out of libc; only a complete channel triplet is published.
  * The pid-specific temporary path cannot collide with the preload adapter. */
 static void publish(struct context *s) {
-    char text[960],temp[96]; char *p=text;
+    char text[1040],temp[96]; char *p=text;
+    s->stat_publishes++;
     unsigned pid=(unsigned)sys3(20,0,0,0);
     p=append(p,"{\"guest_pid\":");p=number(p,pid);
     p=append(p,",\"root\":\"");p=append(p,nx_lut_ram_config.root);
@@ -268,7 +274,11 @@ static void publish(struct context *s) {
     p=append(p,s->active?"forwarded-to-stock-api":s->composed==TABLE_ERROR?"invalid-or-unreadable-table":"stock");
     p=append(p,"\",\"composition\":\"");
     p=append(p,s->active&&s->composed==COMPOSED?"after-stock-3d-lut":"direct");
-    p=append(p,"\",\"image_verified\":false,\"loader\":\"ram-blob\"}\n");
+    p=append(p,"\",\"image_verified\":false,\"loader\":\"ram-blob\",\"stats\":{\"updates\":");
+    p=number(p,s->stat_updates);
+    p=append(p,",\"ipcs_completes\":");p=number(p,s->stat_ipcs_completes);
+    p=append(p,",\"publishes\":");p=number(p,s->stat_publishes);
+    p=append(p,"}}\n");
     char *q=append(temp,"/var/run/nx300m-lut-ram-");q=number(q,s->tid);append(q,".tmp");
     if(!write_file(temp,text,(unsigned)(p-text))) sys3(38,(int)temp,(int)"/var/run/nx300m-lut-status.json",0);
 }
@@ -285,6 +295,7 @@ void nx_lut_ram_update(void *self,void *params) {
     selection(s);
     table_caches[s-contexts].hit=0;
     s->source_branch=0;s->order_count=0;s->trace_enabled=(u32)tracing();
+    s->stat_updates++;
     for(unsigned i=0;i<3;i++) {
         s->channel_order[i]=0;s->writer_tids[i]=0;s->source_ptrs[i]=0;s->forwarded_ptrs[i]=0;
     }
@@ -317,5 +328,5 @@ void nx_lut_ram_ipcs(unsigned channel,const u16 *source) {
         s->forwarded_ptrs[channel]=(u32)mixed;original(channel,mixed);
     } else {s->forwarded_ptrs[channel]=(u32)source;original(channel,source);}
     s->forwarded|=1U<<channel;
-    if(s->forwarded==7) publish(s);
+    if(s->forwarded==7) { s->stat_ipcs_completes++; publish(s); }
 }

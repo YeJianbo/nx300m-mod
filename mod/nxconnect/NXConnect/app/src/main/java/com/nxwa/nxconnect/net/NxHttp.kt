@@ -28,6 +28,7 @@ class NxBinary(
     val code: Int,
     val contentType: String?,
     val bytes: ByteArray,
+    val headers: Map<String, String> = emptyMap(),
 ) {
     val isJpeg: Boolean
         get() = contentType?.contains("image/jpeg", ignoreCase = true) == true ||
@@ -131,6 +132,7 @@ object NxHttp {
         url: String,
         timeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
         binder: HttpBinder = HttpBinder.None,
+        retainHeaders: List<String> = emptyList(),
     ): NxBinary = withContext(Dispatchers.IO) {
         val conn = open(url, timeoutMs, binder)
         try {
@@ -141,7 +143,9 @@ object NxHttp {
                 conn.errorStream ?: conn.inputStream
             }
             val body = stream?.use { it.readBytes() } ?: ByteArray(0)
-            NxBinary(code, conn.contentType, body)
+            NxBinary(code, conn.contentType, body, retainHeaders.mapNotNull { name ->
+                conn.getHeaderField(name)?.let { name to it }
+            }.toMap())
         } catch (e: IOException) {
             throw NxException("请求失败：$url（${e.message}）", e)
         } finally {

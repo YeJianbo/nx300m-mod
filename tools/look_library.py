@@ -9,9 +9,15 @@ import shutil
 import time
 import uuid
 
+import numpy as np
+from PIL import Image
+
 from adobe_profiles import CreativeLook, DcpProfile
 from cube_to_d4 import DEFAULT_METHOD, METHODS, compile_cube, load_cube
 from metol_slot import write_cube as decode_metol_slot
+from nx300m_lut_core import (BLEND_ALGORITHM, BLEND_GRID, BLEND_WORKING_SPACE,
+                             apply_lut, blend_luts, cube_bytes, identity_lut,
+                             load_image_array, parse_lut_file)
 from stock_lut import factory_3d_lut
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -227,6 +233,12 @@ class LookLibrary:
             (directory/name).unlink(missing_ok=True)
         for path in directory.glob('*.tmp'):
             path.unlink(missing_ok=True)
+        for path in sorted((item for item in directory.rglob('*') if item.is_dir()),
+                           key=lambda item: len(item.parts), reverse=True):
+            try:
+                path.rmdir()
+            except OSError:
+                pass
         try:
             if not any(directory.iterdir()):
                 directory.rmdir()
@@ -250,6 +262,91 @@ class LookLibrary:
                 created.append('source.cube')
                 metadata = {'id': key, 'label': label or path.stem, 'source_kind': 'cube', 'source_path': str(path.resolve()), 'input_space': input_space, 'output_space': input_space, 'description': description, 'master': 'source.cube', 'native_table': 'table.d4lut', 'native_format': {'grid': 9, 'channels': 3, 'bits': 10, 'bytes': 4380}, 'calibration': {'camera': 'NX300M', 'status': 'unmeasured'}, 'runtime_status': 'compiled-not-loaded'}
                 self._compile_tables(directory, metadata, cube, method=method)
+                return metadata
+        except Exception:
+            self._discard_partial(directory, created)
+            raise
+
+    def add_blend(self, source_a, source_b, key, *, label, amount_b,
+                  source_a_id='original', source_b_id='original',
+                  reference_image=None, description='', method=DEFAULT_METHOD):
+        """Create a versioned two-source sRGB blend and compile both native tables."""
+        if key in {item['id'] for item in self.list()}:
+            raise FileExistsError('Look already exists: ' + key)
+        label = self.label(str(label).strip())
+        amount_b = float(amount_b)
+        if not 0.0 <= amount_b <= 1.0:
+            raise ValueError('Blend ratio must be between 0 and 1')
+        a = identity_lut(BLEND_GRID, title='Original') if source_a is None else parse_lut_file(source_a).lut
+        b = identity_lut(BLEND_GRID, title='Original') if source_b is None else parse_lut_file(source_b).lut
+        a_cube = cube_bytes(a, title=a.title or str(source_a_id))
+        b_cube = cube_bytes(b, title=b.title or str(source_b_id))
+        blended = blend_luts(a, b, amount_b, size=BLEND_GRID, title=label)
+        output_cube = cube_bytes(blended, title=label)
+        source_a_hash = hashlib.sha256(a_cube).hexdigest()
+        source_b_hash = hashlib.sha256(b_cube).hexdigest()
+        output_hash = hashlib.sha256(output_cube).hexdigest()
+        recipe = {
+            'schema': 1,
+            'mode': 'linear',
+            'algorithm': BLEND_ALGORITHM,
+            'working_space': BLEND_WORKING_SPACE,
+            'grid': BLEND_GRID,
+            'amount_b': round(amount_b, 8),
+            'a': {
+                'id': str(source_a_id), 'label': '原图' if source_a is None else (a.title or str(source_a_id)),
+                'original': source_a is None, 'content_sha256': source_a_hash,
+                'snapshot': 'sources/a.cube', 'source_grid': a.size,
+            },
+            'b': {
+                'id': str(source_b_id), 'label': '原图' if source_b is None else (b.title or str(source_b_id)),
+                'original': source_b is None, 'content_sha256': source_b_hash,
+                'snapshot': 'sources/b.cube', 'source_grid': b.size,
+            },
+            'output_sha256': output_hash,
+            'reference': 'reference.jpg',
+        }
+        reference = reference_image if reference_image is not None else None
+        original = load_image_array(reference, max_edge=720)
+        processed = apply_lut(original, blended)
+        divider = np.zeros((original.shape[0], 8, 3), dtype=np.float32)
+        comparison = np.concatenate((original, divider, processed), axis=1)
+        reference_bytes = None
+        import io
+        buffer = io.BytesIO()
+        Image.fromarray(np.clip(comparison * 255.0 + 0.5, 0, 255).astype(np.uint8)).save(
+            buffer, format='JPEG', quality=88, optimize=True)
+        reference_bytes = buffer.getvalue()
+        directory = self.directory(key)
+        if directory.exists():
+            raise FileExistsError('Look already exists; edit source.cube then run build: ' + key)
+        directory.mkdir(parents=True)
+        created = []
+        try:
+            with LookLock(directory):
+                if (directory/'look.json').is_file() or (directory/'source.cube').is_file():
+                    raise FileExistsError('Look already exists: ' + key)
+                for name, data in (
+                        ('source.cube', output_cube),
+                        ('blend.json', (json.dumps(recipe, ensure_ascii=False, indent=2) + '\n').encode('utf-8')),
+                        ('sources/a.cube', a_cube),
+                        ('sources/b.cube', b_cube),
+                        ('reference.jpg', reference_bytes)):
+                    path = directory/name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(data)
+                    created.append(name)
+                metadata = {
+                    'id': key, 'label': label, 'source_kind': 'blend-linear-srgb',
+                    'description': description, 'input_space': 'srgb', 'output_space': 'srgb',
+                    'source_grid': BLEND_GRID, 'source_sha256': output_hash,
+                    'blend_recipe': recipe, 'recipe': 'blend.json',
+                    'master': 'source.cube', 'native_table': 'table.d4lut',
+                    'native_format': {'grid': 9, 'channels': 3, 'bits': 10, 'bytes': 4380},
+                    'calibration': {'camera': 'NX300M', 'status': 'unmeasured'},
+                    'runtime_status': 'compiled-not-loaded',
+                }
+                self._compile_tables(directory, metadata, load_cube(directory/'source.cube'), method=method)
                 return metadata
         except Exception:
             self._discard_partial(directory, created)

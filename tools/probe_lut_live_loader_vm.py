@@ -424,6 +424,9 @@ def call(action, command=''):
                             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=375)
     if result.returncode:
         raise RuntimeError(result.stderr or result.stdout)
+    if not result.stdout.strip():
+        raise RuntimeError('Empty worker stdout for action='+repr(action)+' command='+command[:120]
+                           +'; stderr='+result.stderr[:300])
     return json.loads(result.stdout)
 
 
@@ -557,13 +560,19 @@ def verify(guest):
         raise ValueError('Target remained traced after restoration')
     if len((guest / 'after.tasks').read_text().split()) != 2:
         raise ValueError('Fixture worker thread was not preserved')
-    installed = json.loads((guest / 'apply.json').read_text())
-    restored = json.loads((guest / 'restore.json').read_text())
+    def loader_json(name):
+        """Loader output relays its worker log (admission/stop-window lines plus
+        the final JSON) to stdout; parse the last JSON object line."""
+        lines=[line for line in (guest / name).read_text().splitlines() if line.strip().startswith('{')]
+        if not lines: raise ValueError('No JSON object in loader output: '+name)
+        return json.loads(lines[-1])
+    installed = loader_json('apply.json')
+    restored = loader_json('restore.json')
     if installed.get('hooks_installed') is not True or restored.get('restored') is not True:
         raise ValueError('Loader did not report actual hook installation and restoration')
-    idempotent = json.loads((guest / 'apply-idempotent.json').read_text())
-    reapplied = json.loads((guest / 'reapply.json').read_text())
-    rerestored = json.loads((guest / 'rerestore.json').read_text())
+    idempotent = loader_json('apply-idempotent.json')
+    reapplied = loader_json('reapply.json')
+    rerestored = loader_json('rerestore.json')
     if idempotent.get('hooks_installed') is not True or idempotent.get('already_installed') is not True:
         raise ValueError('Repeated apply did not preserve the installed hook')
     if reapplied.get('hooks_installed') is not True or reapplied.get('already_installed') is not False:
@@ -592,7 +601,7 @@ def verify(guest):
     original = json.loads((BUILD / 'build-report.json').read_text())
     if lazy['slot_lut'] != lazy['iq_bias'] + original['stock']['iq']['lut_resolver'] or not lazy['rw_slots_original']:
         raise ValueError('Startup fixture did not retain and recognize the original unresolved LUT JUMP_SLOT')
-    if not json.loads((guest / 'lazy-apply.json').read_text()).get('hooks_installed'):
+    if not loader_json('lazy-apply.json').get('hooks_installed'):
         raise ValueError('Loading before the first original writer call failed')
     if words(guest / 'lazy-composed.bin') != candidate['composed']:
         raise ValueError('First writer call after lazy-state installation did not apply the selected LUT')
@@ -620,7 +629,7 @@ def verify(guest):
     for field in ('slot_update', 'slot_lut'):
         if legacy_before[field] != legacy_after[field]:
             raise ValueError('Rejected compatibility image changed a live call slot')
-    if not json.loads((guest / 'legacy-restored.json').read_text()).get('restored'):
+    if not loader_json('legacy-restored.json').get('restored'):
         raise ValueError('Known-image recovery did not restore the original slots')
     if not json.loads((guest / 'status-legacy-restored.json').read_text()).get('rw_slots_original'):
         raise ValueError('Known-image recovery left non-stock call slots')

@@ -92,7 +92,14 @@ static int lut_preview_shown=-1;
 static long long lut_preview_due,lut_preview_until;
 static int lut_brand[NXUI_MAX_RECIPES],lut_favorite[NXUI_MAX_RECIPES];
 static const char *lut_categories[]={"全部","收藏","富士","奥巴","宾得","松下","理光","索尼","自制","胶片模拟"};
-enum { NX_LUT_CATEGORY_COUNT=sizeof lut_categories/sizeof *lut_categories };
+enum { NX_LUT_BUILTIN_CATEGORY_COUNT=sizeof lut_categories/sizeof *lut_categories,
+       NX_LUT_CUSTOM_GROUP_MAX=32,
+       NX_LUT_CUSTOM_GROUP_BASE=NX_LUT_BUILTIN_CATEGORY_COUNT,
+       NX_LUT_CATEGORY_COUNT=NX_LUT_CUSTOM_GROUP_BASE+NX_LUT_CUSTOM_GROUP_MAX };
+static uint32_t lut_custom_group_mask[NXUI_MAX_RECIPES];
+static char lut_custom_group_id[NX_LUT_CUSTOM_GROUP_MAX][48];
+static char lut_custom_group_label[NX_LUT_CUSTOM_GROUP_MAX][96];
+static int lut_custom_group_count;
 static int lut_category_count[NX_LUT_CATEGORY_COUNT];
 /* Per-look edit drafts keyed by the stable look id, never by row order. Only
  * looks whose buffer differs from their persisted baseline occupy a slot. */
@@ -118,6 +125,9 @@ static void lut_request_leave(int target);
 static void lut_save_navigation(void);
 static int lut_field_supported(int field);
 static int lut_in_group(int index);
+static int lut_item_in_category(int index,int category);
+static int lut_category_available(int group);
+static int lut_custom_group_index(const char *group_id);
 static void feature_snapshot(void);
 static void message(const char *s);
 static int lut_draft_slot(const char *key);
@@ -621,11 +631,15 @@ static int load_lut_choices(const char *path) {
     }
     lut_init_groups();
     lut_category=selected?lut_brand[selected]:0;
-    char category_file[NXUI_PATH];int category_value=-1;snprintf(category_file,sizeof category_file,"%s/.state/lut-category",root);
+    char category_file[NXUI_PATH],category_text[64]="";int category_value=-1;
+    snprintf(category_file,sizeof category_file,"%s/.state/lut-category",root);
     FILE *category_in=fopen(category_file,"r");
-    if(category_in){if(fscanf(category_in,"%d",&category_value)!=1)category_value=-1;fclose(category_in);}
+    if(category_in){if(fgets(category_text,sizeof category_text,category_in))category_text[strcspn(category_text,"\r\n")]=0;fclose(category_in);}
+    char *category_end=NULL;long category_number=strtol(category_text,&category_end,10);
+    if(category_end&&category_end!=category_text){while(*category_end==' '||*category_end=='\t')category_end++;if(!*category_end)category_value=(int)category_number;}
+    else {int custom_group=lut_custom_group_index(category_text);if(custom_group>=0)category_value=NX_LUT_CUSTOM_GROUP_BASE+custom_group;}
     if(selected&&category_value>=0&&category_value<NX_LUT_CATEGORY_COUNT&&
-       (category_value==0||(category_value==1?lut_favorite[selected]:lut_brand[selected]==category_value)))lut_category=category_value;
+       lut_category_available(category_value)&&lut_item_in_category(selected,category_value))lut_category=category_value;
     /* The remembered group/page must never highlight a different row or hide
      * the current look on entry. Opening the panel is not an apply operation. */
     lut_tab_start=-1;
@@ -881,9 +895,9 @@ static int start_child(int kind, int index, const char *command) {
 }
 static int mfw_action_allowed(const char *action) {
     const char *allowed[] = {"status", "network-info", "lut", "menu", "gallery", "disable-autostart", "enable-autostart", "close",
-        "lenses","exposure","connection","settings", "preview", "debug", "back", "preview-toggle", "preview-enable", "preview-s2-enable", "preview-probe-once", "preview-identity", "preview-monochrome", "preview-monochrome-timing", "preview-sync", "preview-stop", "preview-restore", "preview-status", "preview-diag-export",
+        "lenses","exposure","connection","settings", "preview", "debug", "back", "preview-toggle", "preview-enable", "preview-s2-enable", "preview-preference", "preview-probe-once", "preview-identity", "preview-monochrome", "preview-monochrome-timing", "preview-sync", "preview-stop", "preview-restore", "preview-status", "preview-diag-export",
         "fw-mode-lock-on","fw-mode-lock-off","fw-animation-0","fw-animation-1","fw-animation-2",
-        "fw-auto-iso-0","fw-auto-iso-6400","fw-auto-iso-max-12800","fw-auto-iso-max-25600","fw-auto-iso-max-3200","fw-mode-P","fw-mode-A","fw-mode-S","fw-mode-M"};
+        "fw-auto-iso-0","fw-auto-iso-6400","fw-auto-iso-max-6400","fw-auto-iso-max-12800","fw-auto-iso-max-25600","fw-auto-iso-max-3200","fw-mode-P","fw-mode-A","fw-mode-S","fw-mode-M"};
     for (unsigned int i = 0; i < sizeof allowed / sizeof *allowed; i++)
         if (!strcmp(action, allowed[i])) return 1;
     return 0;
@@ -1794,6 +1808,7 @@ int main(int argc, char **argv) {
                 }else if(!lut_fn_down){lut_fn_down=1;lut_key(XF86XK_HomePage);}
                 continue;
             }
+            int camera_navigation_key = mfw_services && (event.type == KeyPress || event.type == KeyRelease);
             if (event.type == KeyPress) {
                 KeySym key = XLookupKeysym(&event.xkey, 0);
                 /* Samsung's main wheel uses multimedia keysyms; its events
@@ -1825,6 +1840,10 @@ int main(int argc, char **argv) {
                     }
                 }
             }
+            /* Camera navigation is handled above. Feeding that same Enter
+             * to Nuklear after a page switch can activate a different row
+             * under the pointer in the newly opened page. */
+            if (camera_navigation_key) continue;
             if (event.type == ButtonPress && (event.xbutton.button == 4 || event.xbutton.button == 5)) {
                 if(lut_mode)lut_key(event.xbutton.button==4?XF86XK_ScrollUp:XF86XK_ScrollDown);
                 else if(mfw_services)mfw_step(event.xbutton.button==4?1:-1);
@@ -1987,6 +2006,7 @@ int main(int argc, char **argv) {
         render_count, now_ms()-started, wakeups, blits, max_draw_ms);
     fprintf(stderr,"PANEL_UPLOAD full=%u partial=%u skipped=%u pixels=%llu\n",xlib.surf->full_uploads,
         xlib.surf->partial_uploads,xlib.surf->skipped_uploads,xlib.surf->uploaded_pixels);
+    fprintf(stderr,"PANEL_RASTER pixels=%llu\n",xlib.surf->raster_pixels);
     log_resources("exit");
     alarm(5);
     nx_panel_input_restore_focus(&panel_input);

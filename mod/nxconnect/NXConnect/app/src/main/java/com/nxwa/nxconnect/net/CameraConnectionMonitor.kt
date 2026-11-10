@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Application
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Bundle
 import android.os.Handler
@@ -48,7 +49,9 @@ class CameraConnectionMonitor(
             }
             try {
                 NetworkBinder.connectivity(app)?.registerNetworkCallback(
-                    NetworkRequest.Builder().clearCapabilities().build(), observer)
+                    NetworkRequest.Builder()
+                        .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                        .build(), observer)
                 callback = observer
             } catch (_: Exception) {
                 // Service checks still detect loss when a device rejects network observation.

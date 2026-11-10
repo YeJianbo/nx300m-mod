@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.drawable.BitmapDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.MotionEvent
@@ -35,11 +36,12 @@ class GalleryInteractionProbe : Instrumentation() {
     private var editingOnly = false
     private var detailsOnly = false
     private var srwOnly = false
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); metadataOnly = arguments?.getString("check") == "metadata"; touchOnly = arguments?.getString("check") == "touch"; imagesOnly = arguments?.getString("check") == "images"; editingOnly = arguments?.getString("check") == "editing"; detailsOnly = arguments?.getString("check") == "details"; srwOnly = arguments?.getString("check") == "srw"; start() }
+    private var lutOnly = false
+    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); metadataOnly = arguments?.getString("check") == "metadata"; touchOnly = arguments?.getString("check") == "touch"; imagesOnly = arguments?.getString("check") == "images"; editingOnly = arguments?.getString("check") == "editing"; detailsOnly = arguments?.getString("check") == "details"; srwOnly = arguments?.getString("check") == "srw"; lutOnly = arguments?.getString("check") == "lut"; start() }
     override fun onStart() {
         var success = false
         try {
-            if (srwOnly) verifySrwExport() else if (detailsOnly) verifyDetails() else if (editingOnly) verifyEditing() else if (imagesOnly) verifyImageQuality() else if (metadataOnly) verifyMetadata() else {
+            if (lutOnly) verifyLutCard() else if (srwOnly) verifySrwExport() else if (detailsOnly) verifyDetails() else if (editingOnly) verifyEditing() else if (imagesOnly) verifyImageQuality() else if (metadataOnly) verifyMetadata() else {
             host = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             if (!touchOnly) verifySelection()
             verifyZoom()
@@ -50,7 +52,7 @@ class GalleryInteractionProbe : Instrumentation() {
             result.put("error", android.util.Log.getStackTraceString(e))
         } finally {
             result.put("passed", success)
-            File(targetContext.filesDir, if (srwOnly) "gallery-srw.json" else if (detailsOnly) "gallery-details.json" else if (editingOnly) "gallery-editing.json" else if (imagesOnly) "gallery-image-quality.json" else if (metadataOnly) "gallery-metadata.json" else if (touchOnly) "gallery-touch.json" else "gallery-interactions.json").writeText(result.toString(2))
+            File(targetContext.filesDir, if (lutOnly) "lut-card.json" else if (srwOnly) "gallery-srw.json" else if (detailsOnly) "gallery-details.json" else if (editingOnly) "gallery-editing.json" else if (imagesOnly) "gallery-image-quality.json" else if (metadataOnly) "gallery-metadata.json" else if (touchOnly) "gallery-touch.json" else "gallery-interactions.json").writeText(result.toString(2))
             runOnMainSync { host?.finish() }
             finish(if (success) Activity.RESULT_OK else Activity.RESULT_CANCELED,
                 Bundle().apply { putString("stream", result.toString(2)) })
@@ -284,6 +286,183 @@ class GalleryInteractionProbe : Instrumentation() {
             .put("header_bytes", header.bytes.size).put("response_bytes", header.responseBytes)
             .put("requests", header.requests).put("original_bytes", original.size)
             .put("dimensions", info.size).put("group_name", group.displayName))
+    }
+
+    /** Exercises the offline SAF card library, category UI, search, import and backup paths. */
+    private fun verifyLutCard() {
+        val preferences = targetContext.getSharedPreferences("lut_card", android.content.Context.MODE_PRIVATE)
+        val validTree = requireNotNull(preferences.getString("tree_uri", null)) { "Persisted card tree is missing" }
+        val tree = Uri.parse(validTree)
+        val library = com.nxwa.nxconnect.data.CardLutLibrary.open(targetContext, tree)
+        val initial = library.refresh()
+        check(initial.looks.size >= 60) { "Expected at least 60 LUTs, got ${initial.looks.size}" }
+        val sourceLooks = initial.looks.take(2)
+        check(sourceLooks.all { !it.favorite }) { "Card probe requires non-favorite test rows" }
+        val sourceIds = sourceLooks.mapTo(linkedSetOf(), com.nxwa.nxconnect.data.CardLutLibrary.Look::id)
+        val stamp = System.currentTimeMillis().toString().takeLast(6)
+        val uiGroupName = "ProbeUI-$stamp"
+        val directGroupName = "ProbeFilm-$stamp"
+        val createdGroups = mutableListOf<String>()
+        var importedId: String? = null
+
+        fun uiNodes(node: android.view.accessibility.AccessibilityNodeInfo): List<android.view.accessibility.AccessibilityNodeInfo> =
+            listOf(node) + (0 until node.childCount).flatMap { index -> node.getChild(index)?.let(::uiNodes).orEmpty() }
+        fun nodes() = uiAutomation.rootInActiveWindow?.let(::uiNodes).orEmpty()
+        fun awaitNode(description: String, predicate: (android.view.accessibility.AccessibilityNodeInfo) -> Boolean):
+            android.view.accessibility.AccessibilityNodeInfo {
+            val deadline = SystemClock.uptimeMillis() + 30_000
+            while (SystemClock.uptimeMillis() < deadline) {
+                nodes().firstOrNull(predicate)?.let { return it }
+                SystemClock.sleep(100)
+            }
+            error("Missing $description; visible text: ${nodes().mapNotNull { it.text }} content: ${nodes().mapNotNull { it.contentDescription }}")
+        }
+        fun awaitText(text: String) = awaitNode(text) { it.text?.toString() == text }
+        fun awaitTextPrefix(prefix: String) = awaitNode("text prefix $prefix") { it.text?.toString()?.startsWith(prefix) == true }
+        fun click(text: String) {
+            var node: android.view.accessibility.AccessibilityNodeInfo? = awaitText(text)
+            for (step in 0 until 6) {
+                if (node?.isClickable == true) break
+                node = node?.parent
+            }
+            check(node?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK) == true) {
+                "Could not click $text"
+            }
+        }
+        fun clickDescription(description: String) {
+            var node: android.view.accessibility.AccessibilityNodeInfo? = awaitNode(description) {
+                it.contentDescription?.toString() == description
+            }
+            for (step in 0 until 6) {
+                if (node?.isClickable == true) break
+                node = node?.parent
+            }
+            check(node?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK) == true) {
+                "Could not click $description"
+            }
+        }
+        fun setText(value: String) {
+            val node = awaitNode("editable field") { it.className?.toString()?.endsWith("EditText") == true }
+            check(node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT,
+                Bundle().apply { putCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value) }))
+        }
+        fun screenshot(name: String) {
+            waitForIdleSync()
+            uiAutomation.takeScreenshot()?.let { bitmap ->
+                File(targetContext.filesDir, name).outputStream().use {
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+                }
+                bitmap.recycle()
+            }
+        }
+
+        try {
+            val readyStarted = SystemClock.uptimeMillis()
+            val activity = startActivitySync(Intent(targetContext, com.nxwa.nxconnect.ui.LutLibraryActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            host = activity
+            awaitTextPrefix("${initial.looks.size} 款 LUT")
+            val readyMs = SystemClock.uptimeMillis() - readyStarted
+            screenshot("lut-card-loaded.png")
+
+            clickDescription("More options")
+            click("分类管理")
+            click("新建分类")
+            setText(uiGroupName)
+            click("保存")
+            awaitTextPrefix("已新建分类 $uiGroupName")
+            val uiCreated = library.refresh()
+            val uiGroup = uiCreated.groups.first { it.label == uiGroupName }
+            createdGroups += uiGroup.id
+            check(uiCreated.groups.any { it.id == uiGroup.id }) { "UI-created group was not persisted" }
+
+            clickDescription("More options")
+            click("搜索")
+            setText("Lumix")
+            click("搜索")
+            val searchSummary = awaitNode("Lumix search result summary") {
+                it.text?.toString()?.startsWith("筛选：") == true && it.text?.toString()?.contains("Lumix") == true
+            }.text.toString()
+            check(searchSummary.contains("显示") && !searchSummary.contains("显示 ${initial.looks.size} 项")) {
+                "Search did not filter the 60-item card: $searchSummary"
+            }
+            screenshot("lut-card-search.png")
+
+            runOnMainSync { activity.finish() }
+            host = null
+
+            check(preferences.edit().putString("tree_uri",
+                "content://com.android.externalstorage.documents/tree/primary%3AMissingCard").commit())
+            val invalid = startActivitySync(Intent(targetContext, com.nxwa.nxconnect.ui.LutLibraryActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            host = invalid
+            awaitTextPrefix("上次的 SD 卡授权已失效")
+            check(preferences.getString("tree_uri", null) == null) { "Invalid persisted card URI was not cleared" }
+            runOnMainSync { invalid.finish() }
+            host = null
+            check(preferences.edit().putString("tree_uri", validTree).commit())
+
+            val secondGroup = library.createGroup(directGroupName).groups.first { it.label == directGroupName }
+            createdGroups += secondGroup.id
+            var snapshot = library.assignGroups(sourceIds, setOf(uiGroup.id, secondGroup.id))
+            check(sourceIds.all { id -> snapshot.looks.first { it.id == id }.groups.map { it.id }.toSet() ==
+                setOf(uiGroup.id, secondGroup.id) }) { "Multiple group assignment was not persisted" }
+
+            snapshot = library.setFavorites(sourceIds, true)
+            check(sourceIds.all { id -> snapshot.looks.first { it.id == id }.favorite }) { "Batch favorite was not persisted" }
+
+            val source = File(targetContext.filesDir, "probe-lut.cube")
+            check(source.isFile) { "Probe cube is missing: ${source.absolutePath}" }
+            val phases = mutableListOf<String>()
+            val imported = library.importCube(source.inputStream(), source.name) { phases += it }
+            importedId = imported.id
+            check(imported.grid == 33) { "Unexpected source grid: ${imported.grid}" }
+            check(phases.any { it.contains("9×9×9") } && phases.any { it.contains("source.cube") } &&
+                phases.any { it.contains("looks.txt") }) { "Import progress phases missing: $phases" }
+            snapshot = library.refresh()
+            check(snapshot.looks.any { it.id == imported.id && it.directoryPresent }) { "Imported LUT missing from catalog" }
+
+            snapshot = library.renameGroup(uiGroup.id, "$uiGroupName-Renamed")
+            check(snapshot.groups.any { it.label == "$uiGroupName-Renamed" }) { "Group rename was not persisted" }
+            snapshot = library.renameLook(imported.id, "Android Probe Renamed")
+            check(snapshot.looks.any { it.id == imported.id && it.label == "Android Probe Renamed" }) {
+                "LUT rename was not persisted"
+            }
+
+            snapshot = library.deleteLook(imported.id)
+            importedId = null
+            check(snapshot.looks.none { it.id == imported.id }) { "Deleted LUT remained in looks.txt" }
+            val backup = File(targetContext.filesDir, "card-lut-backups").listFiles().orEmpty()
+                .firstOrNull { File(it, imported.id).exists() }
+            check(backup != null) { "Deleted LUT directory was not copied to app backup" }
+
+            result.put("lut_card", JSONObject()
+                .put("activity_ready_ms", readyMs)
+                .put("initial_looks", initial.looks.size)
+                .put("ui_group", uiGroupName)
+                .put("direct_group", directGroupName)
+                .put("batch_group_assignment", true)
+                .put("batch_favorites", true)
+                .put("import_grid", imported.grid)
+                .put("import_progress", phases.joinToString(" | "))
+                .put("import_renamed", true)
+                .put("delete_backup", backup?.name)
+                .put("invalid_uri_cleared", true)
+                .put("search_summary", searchSummary)
+                .put("screenshot", "lut-card-loaded.png"))
+        } finally {
+            if (host != null) runOnMainSync { host?.finish() }
+            host = null
+            preferences.edit().putString("tree_uri", validTree).commit()
+            runCatching { library.setFavorites(sourceIds, false) }
+            runCatching { library.assignGroups(sourceIds, emptySet()) }
+            importedId?.let { id -> runCatching { library.deleteLook(id) } }
+            val liveGroups = runCatching { library.refresh().groups.mapTo(hashSetOf(),
+                com.nxwa.nxconnect.data.CardLutFormat.Group::id) }.getOrDefault(hashSetOf())
+            createdGroups.asReversed().filter { it in liveGroups }.forEach { id ->
+                runCatching { library.deleteGroup(id) }
+            }
+        }
     }
 
     private fun verifySelection() {

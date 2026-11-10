@@ -194,6 +194,8 @@ class MainActivity : AppCompatActivity() {
         updateSavedDevice()
         home.btnConnectionHelp.setOnClickListener { OneUiTransitions.open(this, Intent(this, ConnectionHelpActivity::class.java)) }
         home.btnAbout.setOnClickListener { OneUiTransitions.open(this, Intent(this, AboutActivity::class.java)) }
+        home.btnLutLibrary.setOnClickListener { OneUiTransitions.open(this, Intent(this, LutLibraryActivity::class.java)) }
+        home.btnRawDevelop.setOnClickListener { OneUiTransitions.open(this, Intent(this, RawDevelopmentActivity::class.java)) }
         home.btnModManager.setOnClickListener { OneUiTransitions.open(this, Intent(this, ModManagerActivity::class.java)) }
         home.btnLensMetadata.setOnClickListener { photoPicker.launch(arrayOf("image/jpeg", "image/x-samsung-srw", "application/octet-stream")) }
         val modes = intArrayOf(-1, 1, 2)
@@ -215,9 +217,7 @@ class MainActivity : AppCompatActivity() {
                 connect(manual.ipInput.text?.toString().orEmpty()); true
             } else false
         }
-        manual.deviceLine.text = "本机地址：" + (
-            com.nxwa.nxconnect.net.NetworkBinder.localIpv4(this) ?: "未获取到局域网地址"
-            )
+        refreshManualAddress()
 
         EdgeToEdge.setup(this)
         androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(b.root) { v, insets ->
@@ -329,7 +329,7 @@ class MainActivity : AppCompatActivity() {
                 }
             })
         }
-        val anchor = b.homeActions.findViewById<View>(2) ?: b.homeActions
+        val anchor = b.homeActions.getChildAt(1) ?: b.homeActions
         GalleryChrome.menu(this, anchor, items)
     }
 
@@ -359,6 +359,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showManualConnection() {
+        refreshManualAddress()
         if (manualDialog?.isShowing == true) return
         (manual.root.parent as? android.view.ViewGroup)?.removeView(manual.root)
         manual.btnClose.setOnClickListener { manualDialog?.dismiss() }
@@ -367,6 +368,12 @@ class MainActivity : AppCompatActivity() {
             .setIcon(R.drawable.ic_wifi)
             .setView(manual.root)
             .show()
+    }
+
+    private fun refreshManualAddress() {
+        manual.deviceLine.text = "WLAN 地址：" + (
+            com.nxwa.nxconnect.net.NetworkBinder.localIpv4(this, manual.ipInput.text?.toString())
+                ?: "未获取到局域网地址")
     }
 
     private fun handleNfcIntent(intent: Intent?) {
@@ -469,6 +476,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        refreshManualAddress()
         runCatching {
             NfcAdapter.getDefaultAdapter(this)?.enableReaderMode(this, { tag: Tag ->
                 runOnUiThread { readNfc { com.nxwa.nxconnect.net.NfcPayloadParser.inspect(tag) } }
@@ -735,7 +743,7 @@ class MainActivity : AppCompatActivity() {
                     // Stored 80/8781 entries predate the native service. Probe
                     // both standard ports; keep explicitly entered custom ports.
                     val probePort = daemonPort.takeUnless { it == NxCamera.PORT || it == 8781 }
-                    CameraDiscovery.verify(ip, probePort, network = route)
+                    CameraDiscovery.verify(ip, probePort, network = route, onDiagnostic = NxApp::log)
                 }
                 currentCoroutineContext().ensureActive()
                 if (connectionAttempt != attempt) return@launch

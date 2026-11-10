@@ -279,6 +279,11 @@ __attribute__((constructor)) static void install_entries(void) {
     if (patch_manual_lens_wifi()) patch_mask |= 32;
     /* Both hooks are needed: stopping the timer alone leaves an unfinished dial. */
     if ((patch_mask & 6) == 6) animation_mode = 1;
+    const char *custom_default = getenv("NX300M_CUSTOM_SETTINGS");
+    if (custom_default && custom_default[0] == '0' && !custom_default[1]) custom_enabled = 0;
+    const char *animation_default = getenv("NX300M_DIAL_ANIMATION");
+    if (animation_default && !animation_default[1] && animation_default[0] >= '0' && animation_default[0] <= '2' &&
+        (patch_mask & 6) == 6) animation_mode = (unsigned int)(animation_default[0] - '0');
     fprintf(stderr, "[NX FIRMWARE] verified entry patch mask=%u; animation=%u; AE stock\n",
             patch_mask, animation_mode);
 }

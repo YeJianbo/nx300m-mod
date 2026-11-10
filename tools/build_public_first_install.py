@@ -2,6 +2,9 @@
 from pathlib import Path
 import hashlib
 import json
+import os
+import tempfile
+from datetime import datetime, timezone
 
 from installer_backend import verify_backend
 from nx300m_installer import safe_path
@@ -43,15 +46,24 @@ def build():
            for name in files if is_core(name)):
         raise ValueError('公开首装与完整首装的非 LUT 程序不同。')
     destination=BASE/'public-first-install'
-    destination.mkdir(parents=True,exist_ok=True)
+    staging=Path(tempfile.mkdtemp(prefix='public-first-install-build-',dir=BASE))
     entries={}
     for name,data in files.items():
-        target=safe_path(destination/'payload',name);target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+        target=safe_path(staging/'payload',name);target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+        if target.read_bytes()!=data:
+            raise OSError('Public first-install readback differs: '+name)
         entries[name]={'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}
     result={'schema':1,'kind':'nx300m-first-install-local-candidate','distribution':'public-original-looks',
             'files':entries,'backend':backend,'manual_lens_wifi':wifi,
             'complete_runtime':complete,'physical_first_install_verified':False}
-    (destination/'manifest.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+    (staging/'manifest.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+    if destination.exists():
+        history=BASE/'history'/('public-first-install-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+        history.parent.mkdir(parents=True,exist_ok=True)
+        if not history.resolve().is_relative_to(BASE.resolve()):
+            raise ValueError('Public first-install history path escaped release directory')
+        os.rename(destination,history)
+    os.rename(staging,destination)
     print('PUBLIC_FIRST_INSTALL='+str(destination))
     return destination
 

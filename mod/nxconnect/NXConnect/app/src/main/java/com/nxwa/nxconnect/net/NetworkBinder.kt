@@ -51,18 +51,22 @@ object NetworkBinder {
             Log.w(TAG, "allNetworks failed: ${e.message}")
             emptyList()
         }
-        // Networks can disappear while the snapshot is being ranked.
+        // A VPN can also advertise its underlying WIFI transport. It is not
+        // a directly bindable camera LAN, even when Android calls it WIFI.
         fun caps(n: Network) = runCatching { cm.getNetworkCapabilities(n) }.getOrNull()
-        val wifi = all.filter { caps(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
+        val local = all.filter {
+            val c = caps(it)
+            c != null && !c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+        }
+        val wifi = local.filter { caps(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
             .sortedWith(compareBy<Network>(
                 { if (it == CameraWifi.currentNetwork) 0 else 1 },
                 { if (hasInternet(ctx, it)) 1 else 0 },
             ))
-        val eth = all.filter {
+        val eth = local.filter {
             caps(it)?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
         }
-        val rest = all.filter { it !in wifi && it !in eth }
-        return wifi + eth + rest
+        return wifi + eth
     }
 
     /** 手动输入地址时，优先选择实际覆盖目标网段的 Wi-Fi/以太网。 */
@@ -155,12 +159,18 @@ object NetworkBinder {
     }
 
     /** 手机在相机网络里的本机 IPv4（用于推导同网段候选地址） */
-    fun localIpv4(ctx: Context): String? {
-        val lp = linkProperties(ctx)
-        lp?.linkAddresses?.firstOrNull { it.address is Inet4Address }?.let {
-            return it.address.hostAddress
+    fun localIpv4(ctx: Context, targetAddress: String? = null): String? {
+        val networks = if (targetAddress.isNullOrBlank()) candidateNetworks(ctx)
+            else networksForAddress(ctx, targetAddress)
+        val preferred = boundNetwork?.takeIf { it in networks }
+        for (network in (listOfNotNull(preferred) + networks).distinct()) {
+            linkProperties(ctx, network)?.linkAddresses?.firstOrNull {
+                it.address is Inet4Address && !it.address.isAnyLocalAddress &&
+                    !it.address.isLoopbackAddress && !it.address.isLinkLocalAddress
+            }?.let { return it.address.hostAddress }
         }
-        return allLocalIpv4().firstOrNull()
+        // Cellular/VPN addresses are not the phone's address on the camera LAN.
+        return null
     }
 
     fun allLocalIpv4(): List<String> = try {

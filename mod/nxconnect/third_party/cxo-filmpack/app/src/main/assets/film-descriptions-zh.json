@@ -1,0 +1,737 @@
+{
+  "AgfaPrecisa100": {
+    "title": "Precisa 100",
+    "manufacturer": "爱克发",
+    "type": "彩色正片",
+    "introduced": "2000 年代",
+    "discontinued": "在产",
+    "description": "Precisa 100 这个名称介绍了一个具有中性渲染、精细颗粒和纯色的 100 ISO 反转片。在 Agfachrome 100 的系列当中，Precisa 胶片以细微差别的透明度和颗粒的清晰轮廓而闻名。 \n\n这款胶片仍然在产，现在日本厂商使用 Fujifilm Provia 或 Sensia 的感光乳剂基片来制作它。\n\n”"
+  },
+  "FujiAstia100": {
+    "title": "Astia 100F",
+    "manufacturer": "Fujifilm",
+    "type": "彩色正片",
+    "introduced": "1998",
+    "discontinued": "2010",
+    "description": "Astia 100 是专为时尚和肖像作品而打造的专业胶片，特别适合需要相对柔和的色调和生动的色彩的情况。\n\n基于它所采用的“多色校正层”技术，成片可以实现更好的保真度，提供自然的肤色和细致入微的纹理，它也因此而遐迩著闻。该款胶片目前已停产，但在停产胶片市场仍有很大的需求。"
+  },
+  "FujiFP100c": {
+    "title": "FP 100 C",
+    "manufacturer": "Fujifilm",
+    "type": "彩色正片",
+    "introduced": "1990 年代",
+    "discontinued": "在产",
+    "description": "FP100C 是具有 100 ISO 感光度的即时成影胶片，严格来说，它并不是用于投影的彩色胶片，而是一种可提供 8 厘米 x 10 厘米的即时冲印的彩色正片。\n\n它与各种宝丽来 (Polaroid) 的标准相机兼容，是宝丽来品牌产品的良好替代品，因为它比荷兰前宝丽来工厂的新业主推出的不可能计划 (Impossible Project) 感光乳剂还能提供更好的颜色效果。"
+  },
+  "FujiProvia100": {
+    "title": "Provia 100F",
+    "manufacturer": "Fujifilm",
+    "type": "彩色正片",
+    "introduced": "2000 年代",
+    "discontinued": "在产",
+    "description": "Provia 100F 因其“绚丽的原色”和“对最精细的粉彩的尊重”被 Fujifilm 胶片公司 (Fujifilm) 广泛推广 ， 它是一款具有精细颗粒和大胆色彩的多功能胶片。\n\n尽管在投影时胶片中的颜色会有点乏味，但当胶片用于冲印时可以很容易得对它进行修饰和润色，以此增加一点对比度。它的颗粒相较于 Astia 的略粗，但因为它是该品牌唯一持续生产的 100 ISO 胶片，所以彩色正品的爱好者大多会忽略不计它这一个小缺点。"
+  },
+  "FujiProvia400F": {
+    "title": "Provia 400F",
+    "manufacturer": "Fujifilm",
+    "type": "彩色正片",
+    "introduced": "2000 年代",
+    "discontinued": "2010 年",
+    "description": "Provia 400F 拥有能用于任何主题的中性色，以及对于反转胶片来说非常精细的颗粒，这些特点使得这种 400 ISO 的彩色胶片很快就让它的竞争对手 Ekttachrome 400 及其变体产品变得过时。\n\nProvia 400F 被众多新闻和报道机构广泛使用。如今，它已停产，并被其变体 400X 所取代。"
+  },
+  "FujiProvia400XRXP": {
+    "title": "Provia 400X",
+    "manufacturer": "Fujifilm",
+    "type": "彩色正片",
+    "introduced": "2007",
+    "discontinued": "在产",
+    "description": "Provia 400X 作为 400F 的补充而面世，对于此感光度范围内的反转片而言，它拥有更饱和的色彩和有限的颗粒。\n\n主要用于纪实和体育摄影，它们需要比肖像或工作室摄影具有更高的快门速度。尽管如此，它仍然是当今唯一可用于高快门速度的正片胶卷，可提供色彩鲜艳的投影，而 400F 则不具备这种能力。"
+  },
+  "FujiSensia100": {
+    "title": "Sensia 100",
+    "manufacturer": "Fujifilm",
+    "type": "彩色正片",
+    "introduced": "1990 年",
+    "discontinued": "2010 年",
+    "description": "Sensia 100 是较为流行的胶片，在 1990 年和 2000 年之间演变出多种变体，与 Astia 相当类似。它在对比度的平衡和相对自然和真实的色彩之间提供了一个好的折中方案，而且价格还比专业反转片要合适得多。"
+  },
+  "FujiVelvia50": {
+    "title": "Velvia 50",
+    "manufacturer": "Fujifilm",
+    "type": "彩色正片",
+    "introduced": "1990",
+    "discontinued": "在产",
+    "description": "从发行之时起，Velvia 胶片就一直是 Kodachrome 胶片激烈的竞争对象。它与 Ektachrome E6 化学物质的兼容性意味着它能提供比竞争对手更方便上手的显影工艺和更卓越的感光度。 \n\n虽然 Velvia 50 的色彩还原度经常引发争论，但这不影响它在市场上取得了相当大的成功并被广泛使用，其中特别包括 GEO 杂志和用此胶片拍摄《从空中看地球》 (Earth from Above) 系列的亚恩·阿蒂斯-贝特朗 (Yann Arthus-Bertrand) 。版本 II 仍然在产。"
+  },
+  "KodakE100GXEktachrome100": {
+    "title": "Ektachrome 100 GX",
+    "manufacturer": "柯达",
+    "type": "彩正胶片",
+    "introduced": "2001",
+    "discontinued": "2009",
+    "description": "2000 年推出的 Ektachrome 系列的最后两款：G 系列（中性）和 GX （略暖）提供了比前一代 100 VS 更细的颗粒和更低的饱和度，因此能更好地投入广泛普遍的使用和扫描。\n\n它具有的平板颗粒可以提高准确性。这是柯达 (Kodak) 有史以来最精细的 100 ISO 胶片。"
+  },
+  "KodakEkta100VS": {
+    "title": "Ektachrome 100 VS",
+    "manufacturer": "柯达",
+    "type": "彩色正片",
+    "introduced": "1998 年",
+    "discontinued": "2012 年",
+    "description": "半个世纪内，Ektachrome 系列绝对是工作室摄影的参考胶片，就如同 Kodachrome 与户外摄影的关系一样，无论是对于专业摄影师还是专业爱好摄影师来说。 \n\nEktachrome 有多种感光度和格式可以选择，同时易于曝光和显影。从那时起，\"Ekta\" 已成为新闻机构常用胶片的标准代名词。 VS 版本和 100S 版本是专业内标准，其中后者的饱和度略低。"
+  },
+  "KodakEliteExtraColour100": {
+    "title": "Elite Chrome Extra Color 100 ",
+    "manufacturer": "柯达",
+    "type": "彩色正片",
+    "introduced": "1991 年",
+    "discontinued": "2012 年",
+    "description": "Elite 是上个世纪末期推出的业余 Ektachrome 系列的名称，直到彩色胶片的停产。\n\nExtra Color 的第一个版本被非常暖色调的颜色过度饱和。后来的版本也保留了这些特性。"
+  },
+  "KodakElitechrome200": {
+    "title": "Elite Chrome 200",
+    "manufacturer": "柯达",
+    "type": "彩色正片",
+    "introduced": "1994 年",
+    "discontinued": "2011 年",
+    "description": "Elite Chrome 作为大众版的 Ektachrome 200 比它的先辈更中性，并提供更细的颗粒。\n\n尽管它的细节很精致，但还是无法抹去大众对 Kodachrome 200 的艺术颗粒效果的深刻记忆，也无法使人们忘记 Kodachrome 200 在阴影中的特殊饱和度。即便如此，Elite Chrome 仍是一种出色的多用途胶片，尤其适合纪实报道和风景摄影。"
+  },
+  "KodakElitechrome400": {
+    "title": "Elite Chrome 400",
+    "manufacturer": "柯达",
+    "type": "彩色正片",
+    "discontinued": "2011 年",
+    "description": "Elite Chrome 400 以其“即使在较弱的日光下仍呈现丰富而鲜艳的色彩”的特性被柯达 (Kodak) 推广，但它未能令使用者信服，主要是因为与其竞争对手 Fujifilm 的 Provia 胶片相比，它的颗粒明显且有时较为粗糙。\n\n因此，它的在售时期较为短暂。然而，它的功能在它被停产之前还是吸引了许多 Lomo 摄影的爱好者。"
+  },
+  "KodakKodachrome25": {
+    "title": "Kodachrome 25",
+    "manufacturer": "柯达",
+    "type": "彩色正片",
+    "introduced": "1974",
+    "discontinued": "2003",
+    "description": "在 1935 年首创性地推出的 Kodachrome 系列中，Kodachrome 25 提供低灵敏度、非常精细的颗粒、日光下略显冷色调的色彩平衡以及令人满意的半调饱和度。\n\n它被 Ernst Haas 和 Fulvio Roiter 等伟大的风景摄影师广泛用于国家地理的纪实摄影，更不用说 Steve McCurry 了，后者在他的纪实摄影中使用了 Kodachrome 全系列产品。 \n\n由于随着时间的推移具有高度的稳定性，它一直被用于风景和自然照片的纪实摄影。"
+  },
+  "KodakKodachrome64": {
+    "title": "Kodachrome 64",
+    "manufacturer": "柯达",
+    "type": "彩色正片",
+    "introduced": "1974 年",
+    "discontinued": "2009 年",
+    "description": "Kodachrome 64 作为 1962 年推出的 Kodachrome X 的后继产品，和 Kodachrome X 一样具有比 Kodachrome 25 更灵敏的显著优势。它是唯一一款专门为普通大众设计的 Kodachrome ，已投放市场来与 Instamatic 和 Super8 相机匹配使用。 \n\n纯粹主义者总是会抱怨它在某些照明条件下拍摄并呈现出的画面偏向洋红色，就连灰色的天空都会变成粉红色的，因为专业的业余爱好摄影师会更加偏爱 Kodachrome 25 。"
+  },
+  "KodakKodachrome200": {
+    "title": "Kodachrome 200",
+    "manufacturer": "Kodak",
+    "type": "彩色正片",
+    "introduced": "1986 年",
+    "discontinued": "2007 年",
+    "description": "Kodachrome 200 是 Kodachrome 系列中唯一具有高感光度的胶片，尽管如此，200 还是逊色于其他当时已达到 400 甚至 1000 ISO 的竞争对手。它多用于在昏暗的照明下拍摄纪实报道和照片。\n\n虽然与 25 和 64 Pro 版本相比，Kodachrome 200 具有始终如一的色彩渲染，但它经常因粗糙的颗粒和阴影中过多的颜色而被指责。然而，风景摄影师将这些被人诟病的特质转化为优点，为他们拍摄的照片营造一种印象派的氛围。"
+  },
+  "LomoXProSlide200": {
+    "title": "X-Pro Slide 200",
+    "manufacturer": "Lomography/爱克发",
+    "type": "彩色正片",
+    "introduced": "2010 年",
+    "discontinued": "在产",
+    "description": "X-Pro Slide 只不过是 Agfa RSX II 反转片的重新包装，现已停产。它为略显“人造”的渲染提供饱和色彩和高对比度。当它在显影时经过交叉处理后，它会呈现非常特殊的色调。"
+  },
+  "Polaroid669": {
+    "title": "Polaroid 669",
+    "manufacturer": "宝丽来",
+    "type": "彩色正片",
+    "introduced": "1960 年代",
+    "discontinued": "2008 年",
+    "description": "1943 年，美国人埃德温·兰德 (Edwin Land) 的三岁女儿很没有耐心地问：“为什么我们不能现在就看到照片？” 为了回应女儿的问题，埃德温设计了宝丽来。\n\n1947 年进入市场的这款工艺最初是单色的，并在 1963 年发明了 Polacolor 胶片后发展成了彩色的。后者在经历多次反复讨论和修改后。为 1972 年诞生的 SX-70 提供了基础。669 的感光度为 80 ISO，主要用于 100 的皮腔相机型号及后续系列。它产生了 8 厘米 x 10 厘米的漂亮中性色的正片。"
+  },
+  "Polaroid690": {
+    "title": "Polaroid 690",
+    "manufacturer": "宝丽来",
+    "type": "彩色正片",
+    "introduced": "1960 年代",
+    "discontinued": "2008 年",
+    "description": "Polaroid 690 是比 669 更敏感的100 ISO 版本，且具有更明亮的色彩，它也是可用于 100 型及更高版本的皮腔相机的伟大胶片家族的其中一员。"
+  },
+  "PolaroidPolachrome": {
+    "title": "Polachrome",
+    "manufacturer": "宝丽来",
+    "type": "彩色正片",
+    "introduced": "1983 年",
+    "discontinued": "1990 年",
+    "description": "Polachrome 是一种即时成像胶片，这个产品可以让使用者在小机器运行短短几分钟后获得 24 x 36 的胶片。\n\nPolachrome 在推出后立即被用于艺术类型的照片，因为它的结构并不适合纪录片使用。它提供的颜色相对具有人造的特点，且具有类似于六十年代电视机的光栅水平线。"
+  },
+  "FujiInstax210": {
+    "title": "Instax 210",
+    "manufacturer": "Fujifilm 胶片",
+    "type": "彩色正片",
+    "introduced": "2011",
+    "discontinued": "在产",
+    "description": "随着宝丽来 (Polaroid) 的消亡，拍立得类产品的生命周期似乎真的结束了，但是，我们还有富士胶片 (Fujifilm) 及其独创的 Instax 系统。 Instax 由一系列有趣的紧凑型复古相机组成，可提供信用卡大小 (62 毫米 x 46 毫米) 的即时成像彩色照片。\n\nInstax 120 的感光度为 ISO 800，其彩色平衡和色调范围比宝丽来胶片更大，可拍摄具有异常精细颗粒的细节丰富、准确还原的照片。这种类型的胶片表明了拍立得型模拟胶片的回归：它们的需求如此之大，日本制造商计划在 2015 年为其建立一个新的专门工厂。"
+  },
+  "Astia": {
+    "title": "Astia 100 （通用）",
+    "manufacturer": "Fujifilm",
+    "type": "彩色正片",
+    "introduced": "1998 年",
+    "discontinued": "2010 年",
+    "description": "Astia 100（通用）是 Fujifilm Astia 100 的旧版校准版本，它的颗粒不如最近的 100F 精细，此通用版本可与 Sensia 100 颗粒一起使用，后者具有较为相似的一般渲染。\n\nAstia 100 （通用）是一种比 Velvia 更柔和的胶片，但有比 Provia 更生动的色彩。"
+  },
+  "Provia": {
+    "title": "Provia 100（通用）",
+    "manufacturer": "Fujifilm",
+    "type": "彩色正片",
+    "introduced": "1990 年代",
+    "discontinued": "2005 年",
+    "description": "Provia 100 的通用配置版本是专业 Fujichrome 系列中的第一款，与 100F 版本相比，它的颗粒感更明显，颜色也更亮，接近同期的 Sensia 胶片。\n\n从效果来说，应该选择 Sensia 100 颗粒来实际呈现这一配置版本。"
+  },
+  "Velvia": {
+    "title": "Velvia 100（通用）",
+    "manufacturer": "Fujifilm",
+    "type": "彩色正片",
+    "introduced": "2005 年",
+    "discontinued": "在产",
+    "description": "Velvia 的这个 100 ISO 版本比其兄弟产品更敏感，倾向于将绿色显示成黄色。它没有取得预期的成功，以至于 Fujifilm 胶片公司随后重新推出了新版本的 Velvia 50，其饱和度较低一些，但绿色非常明显。\n\nVelvia 100 的通用配置旨在与同一制造商的 Sensia 100 的颗粒一起使用"
+  },
+  "Ekta100VS": {
+    "title": "Ektachrome 100 VS（通用）",
+    "manufacturer": "柯达",
+    "type": "彩色正片",
+    "introduced": "1998",
+    "discontinued": "2012",
+    "description": "Ekachrome 100 VS 的特性曲线显色略偏温暖，接近美国版的胶片，后者随着时间的推移产生了几种变体，具体也取决于出产国。\n\n这个版本更接近于美国制作的 Elite Chrome Extra Color 100 业余胶片，但其颗粒则是 Ekachrome 100 VS 所特有的。"
+  },
+  "Kod64": {
+    "title": "Kodachrome 64（通用）",
+    "manufacturer": "柯达",
+    "type": "彩色正片",
+    "introduced": "1974 年",
+    "discontinued": "2009 年",
+    "description": "源自 Kodachrome 64 的这个通用配置具有与八十年代专业版本的 Kodachrome 64 接近的渲染，且中性度和饱和度比一般大众版本的更强。这是 Steve McCurry 用来拍摄阿富汗年轻女子的著名肖像的胶片。\n\n当使用通用配置来模拟 K64 Pro 胶片时，可能会让人联想到 Kodachrome 25 的颗粒感。"
+  },
+  "KodakEIR": {
+    "title": "Kodak EIR",
+    "manufacturer": "柯达",
+    "type": "彩色正片",
+    "description": "Kodak EIR 是一种最初为红外线制作的胶片，能让照片有一种超现实的效果，绿色植被在照片中变成红色或粉红色，浅肤色和粉红色变成黄色，而蓝调几乎变成黑色。"
+  },
+  "AgfaUltraColor100": {
+    "title": "Ultra 100",
+    "manufacturer": "爱克发",
+    "type": "彩色负片",
+    "introduced": "2003 年",
+    "discontinued": "2005 年",
+    "description": "Ultra 是具有非常高饱和度的 100 ISO 胶片。Ultra 是九十年代有着更为耀眼的色彩的 50 ISO Ultra 的后继产品，可以通过略微降低颗粒强度和增加饱和度来模拟 50 ISO Ultra 。"
+  },
+  "AgfaVista200": {
+    "title": "Vista 200",
+    "manufacturer": "爱克发",
+    "type": "彩色负片",
+    "introduced": "2003 年",
+    "discontinued": "在产",
+    "description": "主要供大众使用的 Vista 200 具有明亮宜人的色彩和非常宽的曝光范围。\n\n它是在 2000 年开发的，其公司充分利用了最新的模拟技术，从而提供了高锐度和细微颗粒。"
+  },
+  "FujiSuperiaReala100": {
+    "title": "Superia Reala 100",
+    "manufacturer": "Fujifilm",
+    "type": "彩色负片",
+    "discontinued": "2013 年",
+    "description": "尽管 Reala 100 有时的标价很不合理，但它直到今天仍然很受欢迎，它显著的特性在于采用了领先的技术：使用第四个感光层，大幅度改善了白平衡，尤其是对肤色的渲染。\n\n它呈现的色彩细腻自然，渲染柔和，适用于拍摄精美的肖像或婚纱照。"
+  },
+  "FujiSuperia200": {
+    "title": "Superia 200",
+    "manufacturer": "Fujifilm",
+    "type": "彩色负片",
+    "introduced": "1990 年代",
+    "discontinued": "在产",
+    "description": "Superia 是 Kodak Gold 系列的主要竞争对手，它以其细微颗粒和非常好的饱和度而闻名。这是一款“家用”胶片，使得无论业余摄影师还是专业摄影师都能对风景、自然景光或微距摄影感到非常的满意。"
+  },
+  "FujiSuperiaXtra800": {
+    "title": "Superia X-Tra 800",
+    "manufacturer": "Fujifilm",
+    "type": "彩色负片",
+    "discontinued": "在产",
+    "description": "X-Tra 800 作为 Superia 系列的中档胶卷中速度最快的一员，专门用于需要高快门速度的纪实或体育摄影。它属于著名的 800 ISO “Fujifilm Press” 的系列，也是八十年代末唯一一款高感光度并具饱和色彩的彩色胶片。\n\n它的尺寸仍然是 34 x 36，使用高质量反光相机的优质镜头拍摄，它能创造出高锐度的照片。"
+  },
+  "FujiSuperiaHG1600": {
+    "title": "Superia HG 1600",
+    "manufacturer": "Fujifilm",
+    "type": "彩色负片",
+    "introduced": "1990 年代",
+    "discontinued": "在产",
+    "description": "具有 1600 ISO 的 Superia HG 1600 是市场上感光度最高的胶片。在数字时代到来之前，它就已经吸引了大量要求苛刻的业余摄影爱好者，对捕捉昏暗光线这一难点进行了一场革命。与 Superia X-Tra 800 相比，它的色彩没有那么明亮，颗粒也更加明显。\n\n它非常适合拍摄音乐会，但不那么适合在光线不足的情况下进行一般摄影，因为它需要精确的曝光，这与较低端的小型相机并不兼容。"
+  },
+  "KodakEliteColor200": {
+    "title": "Elite Color 200",
+    "manufacturer": "柯达",
+    "type": "彩色负片",
+    "introduced": "2005 年",
+    "discontinued": "2012 年",
+    "description": "就如同 Ektar 100 一样，这款 200 ISO 胶片专为专业摄影师和专业业余摄影师提供了高锐度、非常精细的颗粒和鲜艳的色彩：VC 风格。\n\n这个版本在模拟处理的过程中容易显影和扫描，适用于风景、自然景光和纪实摄影，但它仅以 135 相机的 24 x 36 画幅提供。"
+  },
+  "KodakEliteColor400": {
+    "title": "Elite Color 400",
+    "manufacturer": "柯达",
+    "type": "彩色负片",
+    "introduced": "2004 年",
+    "discontinued": "2012 年",
+    "description": "400 ISO 版本的感光度更高，并不比其相应的 200 ISO 胶片更精细，但它的优点包括相似的颜色范围和饱和度，更适合在光线较弱的情况下进行旅行和风景摄影。\n\n 这款胶片只出售 135 格式，于 2004 年推出，几年后就停产了。"
+  },
+  "KodakPortra160NC": {
+    "title": "Portra 160 NC",
+    "manufacturer": "柯达",
+    "type": "彩色负片",
+    "introduced": "2002 年",
+    "discontinued": "在产",
+    "description": "这款 160 ISO 的胶片专供专业人士用于肖像或婚礼摄影，凭其肤色的品质、再现衣着服饰的保真度以及中性色调而备受赞誉。Portra 160 NC 中的 NC 代表中性色 (Neutral Colors)。\n\n它提供非常精细的颗粒和高锐度，适用于中画幅的高倍率放大。"
+  },
+  "KodakPortra160VC": {
+    "title": "Portra 160 VC ",
+    "manufacturer": "柯达",
+    "type": "彩色负片",
+    "introduced": "2002",
+    "discontinued": "2012",
+    "description": "这一 Portra 系列胶卷具有精细颗粒、高清晰度和更浓烈的色彩 – “VC”代表鲜艳色彩 – 它比 NC（中性色彩）更适合旅行照片、旅游、微距摄影等。"
+  },
+  "LomoRedScale100": {
+    "title": "Redscale 100",
+    "manufacturer": "Lomography",
+    "type": "彩色负片",
+    "introduced": "2012",
+    "discontinued": "在产",
+    "description": "这一 100 ISO 胶片非常有创意，总是提供倾向于黄色和红色的人造颜色。这种强烈的橙色占主导地位，是因为负片在错误的一面曝光，这意味着橙色三醋酸纤维素基材朝向镜头而不是乳剂面。\n\n使用传统胶片可以获得相同的效果，您可以在黑暗中显影，然后在卷轴中以错误的方向回卷。"
+  },
+  "KodakEktar100": {
+    "title": "Ektar 100",
+    "manufacturer": "柯达",
+    "type": "彩色负片",
+    "introduced": "2008 年",
+    "discontinued": "在产",
+    "description": "在八十年代末期，Ektar 品牌是专门为高锐度和精细颗粒的照片而预留的，因为它的颗粒是 100 ISO 胶片中最精细的。Ektar 100 比流行的 Gold 产品有更中性的渲染，同时还有非常鲜艳的颜色。\n\nEktar 100 现在仍以 135 和 120 的格式在出售，它适用于想要获得高图像清晰度的专业风景或建筑摄影师。"
+  },
+  "FujiPro400H": {
+    "title": "Pro 400H",
+    "manufacturer": "Fujifilm",
+    "type": "彩色负片",
+    "introduced": "2008 年",
+    "discontinued": "在产",
+    "description": "Pro 400H 的特点在于优化肤色和光线阴影之间的柔和渐变。与 Reala 一样，它纳入第四个感光层，有助于保证非常自然的渲染和良好的细节准确度。\n\n它特别适用于时尚摄影。针对这种用途，它的 120 中画幅非常出色，其颗粒不大于传统的 100 ISO 胶片。"
+  },
+  "KodakPortra400": {
+    "title": "Portra 400",
+    "manufacturer": "柯达",
+    "type": "彩色负片",
+    "introduced": "2010 年",
+    "discontinued": "在产",
+    "description": "Portra 400 在所有相同感光度的彩色胶片中拥有最细微的颗粒，具有相当中性的色彩渲染和自然的肤色。它用于婚礼、时尚和肖像摄影，特别是当这些场景光线不足的时候。 \n\n否则，摄影师应首选 160 版本。然而，Portra 400 对于业余拍摄旅行或纪实报告仍然是非常有趣的，因为它可以用于放大模拟胶卷。"
+  },
+  "AdoxColorImplosion": {
+    "title": "Color Implosion",
+    "manufacturer": "Adox",
+    "type": "彩色负片",
+    "introduced": "2005 年",
+    "discontinued": "在产",
+    "description": "定义 Color Implosion 的功能是它可以根据曝光的感光度来渲染不同的颜色。在 400 ISO 下饱和度会降低，在 200 ISO 下红色会更艳丽，在 100 ISO 下画面所呈现的色调会以黄色为主。 \n\n在所有情况下，它都有非常明显的颗粒，与七十年代以 Ilford HPS 胶片为例的黑白 800 ISO 胶片很相似。它以其画面“超现实”的特质吸引了众多 LOMO 摄影爱好者。"
+  },
+  "FujiSuperiaXtra400": {
+    "title": "Superia X-Tra 400",
+    "manufacturer": "Fujifilm",
+    "type": "彩色负片",
+    "discontinued": "在产",
+    "description": "模拟时代即将结束的时候，Superia X-Tra 是非常经常与小型 34 x 36 或 APS 相机一起使用的彩色胶片。对于不是很明亮的镜头，其高感光度让摄影师可以在任何条件下拍摄照片，无论是阴天的户外，还是只有简单闪光灯的室内。 \n\n因此，这款胶片也用于不提供任何手动设置的一次性相机。它可以接受不同程度的曝光，同时呈现明亮的色彩和自然的肤色。"
+  },
+  "KodakElite100C41": {
+    "title": "Elite 100 （交叉冲印）",
+    "manufacturer": "柯达",
+    "type": "交叉冲印胶片",
+    "introduced": "1989 年",
+    "discontinued": "2012 年",
+    "description": "在九十年代，有一个时尚兴起了一段时间：使用冲印彩色胶片的方式来冲印负片以获得奇怪的颜色，或者用冲印负片的方式来冲印彩色胶片。这也是“交叉冲印”一词的由来。\n\n这款相对中性的胶片使用的是用于负片的 C41 化学物质，而不是标准的 E6 化学物质来显影，产生了这种独特的绿黄色。"
+  },
+  "FujiSuperia200E6": {
+    "title": "Superia 200（交叉冲印）",
+    "manufacturer": "Fujifilm",
+    "type": "交叉冲印胶片",
+    "introduced": "1990 年代",
+    "discontinued": "在产",
+    "description": "当人们使用用于反转胶片的 E6 化学物质，而不是传统的 C41 化学物质来给 Superia 200 胶片显影的时候，图像中的色彩会转变为蓝色。\n\n这种效果在上个世纪非常流行。今天，它仍然很受“另类”照片迷的欢迎，尤其是那些使用 Lomo 或 Holga 相机进行拍摄的人。"
+  },
+  "AgfaAPX25": {
+    "title": "APX 25 ",
+    "manufacturer": "爱克发",
+    "type": "黑白胶片",
+    "introduced": "1990 年代",
+    "discontinued": "2005",
+    "description": "Agfapan 25 是 90 年代后期爱克发最著名的胶片之一。它具有难以比拟的细颗粒度。它的感光度非常低，仅 ISO 25，多年来专门用于快门速度不是关键因素的摄影，例如风景和微距摄影。\n\n这是 APX 版本，作为爱克发对柯达 T 胶片系列的回应，采用扁平颗粒以提高精细度。它具有高清晰度和强烈对比度"
+  },
+  "AgfaAPX100": {
+    "title": "APX 100",
+    "manufacturer": "爱克发",
+    "type": "黑白胶片",
+    "introduced": "1990 年代",
+    "discontinued": "在产",
+    "description": "这款非常高质量的胶片主要用于拍摄固定物体，如产品、建筑、风景等，提供精细的颗粒和非常广泛的灰度。它以易于加工而闻名，现在仍然可以在一些在线商店中找到。\n\n有可能一些最近授权销售的产品与 2000 年初的乳剂的特性不完全相同，因为最近的测试表明它非常接近 Harman 产品（Kentmere 或 Ilford Pan）。"
+  },
+  "FujiNeopanAcros100": {
+    "title": "Neopan Acros 100",
+    "manufacturer": "Fujifilm",
+    "type": "黑白胶卷",
+    "introduced": "2001",
+    "discontinued": "在产",
+    "description": "据 Fujifilm 称，Neopan Acros 提供“所有 ISO 100 胶片中最优秀的颗粒度。”它确实在对比对象上提供了高清晰度和强大的分辨率，允许高倍率放大，尤其是在 6x6 或 6x7 的 120 卷轴的中画幅中使用时。\n\n其原色灵敏度和相当有限的使用范围 – 介于 ISO 80 和 200 – 确保获得最佳效果。"
+  },
+  "FujiNeopan1600": {
+    "title": "Neopan 1600",
+    "manufacturer": "Fujifilm",
+    "type": "黑白胶卷",
+    "introduced": "1990 年代",
+    "discontinued": "2014",
+    "description": "Neopan 是高感光度 ISO 1600 胶卷，经常因其经典的美丽颗粒而极具吸引力，同时，也因其在达到这一灵敏度水平时与竞争对手相比的高细腻度而享誉。\n\n此外，它可以快速显影，这对新闻界来说是一个很有价值的特性。根据显影液的不同，它可以灵活地在 ISO 400 到 3200 之间使用，因此特别适合禁止闪光灯照明的运动、表演和室内拍摄。"
+  },
+  "IlfordDelta100": {
+    "title": "Delta 100 ",
+    "manufacturer": "伊尔福",
+    "type": "黑白胶片",
+    "introduced": "1992",
+    "discontinued": "在产",
+    "description": "90 年代，伊尔福采用了柯达首创的平板颗粒，其感光颗粒在乳剂中的分布更加紧凑和规则，从而提供非常精细的颗粒和清晰的细节。\n\nDelta 100 是该品牌在 1992 年首次使用该技术推出。它生产有很多细节和深黑色的照片。风景和肖像都很有用，取决于显影液，它可以在 50 到 200 ISO 之间使用，是 Fujifilm Acros 的一个非常重要的竞争对手！"
+  },
+  "IllfordDelta400": {
+    "title": "Delta 400",
+    "manufacturer": "伊尔福",
+    "type": "黑白胶片",
+    "introduced": "1994 年",
+    "discontinued": "在产",
+    "description": "这款胶片采用伊尔福为响应柯达的 T-MAX 400 而开发的“核壳晶体”技术。与经典的感光乳剂不同，它在不增加颗粒大小的情况下提供了更高的感光度。\n\nDelta 400 可在 200 到 3200 ISO 之间使用，同时根据不同的显影浴提供很大的显影范围。它是较为灵活的广泛用于模拟摄影的胶片中的其中一员。"
+  },
+  "IlfordDelta3200": {
+    "title": "Delta 3200",
+    "manufacturer": "伊尔福",
+    "type": "黑白胶片",
+    "introduced": "1998",
+    "discontinued": "在产",
+    "description": "Ilford 的系列胶片提供最极高的灵敏度，它还基于“核壳晶体技术”，与柯达的 T-MAX 3200 直接竞争。\n\n它在银盐摄影中可以处理到非常高的值，最高可达 ISO 12800 。"
+  },
+  "IlfordFP4Plus125": {
+    "title": "FP4 Plus 125 ",
+    "manufacturer": "依尔福",
+    "type": "黑白胶片",
+    "introduced": "1990 年",
+    "discontinued": "在产",
+    "description": "FP4 Plus 是黑白摄影中的一个安全选择，可以在 50 到 200 ISO 之间使用，提供精细的颗粒和良好的锐度。它可以接受高于和低于其标称感光度的曝光变化。\n\n到今天，它是使用例如 Lomo Lubitel 等中画幅的初学者或“贫苦摄影师”的常见选择。渲染的高低对比度取决于使用什么显影浴让它显影。"
+  },
+  "IllfordHP5Plus400": {
+    "title": "HP5 Plus 400 ",
+    "manufacturer": "依尔福",
+    "type": "黑白胶片",
+    "introduced": "1989 年",
+    "discontinued": "在产",
+    "description": "在六十年代著名的 HP3 和 HP4 的系列中，这款传统设计的胶片提供了相当明显的颗粒和适中的对比度。\n\n它可以承受光线的差异，在光线不稳定或不足时可以将 ISO 提升到 3200。所有喜欢这一款独特的“英式风格”的摄影师都会选择它作为纪实胶片，而不是它长期的竞争对手 Kodak Tri-X。"
+  },
+  "IllfordHPS800": {
+    "title": "HPS 800",
+    "manufacturer": "伊尔福",
+    "type": "黑白胶片",
+    "introduced": "1954",
+    "discontinued": "1998",
+    "description": "1954 年以 ISO 400 推出，在 60 年代以 ISO 800 推出，最后由于其较差的动态和相当粗糙的颗粒在当时不再受青睐，因此销售善不佳而在 90 年代末退市。 \n\n它的风格是光线不足条件下的典型模拟纪实摄影。有时候，在自行承担风险和危险的条件下，使用国外开发的显影液，如芝加哥 Bauman 的双浴显影液 Diafine，它可以迫冲到 ISO 3200 。其替代品是 Ilford Delta 3200，它具有更细的颗粒"
+  },
+  "IllfordPanFPlus50": {
+    "title": "Pan F Plus 50",
+    "manufacturer": "伊尔福",
+    "type": "黑白胶片",
+    "introduced": "2004",
+    "discontinued": "在产",
+    "description": "Ilford 将这款产品描述为“具有非常精细颗粒，在分辨率、对比度和锐度方面具有卓越性能的胶片”。它具有 60 年代 Pan F 的血统！\n\n最好在 ISO 25 到 64 之间使用，并且通常用于高倍率放大冲印，这种胶片配合某些显影液使用时只能产生中等对比度的影像，而配合其他显影液使用时则具有强烈的对比度和高清晰度。它也可以作为反转片处理以获得黑白正片。"
+  },
+  "IllfordXP2": {
+    "title": "XP2 Super 400 ",
+    "manufacturer": "伊尔福",
+    "type": "黑白胶片",
+    "introduced": "1998",
+    "discontinued": "在产",
+    "description": "尽管 ISO 感光度为 400，但 XP2 Super 400 对曝光误差的宽容度很高，因此颗粒非常细，可以在 ISO 50 到 800 之间使用。\n\n在冲洗方面，任何采用传统 C41 冲洗的实验室都可以在不到一个小时的时间内使这种胶片显影。"
+  },
+  "KodakBW400CN": {
+    "title": "BW 400 CN",
+    "manufacturer": "柯达",
+    "type": "黑白胶片",
+    "introduced": "1990 年代",
+    "discontinued": "2014",
+    "description": "由柯达推广为“具有世界上最好的颗粒度”，这一胶卷是普通黑白胶卷所无法比拟的。这是因为在显影后，它就不含银晶体，而是含有着色剂，就像彩色底片一样。\n\n它的主要优点是可以在 C41 浴槽中进行显影，例如世界各地的任何业余小型冲印店。它的细腻和轮廓被推荐用于放大到很大的尺寸。受模拟胶片摄影师对粗颗粒的偏好所影响，它于 2014 年停产。"
+  },
+  "KodakHIE": {
+    "title": "HIE",
+    "manufacturer": "柯达",
+    "type": "黑白胶片",
+    "introduced": "1990 年代",
+    "discontinued": "2007",
+    "description": "与原色胶片不同，红外胶片对红色敏感，但主要是人眼无法感知的 – 波长约 900 纳米 – 的红外光 ，但由于散发的热量在夜间可以感知。\n\n这些胶片可以记录这种光。它还可以与发出几乎不可见光的红外线闪光灯一起使用。它具有相当细的颗粒和良好的细节渲染，可以在 ISO 25 到 200 之间使用，具体取决于所使用的滤镜"
+  },
+  "KodakHIEFiltre": {
+    "title": "HIE （含滤镜）",
+    "manufacturer": "柯达",
+    "type": "黑白胶片",
+    "introduced": "1990 年代",
+    "discontinued": "2007 年",
+    "description": "这款胶片的渲染效果和红外胶片加上暗红色滤镜的组合相同，用途是阻止蓝色光线并仅让红色光线通过，因此它在风景摄影中会创造强大的艺术效果，如黑暗的天空、黑色的水、白色的树叶，以及强光周围的一圈光晕"
+  },
+  "KodakTmax100": {
+    "title": "T-MAX 100",
+    "manufacturer": "柯达",
+    "type": "黑白胶片",
+    "introduced": "1990 年代",
+    "discontinued": "在产",
+    "description": "具有扁平颗粒的 T-Max 系列的推出旨在取代经典的颗粒胶片。ISO 100 版本提供了非常精细的颗粒、高锐度和以良好的轮廓强调细节的能力。\n\n这种胶片也可以像反转片一样进行处理以产生黑白正片。它是要求光线充足或使用大光圈镜头的多用途胶卷。无论是人像还是风景，它都能提供同样好的效果"
+  },
+  "KodakTmax400": {
+    "title": "T-MAX 400",
+    "manufacturer": "柯达",
+    "type": "黑白胶片",
+    "introduced": "1990 年代",
+    "discontinued": "在产",
+    "description": "至少对于记者来说，T-Max 400 即将成为黑白胶片中的标准。它在锐度和精细颗粒之间提供了良好的平衡，同时具有可以轻松提升到 800 甚至 1600 ISO 的 400 ISO 感光度。\n\n不幸的是，在它刚被推出时，只有 T-Max 显影液才是适用的，但当时所有的业余实验室都在使用传统的 D76。最重要的是，它的“完美颗粒感”与 Tri-X 相比似乎缺乏个性，而 Tri-X 仍然是具有传统品味的模拟摄影师的首选。"
+  },
+  "KodakTMax3200": {
+    "title": "T-MAX 3200",
+    "manufacturer": "柯达",
+    "type": "黑白胶片",
+    "introduced": "1990 年代",
+    "discontinued": "2012 年",
+    "description": "T-MAX 3200 具有广泛的感光度，而且可以向上推两三档，达到 12800 ISO 或 25600 ISO 的感光度。它既用于光线昏暗的纪实摄影，也用于影像监视设备，包括警察或国防任务，但这个功能已被数字系统取代。\n\n因此，它在 2012 年停产，但剩余的库存可供那些喜欢颗粒胶片的人使用。"
+  },
+  "KodakTriX400": {
+    "title": "Tri-X 400 ",
+    "manufacturer": "柯达",
+    "type": "黑白胶片",
+    "introduced": "1954 年",
+    "discontinued": "在产",
+    "description": "举世闻名的 Tri-X 400 是专用于黑白摄影的经典系列中的最后一款，其它还包括 Plus-X、Double-X、Four-X 等。\n\n它的感光度取决于胶片的版本，范围在 320 和 400 ISO 之间，它能够承受光线的重大变化，还具有清晰的颗粒。因此，很多六十年代和七十年代的伟大记者都使用 Tri-X，最近还被 Sebastião Salgado 使用过。\n\n一些例如 Acufine 的传奇显影批次充分地将这款胶片的潜力发挥到了 1600 ISO，还呈现了具有良好轮廓和对比的细节。"
+  },
+  "Polaroid664": {
+    "title": "Polaroid 664",
+    "manufacturer": "宝丽来",
+    "type": "黑白胶片",
+    "introduced": "1970 年代",
+    "discontinued": "2008 年",
+    "description": "这款中等感光度 100 ISO 的宝丽来胶片曾经是个经典，传统上用于工作室摄影，它提供了相当柔和的色调，来弥补六十年代由于传统胶片的低感光度而使用的电子闪光灯的强大照明。这些 8.5 厘米 x 11 厘米的照片都有着闪亮的表面。"
+  },
+  "Polaroid667": {
+    "title": "Polaroid 667",
+    "manufacturer": "宝丽来",
+    "type": "黑白胶片",
+    "introduced": "1970 年代",
+    "discontinued": "2008 年",
+    "description": "这款具有非常高感光度 (ISO 3200) 的全色胶片主要用于科学图像，也可用于 100 系列皮腔相机来进行一般摄影。\n\n的确，对于通常不是很亮、最大光圈也只能达到 f/8 的镜头，由于其高感光度，为自然采光的纪实报道和室内摄影打开了一扇即时摄影的大门。"
+  },
+  "Polaroid672": {
+    "title": "Polaroid 672",
+    "manufacturer": "宝丽来",
+    "type": "黑白胶片",
+    "introduced": "1970 年代",
+    "discontinued": "2008 年",
+    "description": "作为宝丽来产品家族的标准款胶片，Polaroid 672 的 400 ISO 感光度是系列中中等到较高的，同时也提供了相当精细的颗粒，相对生动的半色调和良好的对比度。\n\n它呈现的照片有光泽的表面，以两包 10 张照片的形式出售，因此能拍摄出 20 张旅行摄影的快照。每张快照都会在 45 秒内显影。一个鲜为人知的事实是它的图像密度会根据环境色温而发生变化。"
+  },
+  "Rollei100Tonal": {
+    "title": "100 Tonal",
+    "manufacturer": "禄来",
+    "type": "黑白胶片",
+    "introduced": "2000 年代",
+    "discontinued": "在产",
+    "description": "有 135、120 和中型和大型 8'x10' 尺寸的单张胶片。因为它具有高分辨率，这种高质量的原色胶片适用于要求苛刻的业余爱好者和专业人士，特别是风景、建筑和大型放大片。\n\n尽管对比度很高，但它的颗粒与 Retro 80 相比则很细腻。根据照明和显影液而定，它可在 ISO 50 和 200 之间使用。它也可以作为反转片冲洗，产生与 Agfa Scala 非常接近的幻灯片渲染。 \n\n“"
+  },
+  "RolleiIR400": {
+    "title": "IR 400 ",
+    "manufacturer": "䘵来",
+    "type": "黑白胶片",
+    "introduced": "2000 年代",
+    "discontinued": "在產",
+    "description": "由比利时爱克发工厂制造，此红外胶片经校准，可以使用没有滤镜的 400 ISO 代替已停产的 Kodak HIE。它可以根据相关的滤镜有不同的渲染效果，最好使用专用滤镜以获得最佳红外效果。制造商推荐 l’Heliopan 715，虽然其感光度只有 25 ISO。它具有精细的颗粒和明确的对比度。它以 135 和 120 格式提供。"
+  },
+  "RolleiOrtho25": {
+    "title": "Ortho 25",
+    "manufacturer": "禄来",
+    "type": "黑白胶片",
+    "introduced": "2000 年代",
+    "discontinued": "在产",
+    "description": "这款 ISO 25 胶片主要用于复制和科学拍摄，经过处理可扩展到 ISO 12 到 50 之间，提供极细的颗粒和高分辨率，对比度强。\n\n其原色层对红光不是很敏感。它允许高倍率的风景照片放大，拍摄人像的锐度很高。此外，其完全透明的片基使其非常适合进行反转处理以获得用于投影的幻灯片。通常采用豪华木箱出货，但需要特殊的显影液才能达到最佳性能。"
+  },
+  "RolleiRetro80S": {
+    "title": "Retro 80s",
+    "manufacturer": "禄来",
+    "type": "黑白胶片",
+    "introduced": "2000 年代",
+    "discontinued": "在产",
+    "description": "Rollei Retro 80s 由位于比利时莫策尔市的 Agfa-Gevaert 工厂制造， 是一款 80 ISO 的黑白胶片，具有源自 Agfa Aviphot Pan 的非常精细的颗粒，专用于航空摄影。\n\n胶片的基片非常透明，同时具有非常精细的颗粒，明显的对比度和较深的黑色。它可以在风景摄影中产生令人赞叹的效果，也能在肖像摄影中产生令人惊喜的效果。"
+  },
+  "AgfaScala200x": {
+    "title": "Scala 200x",
+    "manufacturer": "Agfa",
+    "type": "黑白胶片",
+    "introduced": "1990 年代",
+    "discontinued": "2007",
+    "description": "这种黑白 ISO 200 正片是 Gevaert Diadirect – 32 ISO – 的系列产品，该系列后来诞生了著名的 Scala 50。它直接产生用于投影的幻灯片，得益于真实的对比度记录和卓越的轮廓描画，以及非常细的颗粒所带来的准确细节，因而具有令人惊叹的白色和深黑色。\n\n要知道，传统的黑白底片通常不适合在幻灯片投影中反转为正片。"
+  },
+  "IlfordPan100": {
+    "title": "Pan 100 ",
+    "manufacturer": "伊尔福",
+    "type": "黑白胶片",
+    "introduced": "2002",
+    "discontinued": "在产",
+    "description": "Ilford Pan 100 相对不为人所知，因为它未在全球范围内上市，而仅作为“经济实惠”类别产品而在某些市场上推出。\n\n它是一种传统的 ISO 100 胶片，具有精细的颗粒和良好的清晰度，可以像 FP4 Plus 一样在 ISO 50 到 200 之间使用，具体取决于显影液。"
+  },
+  "IlfordPan400": {
+    "title": "Pan 400 ",
+    "manufacturer": "Ilford",
+    "type": "黑白胶片",
+    "introduced": "2002",
+    "discontinued": "在产",
+    "description": "与 Pan 100 一样，Pan 400 仅在某些市场推出。它非常灵活且用途广泛，因为根据显影液的不同，它可以在 ISO 200 到 3200 之间使用，颗粒大小随感光度而异，并且具有良好的清晰度。"
+  },
+  "FomaPan100": {
+    "title": "Fomapan 100 Classic",
+    "manufacturer": "福尔玛",
+    "type": "黑白胶片",
+    "introduced": "1990 年代",
+    "discontinued": "在产",
+    "description": "这种具有精细颗粒和高分辨率的传统全色胶片可以曝光和显影的感光度在 ISO 50 到 400 之间。它提供丰富的灰度，甚至在强光下了如此。\n\n它非常适合风景和工作室摄影，主要优点是非常便宜。"
+  },
+  "FomaPan200Creative": {
+    "title": "Fomapan 200 Creative ",
+    "manufacturer": "福尔玛",
+    "type": "黑白胶片",
+    "introduced": "2000 年代",
+    "discontinued": "在产",
+    "description": "这款适合拍摄风景、肖像或纪实报道的全能胶片是该品牌唯一一款带有平板颗粒的产品。它具有高分辨率和良好的锐度。\n\n根据不同的显影液和显影时间，它是非常灵活的，因为它可以在 100 和 800 ISO 之间使用。"
+  },
+  "FomaPan400": {
+    "title": "Fomapan 400 Action",
+    "manufacturer": "福尔玛",
+    "type": "黑白胶片",
+    "introduced": "1990 年代",
+    "discontinued": "在产",
+    "description": "这种传统的 400 ISO 胶片提供了用于 200 和 1600 ISO 之间的灵活性，有限的颗粒和良好的锐度。\n\n相较于更需要 100 ISO 胶片的工作室和风景摄影，Fomapan 400 Action 更适用于纪实摄影和画面光线昏暗的摄影。"
+  },
+  "FomaPan100R": {
+    "title": "Fomapan 100R ",
+    "manufacturer": "福尔玛",
+    "type": "黑白胶片",
+    "discontinued": "在产",
+    "description": "Foma 100R 仍是用于投影的黑白胶片世界中有限的一员。它提供高锐度和广泛的色调。\n\n然而，它必须用特殊工艺进行显影，一些冲刷店甚至会提供棕褐色调的“复古”显影。"
+  },
+  "AdoxCMS20": {
+    "title": "CMS 20 ",
+    "manufacturer": "Adox",
+    "type": "黑白胶片",
+    "introduced": "2008",
+    "discontinued": "在产",
+    "description": "这一胶片由制造商宣传为“世界上最高分辨率”和最精细的颗粒，因为它确实在卤化银胶片中提供更精细的颗粒。\n\n标称感光度只有 20 ISO，但根据显影液和工艺的不同，它可以在 ISO 3 到 80 之间使用。它的透明基片也可以前后反转使用，直接制作黑白正片。"
+  },
+  "AdoxSilvermax21": {
+    "title": "Silvermax 21",
+    "manufacturer": "Adox",
+    "type": "黑白胶片",
+    "introduced": "2012 年",
+    "discontinued": "在产",
+    "description": "这款胶片在感光乳剂中加入了高浓度的银来产生较深的黑色和各种深度的灰色，同时具有非常精细的颗粒。\n\n它可以作为负片与具有强大动态的 Silvermax 显影浴使用，但也可以反转显影来获得用于投影的黑白胶片，例如通过使用 Agfa Scala 的化学物质。为获得最佳效果，它必须以 100 ISO 的感光度曝光，尤其是在作为胶片使用的时候。"
+  },
+  "AdoxCHS100II": {
+    "title": "CHS 100 II",
+    "manufacturer": "Adox",
+    "type": "黑白胶片",
+    "introduced": "2012 年",
+    "discontinued": "在产",
+    "description": "这款胶片具有出色的分离灰色调的能力，例如在肖像摄影中。它还并提供先进的抗光晕处理，以避免光线通过感光乳剂或基片进行扩散。\n\n其乳液涂层是在该品牌的德国工厂在高度透明的基础上制作的，其原色灵敏度可将所有颜色转化为有着细微差别的黑白色调。为了保持其品质，它必须按照 100 ISO 胶片曝光，并使用制造商推荐的几种显影浴，包括经典的 ID11 或 D76 配方。"
+  },
+  "BerggerBRF400Plus": {
+    "title": "BRF 400 PLUS",
+    "manufacturer": "Bergger",
+    "type": "黑白胶片",
+    "introduced": "2013 年",
+    "discontinued": "在产",
+    "description": "这款 400 ISO 的黑白胶片提供中等对比度和中等大小的颗粒，并且可以使用经典的 Kodak、Tetenal 和 Ilford 的产品进行显影。虽然以前的 Bergger 胶片是由匈牙利的 Forte 制造的，但这款 BRF 400 胶片是在位于伊尔福德地区肯特米尔的英国工厂里进行乳化的。\n\n它的基片相当厚实，类似于七十年代的 Ilford。然而，在法国摄影师 A. Le Duc 的建议下开发的标准“配方”其实来自德国公司 Filmotec 以及 ORWO 工厂的继承人，也就是战后东德沃尔芬的前爱克发公司。"
+  },
+  "FujiNeopan400": {
+    "title": "Neopan 400",
+    "manufacturer": "Fujifilm",
+    "type": "黑白胶卷",
+    "introduced": "1990 年代",
+    "discontinued": "2014",
+    "description": "2014 年退市的这款胶片一直得不到应有的重视，它的精细颗粒和高锐度能够处理任何需要高灵敏度的主题渲染，例如街头摄影、不使用闪光灯的室内肖像或社会纪实。"
+  },
+  "ImpossiblePX600SilverShade": {
+    "title": "Impossible PX 600 Silver Shade",
+    "manufacturer": "Impossible",
+    "type": "彩色正片",
+    "description": "Px600 Silver Shade 是一款基于黑白色的滤镜，带有轻微的棕褐色色偏。"
+  },
+  "FujiAstiaSoft": {
+    "title": "Fujifilm Astia Soft",
+    "manufacturer": "Fujifilm",
+    "type": "数码胶片",
+    "description": "Astia Soft 通过对阴影应用有趣的蓝色投射来获得迷人的肤色，从而使主体突出。"
+  },
+  "FujiClassicChrome": {
+    "title": "Fujifilm Classic Chrome",
+    "manufacturer": "Fujifilm",
+    "type": "数码胶片",
+    "description": "Classic Chrome 的开发旨在提供纪实和街头摄影所需的色调深度。它略微降低饱和度，与阴影形成强烈而微妙的对比，以模拟彩色反转片独特而永恒的视觉效果。"
+  },
+  "FujiClassicChromePlus": {
+    "title": "Fujifilm Classic Chrome +",
+    "manufacturer": "Fujifilm",
+    "type": "数码胶片",
+    "description": "Classic Chrome + 是 Classic Chrome 的更强版本，它使用相同的规则，但更激进地改变了标准设置以获得更独特的效果。"
+  },
+  "FujiProNegativeHigh": {
+    "title": "Fujifilm ProNeg High",
+    "manufacturer": "Fujifilm",
+    "type": "数码胶片",
+    "description": "Fujifilm ProNeg High 的对比度略高于 ProNeg Standard，推荐用于拍摄户外肖像。"
+  },
+  "FujiProNegativeStd": {
+    "title": "Fujifilm ProNeg Standard",
+    "manufacturer": "Fujifilm",
+    "type": "数码胶片",
+    "description": "Fujifilm ProNeg Standard 提供柔和色调，扩大了肤色的颜色过渡范围，使这款胶片非常适用于工作室肖像摄影。"
+  },
+  "FujiClassicNeg": {
+    "title": "Fujifilm Classic Negative",
+    "manufacturer": "Fujifilm",
+    "type": "数码胶片",
+    "description": "Classic Negative，又或者叫 Classic Neg ，基本上是 Superia 100 胶片的一种渲染，通过使用硬色调来改善色彩和增加图像中的深度感来给照片赋予一种复古的观感。"
+  },
+  "FujiEterna": {
+    "title": "Fujifilm Eterna",
+    "manufacturer": "Fujifilm",
+    "type": "数码胶片",
+    "description": "Eterna 胶片旨在提供一种电影式的渲染，动态范围显得更高，照明和阴影的色调更柔和。"
+  },
+  "CineTealAndOrange": {
+    "title": "蓝绿色和橙色",
+    "type": "电影胶片",
+    "description": "青蓝色和橙色在好莱坞相当流行。许多成功的电影都使用过这样互补的橙色和蓝绿色，这两个在色轮上彼此相对的颜色的对比创造了强烈而引人注目的渲染。"
+  },
+  "CineDesaturatedGreen": {
+    "title": "不饱和绿色",
+    "type": "电影胶片",
+    "description": "不饱和绿色通过大幅降低绿色的饱和度使风景显得阴暗甚至令人不安，并同时保留肤色来表现寒冷的天气。"
+  },
+  "CineAutumn": {
+    "title": "秋季",
+    "type": "电影胶片",
+    "description": "秋季通过将绿色转变为棕色来创造季节性的效果。"
+  },
+  "CineMoodyDarkGreen": {
+    "title": "忧郁深绿色",
+    "type": "电影胶片",
+    "description": "忧郁深绿色曾用于《黑客帝国》和《天使爱美丽》等影视作品当中，其特点是以绿色为主和高对比度。"
+  },
+  "CinePastel": {
+    "title": "蜡笔",
+    "type": "电影胶片",
+    "description": "蜡笔粉彩色经常用于独立电影院，通过稍微降低色彩饱和度并将白平衡移向粉红色来提供一种糖果色或具有梦幻感的效果。"
+  },
+  "CineTealAndPink": {
+    "title": "湖滨绿和粉色",
+    "type": "电影胶片",
+    "description": "湖滨绿和粉色将绿色和粉红色并置，形成强烈的对比度来吸引眼球。它产生的效果与自然的场景相反并且具有艺术感。"
+  }
+}

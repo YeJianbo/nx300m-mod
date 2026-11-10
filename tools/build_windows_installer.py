@@ -10,7 +10,7 @@ import zipfile
 import argparse
 import tempfile
 from datetime import datetime, timezone
-from installer_backend import BACKEND_FILES, PREFIX, verify_backend
+from installer_backend import BACKEND_PROFILES, PREFIX, resolve_backend_profile, verify_backend
 from manual_lens_wifi_payload import verify_wifi_payload
 from release_payload import is_core, verify_complete
 
@@ -19,7 +19,7 @@ OUT = ROOT / 'outputs/releases/windows-updater-20261106'
 CANDIDATE = ROOT / 'outputs/review/2026-11-06-device-feedback/cold-boot-candidate'
 
 
-def main(public=False, version='v0.1.0-preview.4'):
+def main(public=False, version='v0.1.0-preview.6', backend_profile='auto', reuse_dist=False):
     if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyz.-' for c in version):
         raise ValueError('版本名无效。')
     record = json.loads((CANDIDATE / 'manifest.json').read_text(encoding='utf-8'))
@@ -32,9 +32,17 @@ def main(public=False, version='v0.1.0-preview.4'):
         data = (first / 'payload' / name).read_bytes()
         if len(data) != item['bytes'] or hashlib.sha256(data).hexdigest() != item['sha256']:
             raise ValueError('首次安装候选文件不匹配：' + name)
-    backend = verify_backend(lambda name: (first / 'payload' / name).read_bytes())
+    if backend_profile == 'auto':
+        backend_profile, _ = resolve_backend_profile(
+            lambda name: (first / 'payload' / name).read_bytes())
+    if backend_profile not in BACKEND_PROFILES:
+        raise ValueError('未知后端版本档案：' + backend_profile)
+    backend_files = BACKEND_PROFILES[backend_profile]
+    backend = verify_backend(
+        lambda name: (first / 'payload' / name).read_bytes(), backend_files)
     verify_wifi_payload(lambda name: (first / 'payload' / name).read_bytes())
-    complete = verify_complete(lambda name: (first / 'payload' / name).read_bytes())
+    complete = verify_complete(
+        lambda name: (first / 'payload' / name).read_bytes(), backend_files=backend_files)
     # Read prior shipped inventories before replacing the package directory.
     supported = {}
     for previous in (OUT/'package/first-install', OUT/'public-package/first-install'):
@@ -47,15 +55,31 @@ def main(public=False, version='v0.1.0-preview.4'):
             if hashlib.sha256(data).hexdigest() != rec['sha256']:
                 raise ValueError('旧发布资源与清单不匹配：' + name)
             supported.setdefault(name, set()).add(rec['sha256'])
+    for previous_archive in OUT.glob('NX300M-MOD-Windows-*.zip'):
+        try:
+            with zipfile.ZipFile(previous_archive) as history:
+                if history.testzip() is not None:
+                    raise ValueError('历史发布包校验失败：' + previous_archive.name)
+                prefix = 'first-install/payload/'
+                for name in history.namelist():
+                    if name.startswith(prefix):
+                        supported.setdefault(name[len(prefix):], set()).add(
+                            hashlib.sha256(history.read(name)).hexdigest())
+        except zipfile.BadZipFile as error:
+            raise ValueError('历史发布包无法读取：' + previous_archive.name) from error
     destination = OUT / ('public-package' if public else 'package')
     package = Path(tempfile.mkdtemp(prefix=destination.name+'-build-', dir=OUT))
     env = os.environ.copy()
     env['PATH'] = os.pathsep.join((str(Path(sys.base_prefix) / 'Library/bin'),
                                    str(Path(sys.base_prefix)), os.environ.get('PATH', '')))
-    subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir',
-                    '--windowed', '--name', 'NX300M-MOD', '--distpath', str(OUT / 'dist'),
-                    '--workpath', str(OUT / 'build'), '--specpath', str(OUT),
-                    str(ROOT / 'tools/nx300m_installer.py')], check=True, env=env)
+    if reuse_dist:
+        if not (OUT / 'dist/NX300M-MOD/NX300M-MOD.exe').is_file():
+            raise ValueError('没有可复用的 PyInstaller 构建。')
+    else:
+        subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir',
+                        '--windowed', '--name', 'NX300M-MOD', '--distpath', str(OUT / 'dist'),
+                        '--workpath', str(OUT / 'build'), '--specpath', str(OUT),
+                        str(ROOT / 'tools/nx300m_installer.py')], check=True, env=env)
     shutil.copytree(OUT / 'dist/NX300M-MOD', package, dirs_exist_ok=True)
     if not (first / 'manifest.json').is_file():
         raise ValueError('请先生成本机首次安装候选文件')
@@ -66,7 +90,9 @@ def main(public=False, version='v0.1.0-preview.4'):
     if public:
         shutil.copy2(ROOT/'outputs/looks/original-release/LICENSE.txt',package/'LUT-LICENSE.txt')
     manifest = {'schema': 1, 'kind': 'nx300m-cold-boot-update', 'version': version,
-                'requires': {PREFIX+k:v for k,v in BACKEND_FILES.items()},
+                'backend_profile': backend_profile,
+                'backend_files': backend_files,
+                'requires': {PREFIX+k:v for k,v in backend_files.items()},
                 'backend': backend, 'complete_runtime': complete, 'payload': {}}
     for name in first_record['files']:
         if not is_core(name):
@@ -105,6 +131,8 @@ def main(public=False, version='v0.1.0-preview.4'):
         shutil.copy2(license_file,package/'LICENSES'/license_file.name)
     shutil.copy2(ROOT/'mod/quickshare/LICENSE',package/'LICENSES/QuickShare-GPL-3.0.txt')
     shutil.copy2(ROOT/'mod/quickshare/NOTICE.md',package/'LICENSES/QuickShare-NOTICE.md')
+    with (package/'NOTICE.md').open('a',encoding='utf-8') as note:
+        note.write('\nWindows LUT 工作台使用 LGPL-3.0-only 的 PySide6/Qt，并改编 MIT 许可的 hestela/lut-previewer 与 OwenWhw/CUBE-to-XMP；许可见 LICENSES/LUT-Client-NOTICES.txt。\n')
     if public:
         with (package/'NOTICE.md').open('a',encoding='utf-8') as note:
             note.write('\n本完整安装包另含 GPL-3.0 Quick Share 核心；来源与修改见 LICENSES/QuickShare-NOTICE.md。Web 字体及库许可保存在 LICENSES。六款原创风格使用 CC0-1.0，配方见 source/build_original_looks.py。完整对应源码见同一 Release 的源码压缩包。\n')
@@ -117,8 +145,12 @@ def main(public=False, version='v0.1.0-preview.4'):
             shutil.copy2(license_file, package / ('LICENSES/' + project + '.txt'))
     source = package / 'source'
     source.mkdir(exist_ok=True)
-    for name in ('nx300m_installer.py', 'installer_backend.py', 'manual_lens_wifi_payload.py', 'release_payload.py', 'build_first_install_candidate.py', 'build_windows_installer.py', 'build_original_looks.py', 'build_public_first_install.py', 'cube_to_d4.py',
-                 'lut_resample.py', 'lut_integral.py'):
+    for name in ('nx300m_installer.py', 'nx300m_client_ui.py', 'nx300m_lut_core.py',
+                 'installer_backend.py', 'manual_lens_wifi_payload.py', 'release_payload.py',
+                 'build_first_install_candidate.py', 'build_windows_installer.py',
+                 'build_original_looks.py', 'build_public_first_install.py', 'cube_to_d4.py',
+                 'lut_resample.py', 'lut_integral.py', 'import_lumix_lab_luts.py',
+                 'look_catalog.py', 'look_library.py', 'lut_table_data.py'):
         shutil.copy2(ROOT / 'tools' / name, source / name)
     source_ref = version
     (package / 'SOURCE.md').write_text(
@@ -138,7 +170,7 @@ def main(public=False, version='v0.1.0-preview.4'):
             if actual_first!=expected_first or any('table-stock3d.d4lut' in n for n in check.namelist()):
                 raise ValueError('公开包存在非清单文件或原厂组合表。')
         read = lambda name: check.read('first-install/payload/'+name)
-        verify_complete(read)
+        verify_complete(read, backend_files=backend_files)
         for name, rec in manifest['payload'].items():
             if check.read(rec['asset']) != read(name):
                 raise ValueError('升级与首装资源不同：' + name)
@@ -161,7 +193,7 @@ def main(public=False, version='v0.1.0-preview.4'):
         with zipfile.ZipFile(sd) as check:
             if check.testzip() is not None:
                 raise ValueError('SD 完整包校验失败。')
-            verify_complete(check.read)
+            verify_complete(check.read, backend_files=backend_files)
         print('SD_ARCHIVE='+str(sd))
     print('ARCHIVE=' + str(archive))
 
@@ -169,6 +201,10 @@ def main(public=False, version='v0.1.0-preview.4'):
 if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--public',action='store_true')
-    parser.add_argument('--version',default='v0.1.0-preview.4')
+    parser.add_argument('--version',default='v0.1.0-preview.6')
+    parser.add_argument('--backend-profile', default='auto',
+                        choices=('auto', *BACKEND_PROFILES))
+    parser.add_argument('--reuse-dist', action='store_true')
     args=parser.parse_args()
-    main(public=args.public, version=args.version)
+    main(public=args.public, version=args.version,
+         backend_profile=args.backend_profile, reuse_dist=args.reuse_dist)

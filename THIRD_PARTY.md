@@ -10,6 +10,9 @@
 | jsmn | [zserge/jsmn](https://github.com/zserge/jsmn)，`25647e692c7906b96ffd2b05ca54c097948e879c` | MIT；许可见 `mod/metol/vendor/jsmn-LICENSE` |
 | SESL 图标 | [tribalfs/sesl-androidx](https://github.com/tribalfs/sesl-androidx) | Apache-2.0；改编范围见 NXConnect NOTICE，许可副本位于其 `licenses/` |
 | Gradle Wrapper | [Gradle](https://github.com/gradle/gradle) | Apache-2.0；保留 wrapper 启动文件，不包含 Gradle 分发包 |
+| PySide6 / Qt | [PySide6](https://pypi.org/project/PySide6/)、[Qt](https://www.qt.io/) | LGPL-3.0-only；Windows 客户端以动态链接的 PySide6/Qt 共享库发布，许可见 `docs/licenses/PySide6-LGPL-3.0-only.txt` |
+| LUT Previewer | [hestela/lut-previewer](https://github.com/hestela/lut-previewer) | MIT；改编真实照片前后分割、拖动、缩放、平移和强度预览交互，许可见 `docs/licenses/LUT-previewer-MIT.txt` |
+| CUBE to XMP | [OwenWhw/CUBE-to-XMP](https://github.com/OwenWhw/CUBE-to-XMP) | MIT；交叉核对并改编 LUT 解析、本地资料库和批量导入结构，许可见 `docs/licenses/CUBE-to-XMP-MIT.txt` |
 
 Nuklear 相关声明见其源文件及 Metol 上游。Cargo / Gradle 依赖按各自许可证获取，不随本仓库打包依赖缓存。
 

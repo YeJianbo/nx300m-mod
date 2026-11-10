@@ -11,7 +11,7 @@ command=${1:-status}
 case $command in
     capabilities) printf 'continuous-s2\n'; exit 0 ;;
     probe-once|test-identity) command=probe-once ;;
-    enable-s2|enable-s2-stock|test-monochrome|test-monochrome-timing|sync|stock|status|stop|restore|diag-export) ;;
+    enable-s2|enable-s2-stock|test-monochrome|test-monochrome-timing|sync|stock|status|stop|restore|diag-export|pause) ;;
     *) fail 'use enable-s2, sync, stock, status, stop, restore, diag-export or probe-once' ;;
 esac
 [ "$(id -u)" = 0 ] || fail 'root required'
@@ -110,14 +110,17 @@ fi
 exec 9>/tmp/nx300m-smartfilter-preview.lock
 flock -n 9 || fail 'another preview operation is running'
 if [ -e "$guard" ] || [ -L "$guard" ]; then
-    case $open_diagnostic:$command in 1:restore|1:stop) ;; *) fail 'previous operation is unresolved' ;; esac
+    case $open_diagnostic:$command in 1:restore|1:stop|1:pause) ;; *) fail 'previous operation is unresolved' ;; esac
 fi
 backend_value
 if [ "$command" = sync ]; then
     [ "$value" = smartfilter ] || fail 'continuous S2 was stopped before sync'
 fi
 operation=$command
+# Both user stop and engine-side pause drain the same native preview session;
+# only the preference write differs (handled in the preference case below).
 [ "$command" != stop ] || operation=restore
+[ "$command" != pause ] || operation=restore
 [ "$open_diagnostic:$command" != 1:diag-export ] || operation=open-export
 table=
 look=
@@ -256,6 +259,12 @@ case $command in
     stop)
         [ "$value" != smartfilter ] || rm -f "$backend"
         printf '取景预览已关闭；照片 LUT 保留。\n' ;;
+    pause)
+        # Runtime suspension requested by the LUT engine (LUT Off), not a
+        # user preview change: stop the hardware path but keep the saved
+        # preference untouched so re-applying a LUT restores it.
+        [ "$value" != smartfilter ] || rm -f "$backend"
+        printf '预览已随 LUT 关闭暂停；预览偏好保留。\n' ;;
     stock|enable-s2-stock) printf 'S2 原样请求已提交；没有应用非零 LUT。\n' ;;
 esac
 case $command in

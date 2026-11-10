@@ -1,12 +1,24 @@
 /* Single-window feature navigation. Readiness is sampled on entry, not polled. */
+#include "mode_dial_x11.h"
+#include "settings_animation_status.h"
 struct nx_ui_lens {char id[64],label[128];int min,max;};
 static struct nx_ui_lens feature_lenses[64];
 static int feature_lens_count,feature_lens_selected=-1,feature_focal;
 static int feature_fw_loaded,feature_iso_loaded,feature_preview_enabled,feature_mode_locked=-1;
+static int feature_x11_mode_ready;
+static int feature_animation_ram_ready;
 static int feature_animation_mode=-1,feature_iso_lock=-1,feature_current_mode=-1;
 static int feature_auto_iso_max;
+static int feature_saved_mode_lock,feature_saved_animation,feature_saved_iso_lock;
 static char feature_values[NXUI_MAX_ITEMS][128];
 static unsigned char feature_disabled[NXUI_MAX_ITEMS];
+static int feature_saved_value(const char *name,int fallback) {
+    char path[NXUI_PATH],extra;int value;
+    snprintf(path,sizeof path,"%s/.state/%s",nx_ui_data_root(),name);
+    FILE *in=fopen(path,"r");if(!in)return fallback;
+    int fields=fscanf(in,"%d %c",&value,&extra);fclose(in);
+    return fields==1?value:fallback;
+}
 static int feature_ready(const char *prefix,const char *module) {
     char path[NXUI_PATH],exe[256],line[512],extra;int pid=0;
     snprintf(path,sizeof path,"/var/run/%s-ready",prefix);FILE *in=fopen(path,"r");if(!in)return 0;
@@ -20,6 +32,12 @@ static int feature_ready(const char *prefix,const char *module) {
 }
 static void feature_snapshot(void) {
     char path[NXUI_PATH],line[256];
+    feature_saved_mode_lock=feature_saved_value("fw-mode-lock",0);
+    if(feature_saved_mode_lock!=0&&feature_saved_mode_lock!=1)feature_saved_mode_lock=0;
+    feature_saved_animation=feature_saved_value("fw-animation",0);
+    if(feature_saved_animation<0||feature_saved_animation>2)feature_saved_animation=0;
+    feature_saved_iso_lock=feature_saved_value("fw-auto-iso-lock",0);
+    if(feature_saved_iso_lock!=0&&feature_saved_iso_lock!=6400)feature_saved_iso_lock=0;
     feature_fw_loaded=feature_ready("nx300m-firmware-mod","/camera_firmware_mod.so");
     feature_iso_loaded=feature_ready("nx300m-exposure","/exposure_controls.so");
     feature_mode_locked=feature_animation_mode=feature_iso_lock=feature_current_mode=-1;
@@ -34,6 +52,20 @@ static void feature_snapshot(void) {
             feature_iso_lock=(int)values[16];
             feature_current_mode=(int)values[3];
         }}
+    snprintf(path,sizeof path,"%s/bin/mode_dial_x11.arm",root);
+    feature_x11_mode_ready=access(path,X_OK)==0;
+    if(feature_x11_mode_ready){
+        int locked=nx_mode_dial_status(display);
+        feature_x11_mode_ready=locked>=0;
+        if(locked>=0)feature_mode_locked=locked;
+    }
+    snprintf(path,sizeof path,"%s/bin/settings_animation.arm",root);
+    feature_animation_ram_ready=mfw_preview==5&&access(path,X_OK)==0;
+    if(feature_animation_ram_ready){
+        int mode=nx_animation_query(path);
+        feature_animation_ram_ready=mode>=0;
+        if(mode>=0)feature_animation_mode=mode;
+    }
     fprintf(stderr,"FW_STATE loaded=%d current=%d locked=%d animation=%d iso=%d\n",
         feature_fw_loaded,feature_current_mode,feature_mode_locked,feature_animation_mode,feature_iso_lock);
     in=fopen("/var/run/nx300m-preview-backend","r");feature_preview_enabled=0;
@@ -72,7 +104,7 @@ static void feature_add(const char *label,const char *action,const char *value,i
     snprintf(feature_values[item_count],sizeof feature_values[0],"%s",value);feature_disabled[item_count]=!enabled;item_count++;
 }
 static void feature_page(int page_id) {
-    feature_snapshot();item_count=0;mfw_selected=0;mfw_preview=page_id;menu=1;mfw_services=1;mfw_quick=0;
+    mfw_preview=page_id;feature_snapshot();item_count=0;mfw_selected=0;menu=1;mfw_services=1;mfw_quick=0;
     mfw_status[0]=status[0]=0;
     char value[128];
     if(page_id==3){
@@ -86,23 +118,25 @@ static void feature_page(int page_id) {
         feature_add("A 挡自动快门范围","unavailable","尚未接入",0);
         feature_add("P 挡自动快门范围","unavailable","尚未接入",0);
         feature_add("Auto ISO 6400 上限锁定","fw-auto-iso",
-            feature_iso_lock==6400?"开":feature_iso_lock==0?"关":feature_fw_loaded?"未读回":"模块未加载",feature_fw_loaded);
+            feature_iso_lock==6400?"开":feature_iso_lock==0?"关":feature_fw_loaded?"未读回":feature_saved_iso_lock?"已存开 · 待加载":"已存关 · 待加载",1);
         /* Cycle the extension ceiling over verified stock enums only; the
          * shown value is the saved preference, and each action's FW_MOD line
          * carries the real bridge read-back. */
         {const char *row_action,*row_value;
          if(feature_auto_iso_max==12800){row_action="fw-auto-iso-max-25600";row_value="已存 12800 · 点按升 25600";}
          else if(feature_auto_iso_max==25600){row_action="fw-auto-iso-max-3200";row_value="已存 25600 · 点按恢复 3200";}
-         else {row_action="fw-auto-iso-max-12800";row_value=feature_auto_iso_max==3200?"已存 3200 · 点按升 12800":feature_auto_iso_max==6400?"已存 6400 · 点按升 12800":feature_iso_loaded?"未读回 · 点按设 12800":"模块未加载";}
-         feature_add("Auto ISO 扩展上限",row_action,row_value,feature_iso_loaded);}
+         else if(feature_auto_iso_max==3200){row_action="fw-auto-iso-max-6400";row_value="已存 3200 · 点按升 6400";}
+         else {row_action="fw-auto-iso-max-12800";row_value=feature_auto_iso_max==6400?"已存 6400 · 点按升 12800":feature_iso_loaded?"未读回 · 点按设 12800":"模块未加载";}
+         if(!feature_iso_loaded){snprintf(value,sizeof value,"已存 %d · 待加载",feature_auto_iso_max?feature_auto_iso_max:3200);row_value=value;}
+         feature_add("Auto ISO 扩展上限",row_action,row_value,1);}
         feature_add("曝光模块状态","status","查看实际加载状态",1);
     }else if(page_id==5){
         feature_add("顶部模式拨盘锁定","fw-mode-lock",
-            feature_mode_locked==1?"开":feature_mode_locked==0?"关":"未读回",feature_fw_loaded);
+            feature_mode_locked==1?"开":feature_mode_locked==0?"关":feature_fw_loaded?"未读回":feature_saved_mode_lock?"已存开 · 待加载":"已存关 · 待加载",1);
         feature_add("模式切换动画","fw-animation",
-            feature_animation_mode==0?"原厂":feature_animation_mode==1?"瞬切":feature_animation_mode==2?"隐藏":"未读回",feature_fw_loaded);
+            feature_animation_mode==0?"原厂":feature_animation_mode==1?"瞬切":feature_animation_mode==2?"隐藏":feature_fw_loaded?"未读回":feature_saved_animation==1?"已存瞬切 · 待加载":feature_saved_animation==2?"已存隐藏 · 待加载":"已存原厂 · 待加载",1);
         feature_add("Auto ISO 6400 上限锁定","fw-auto-iso",
-            feature_iso_lock==6400?"开":feature_iso_lock==0?"关":"未读回",feature_fw_loaded);
+            feature_iso_lock==6400?"开":feature_iso_lock==0?"关":feature_fw_loaded?"未读回":feature_saved_iso_lock?"已存开 · 待加载":"已存关 · 待加载",1);
         {char mode_value[128];snprintf(mode_value,sizeof mode_value,"当前 %s · 点按切 P/A/S/M",feature_mode_name(feature_current_mode));
          feature_add("软件切档","fw-mode",mode_value,feature_fw_loaded&&feature_current_mode>=0);}
         char flag[NXUI_PATH];snprintf(flag,sizeof flag,"%s/DISABLED",nx_ui_data_root());
@@ -138,9 +172,32 @@ static int feature_action(const char *action) {
         /* The Auto ISO ceiling lives in the exposure module, not the firmware
          * control bridge; check the module that actually owns the action. */
         if(!strncmp(action,"fw-auto-iso-max-",16)) {
-            if(!feature_iso_loaded){message("曝光控制模块未加载");return 1;}
+            if(!feature_iso_loaded){
+                int ceiling=atoi(action+16);
+                if(ceiling!=3200&&ceiling!=6400&&ceiling!=12800&&ceiling!=25600)return 1;
+                char text[32];snprintf(text,sizeof text,"%d\n",ceiling);
+                int saved=nx_ui_pref_write("fw-auto-iso-max",text);
+                if(saved&&ceiling!=6400)saved=nx_ui_pref_write("fw-auto-iso-lock","0\n");
+                if(saved){feature_page(4);message("已保存 · 曝光模块待加载，尚未生效");}
+                else message("保存失败 · 请重试");
+                return 1;
+            }
         }
-        else if(!feature_fw_loaded){message("固件控制模块未加载");return 1;}
+        else if(!feature_fw_loaded&&!(feature_x11_mode_ready&&!strcmp(action,"fw-mode-lock"))&&
+                !(feature_animation_ram_ready&&!strcmp(action,"fw-animation"))){
+            const char *pref=NULL;int value=0;
+            if(!strcmp(action,"fw-mode-lock")){pref="fw-mode-lock";value=!feature_saved_mode_lock;}
+            else if(!strcmp(action,"fw-animation")){pref="fw-animation";value=(feature_saved_animation+1)%3;}
+            else if(!strcmp(action,"fw-auto-iso")){pref="fw-auto-iso-lock";value=feature_saved_iso_lock?0:6400;}
+            if(pref){char text[32];snprintf(text,sizeof text,"%d\n",value);
+                int page=mfw_preview;
+                int saved=nx_ui_pref_write(pref,text);
+                if(saved&&!strcmp(pref,"fw-auto-iso-lock")&&value==6400)saved=nx_ui_pref_write("fw-auto-iso-max",text);
+                if(saved){feature_page(page);message("已保存 · 固件模块待加载，尚未生效");}
+                else message("保存失败 · 请重试");
+            }else message("固件控制模块未加载");
+            return 1;
+        }
         int retry_slot=mfw_fw_slot(action);
         if(retry_slot>=0&&mfw_fw_retry[retry_slot][0]) {
             start_mfw_action(mfw_fw_retry[retry_slot]);return 1;
@@ -154,7 +211,7 @@ static int feature_action(const char *action) {
         }
         else if(!strcmp(action,"fw-auto-iso"))
             start_mfw_action(feature_iso_lock==6400?"fw-auto-iso-0":"fw-auto-iso-6400");
-        else if(!strcmp(action,"fw-auto-iso-max-12800")||!strcmp(action,"fw-auto-iso-max-25600")||
+        else if(!strcmp(action,"fw-auto-iso-max-6400")||!strcmp(action,"fw-auto-iso-max-12800")||!strcmp(action,"fw-auto-iso-max-25600")||
                 !strcmp(action,"fw-auto-iso-max-3200"))
             start_mfw_action(action);
         else if(!strcmp(action,"fw-mode")) {

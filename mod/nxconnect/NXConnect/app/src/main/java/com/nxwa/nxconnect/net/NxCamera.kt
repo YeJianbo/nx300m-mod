@@ -344,11 +344,19 @@ class NxCamera(
         return "$baseUrl/api/v1/gallery/preview?p=" + urlEncode(relPath) + "&size=$size"
     }
 
-    suspend fun fetchPreview(relPath: String, size: String = "grid"): ByteArray {
+    data class PreviewImage(val bytes: ByteArray, val embedded: Boolean)
+
+    suspend fun fetchPreview(relPath: String, size: String = "grid"): ByteArray =
+        fetchPreviewImage(relPath, size).bytes
+
+    suspend fun fetchPreviewImage(relPath: String, size: String = "grid"): PreviewImage {
         check(profile.galleryPreview) { "当前相机未提供内嵌预览" }
-        val response = NxHttp.getBytes(previewUrl(relPath, size), 20_000, binder)
+        val response = NxHttp.getBytes(previewUrl(relPath, size), 20_000, binder,
+            retainHeaders = listOf("X-Preview-Source"))
         if (response.code !in 200..299 || !response.isJpeg) throw NxException("内嵌预览不可用（HTTP ${response.code}）")
-        return response.bytes
+        val embedded = response.headers["X-Preview-Source"] in
+            setOf("jpeg-exif-thumbnail", "tiff-embedded-jpeg")
+        return PreviewImage(response.bytes, embedded)
     }
 
     suspend fun fetchImageFile(entry: MediaEntry): ByteArray =

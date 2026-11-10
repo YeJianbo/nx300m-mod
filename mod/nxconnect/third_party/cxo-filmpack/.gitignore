@@ -1,0 +1,20 @@
+# --- 构建产物 ---
+build/
+.gradle/
+.kotlin/
+.cxx/
+local.properties
+*.hprof
+
+# --- 系统垃圾 ---
+.DS_Store
+
+# --- 密钥与本地签名配置：永不提交 ---
+.secrets/
+.cxo-release-signing.properties
+
+# --- 体积大、只留在本机的归档（不进版本库）---
+# releases/ 存历史 APK 与颗粒包；evidence/ 存审查日志与固定包副本。
+# 需要长期保存请另行备份，不要指望 Git。
+releases/
+evidence/

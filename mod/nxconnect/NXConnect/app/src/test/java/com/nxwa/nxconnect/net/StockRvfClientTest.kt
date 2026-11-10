@@ -15,6 +15,37 @@ import java.util.concurrent.TimeUnit
 class StockRvfClientTest {
     private val serviceType = "urn:schemas-upnp-org:service:ContentDirectory:3"
 
+    @Test
+    fun `empty authorization rejection identifies each handshake stage without retrying`() = runBlocking {
+        for (rejectedStage in listOf("设备描述", "服务描述（SCPD）", "GetInfomation")) {
+            val requests = Collections.synchronizedList(mutableListOf<String>())
+            val log = Collections.synchronizedList(mutableListOf<String>())
+            val server = FakeHttpServer { request ->
+                requests += request.path
+                when (request.path) {
+                    "/smp_2_" -> if (rejectedStage == "设备描述") FakeHttpServer.Response(401)
+                        else xml(description(request.port))
+                    "/rvf/service/actions.xml" -> if (rejectedStage == "服务描述（SCPD）") FakeHttpServer.Response(403)
+                        else xml(scpd("GetInfomation" to null))
+                    else -> FakeHttpServer.Response(401)
+                }
+            }.start()
+            val client = StockRvfClient("127.0.0.1", "fixed-client", server.port, log = { log += it })
+            try {
+                try { client.connect(); fail("Rejected authorization must not establish a session") }
+                catch (expected: StockRvfClient.ProtocolException) {
+                    assertEquals(if (rejectedStage == "服务描述（SCPD）") 403 else 401, expected.httpStatus)
+                    assertTrue(expected.message.orEmpty().startsWith("$rejectedStage："))
+                    assertTrue(expected.message.orEmpty().contains("授权"))
+                    assertFalse(expected.message.orEmpty().contains("XML"))
+                }
+                assertEquals(requests.size, requests.distinct().size)
+                assertTrue(log.any { it.contains("$rejectedStage HTTP") })
+                assertEquals(when (rejectedStage) { "设备描述" -> 1; "服务描述（SCPD）" -> 2; else -> 3 }, requests.size)
+            } finally { client.close(); server.stop() }
+        }
+    }
+
     private fun description(port: Int, base: String = "http://127.0.0.1:$port/rvf/service/",
                             control: String = "../control-dynamic"): String =
         """<root xmlns="urn:schemas-upnp-org:device-1-0"><URLBase>$base</URLBase><device><serviceList><service><serviceType>$serviceType</serviceType><controlURL>$control</controlURL><SCPDURL>./actions.xml?schema=2</SCPDURL></service></serviceList></device></root>"""

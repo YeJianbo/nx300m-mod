@@ -207,7 +207,8 @@ static inline int nx_lut_ram_hook_ready(int camera_pid,int host_pid,const char *
         h.config_offset>size-sizeof config || h.update_entry<sizeof h || h.update_entry>=h.code_size ||
         h.ipcs_entry<sizeof h || h.ipcs_entry>=h.code_size || h.update_entry==h.ipcs_entry || h.update_entry%4 || h.ipcs_entry%4) {why="entry-layout";goto done;}
     if (h.reserved[0]<h.data_offset || h.reserved[0]>size ||
-        (h.reserved[1]!=NX_LUT_RAM_CONTEXT_STRIDE_V1 && h.reserved[1]!=NX_LUT_RAM_CONTEXT_STRIDE_DIAGNOSTIC_V1) || h.reserved[2]!=8 ||
+        (h.reserved[1]!=NX_LUT_RAM_CONTEXT_STRIDE_V1 && h.reserved[1]!=NX_LUT_RAM_CONTEXT_STRIDE_DIAGNOSTIC_V1 &&
+            h.reserved[1]!=NX_LUT_RAM_CONTEXT_STRIDE_STATS_V3) || h.reserved[2]!=8 ||
         h.reserved[1]*h.reserved[2]>size-h.reserved[0]) {why="context-layout";goto done;}
     if (!nx_lut_mem(fd,base+h.config_offset,&config,sizeof config)) {why="config-unreadable";goto done;}
     if (config.abi!=NX_LUT_RAM_ABI || config.size!=sizeof config || config.enabled!=1 ||
@@ -407,13 +408,31 @@ static inline int nx_lut_persist_selection(void) {
     return nx_lut_selection_persisted();
 }
 /* A control event only. The frame hook never launches a process or reads SD. */
+/* Reader for the user's saved preview preference (single writer: the
+ * serialized preview wrapper's save-preview, which bypasses the engine lock).
+ * Missing file means the user never set it: treated as off. */
+static inline int nx_lut_preview_pref_value(void) {
+    const char *root=nx_lut_data_root();char path[PATH_MAX];
+    if(!root||snprintf(path,sizeof path,"%s/.state/lut-preview",root)>=(int)sizeof path)return 0;
+    FILE *in=fopen(path,"r");if(!in)return 0;
+    int first=fgetc(in);fclose(in);
+    return first=='1';
+}
 static inline int nx_lut_sync_preview(void) {
     const char *skip=getenv("NX300M_LUT_SKIP_PREVIEW_SYNC");
     if (skip && !strcmp(skip,"1")) return 0;
+    char backend[32]="";int have_backend=0;
     FILE *flag=fopen("/var/run/nx300m-preview-backend","r");
-    if (!flag) return 0;
-    char backend[32]="";int read=fgets(backend,sizeof backend,flag)!=NULL;fclose(flag);
-    if (!read || strcmp(backend,"smartfilter\n")) return 0;
+    if (flag) { have_backend=fgets(backend,sizeof backend,flag)!=NULL;fclose(flag); }
+    have_backend = have_backend && !strcmp(backend,"smartfilter\n");
+    /* Three-way lifecycle: the applied LUT, the user's saved preview
+     * preference and the actual backend marker are separate facts. With the
+     * preview running, sync the new table. With it stopped and the user's
+     * preference on, restore the preview per that preference instead of
+     * leaving it suspended after every LUT change. Preference off (or unset)
+     * never starts hardware. */
+    int preference=nx_lut_preview_pref_value();
+    if (!have_backend && preference!=1) return 0;
     const char *root=nx_lut_data_root(),*runtime=nx_mod_root();
     const char *base=getenv("NX300M_MFW_RAM_BASE"),*control_state=getenv("NX_STATE_DIR");
     char runtime_path[PATH_MAX],state_path[PATH_MAX],source_id[64];
@@ -428,6 +447,36 @@ static inline int nx_lut_sync_preview(void) {
         }
         runtime=runtime_path;control_state=state_path;
     }
+    if (!have_backend) {
+        /* Preference on, backend stopped (LUT was off or suspended): hand the
+         * restore to the same detached owner as power-on (lut-boot.sh). It
+         * takes the boot lock so the UI shows 恢复中, re-applies the staged
+         * selection idempotently and enables preview per the preference; on
+         * failure it records 预览未恢复 and the preference stays untouched.
+         * Detached with redirected fds: the engine must not wait a 30s+
+         * control chain, and its stdout pipe must close for the menu. */
+        char boot_script[PATH_MAX];struct stat boot_state;
+        if (snprintf(boot_script,sizeof boot_script,"%s/lut-boot.sh",runtime)>=(int)sizeof boot_script ||
+                lstat(boot_script,&boot_state) || !S_ISREG(boot_state.st_mode) ||
+                boot_state.st_uid!=geteuid() || access(boot_script,R_OK)) {
+            fputs("PREVIEW-WARNING verified boot restore worker unavailable; preference retained\n",stderr);return 6;
+        }
+        pid_t worker=fork();
+        if (worker<0) {
+            fputs("PREVIEW-WARNING cannot start the boot restore worker; preference retained\n",stderr);return 6;
+        }
+        if (!worker) {
+            setsid();
+            int devnull=open("/dev/null",O_RDWR);
+            if (devnull>=0) { dup2(devnull,0);dup2(devnull,1);dup2(devnull,2);if(devnull>2)close(devnull); }
+            char *const args[]={"sh",(char*)boot_script,NULL};
+            extern char **environ;
+            execve("/bin/sh",args,environ);_exit(127);
+        }
+        fputs("PREVIEW-RESTORE scheduled per saved preference; boot worker owns completion\n",stderr);
+        return 0;
+    }
+    const char *operation="sync";
     if (!root || stat(root,&source) || !S_ISDIR(source.st_mode) || !runtime || !strcmp(root,runtime) ||
             !realpath(runtime,canonical) || strcmp(runtime,canonical) ||
             statfs(runtime,&fs) || (unsigned long)fs.f_type!=0x01021994UL ||
@@ -441,7 +490,7 @@ static inline int nx_lut_sync_preview(void) {
         if (setenv("NX300M_MOD_ROOT",runtime,1) || setenv("NX_MOD_ROOT",runtime,1) ||
                 setenv("NX300M_MOD_SOURCE_ROOT",root,1) || setenv("NX300M_MOD_SOURCE_ID",source_id,1) ||
                 (control_state && setenv("NX_STATE_DIR",control_state,1))) _exit(126);
-        char *const args[]={"sh",script,"sync",NULL};
+        char *const args[]={"sh",script,(char*)operation,NULL};
         extern char **environ;
         execve("/bin/sh",args,environ);_exit(127);
     }
@@ -481,7 +530,7 @@ static inline int nx_lut_sync_preview(void) {
     if (child<0 || done!=child || !WIFEXITED(status) || WEXITSTATUS(status)) {
         if(!access("/tmp/nx300m-smartfilter-preview.uncertain",F_OK))
             fputs("PREVIEW-UNCERTAIN script failed and the launcher uncertainty guard is present; do not re-arm before it is resolved\n",stderr);
-        fputs("PREVIEW-WARNING SmartFilter sync failed; still selection retained\n",stderr);return 6;
+        fprintf(stderr,"PREVIEW-WARNING SmartFilter preview %s failed; still selection retained\n",operation);return 6;
     }
     return 0;
 }

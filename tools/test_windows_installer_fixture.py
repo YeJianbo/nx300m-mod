@@ -6,6 +6,7 @@ import tempfile
 import zipfile
 
 import nx300m_installer as app
+from nx300m_lut_core import load_card_lut
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / 'outputs/releases/windows-updater-20261106/package'
@@ -57,7 +58,24 @@ def main():
         assert (history / 'source.cube').read_bytes() == cube.read_bytes()
         assert len((card / 'nx300m-mod/looks' / key / 'table.d4lut').read_bytes()) == 4380
         assert len((card / 'nx300m-mod/looks' / key / 'table-stock3d.d4lut').read_bytes()) == 4380
+        (card / 'nx300m-mod/looks' / key / 'source.cube').write_text(
+            'LUT_3D_SIZE 65\n0 0 0\n', encoding='utf-8')
+        assert load_card_lut(card / 'nx300m-mod/looks' / key,
+                             prefer_native=True).size == 9
         assert app.catalog(card)[1][-1][1] == '测试风格'
+        group, group_backup = app.create_lut_group(card, identity, '日常')
+        assert group_backup.is_dir()
+        assigned = {row[0]: [group['id']] for row in app.catalog(card)[1]}
+        assignment_backup = app.set_looks_groups(card, identity, assigned)
+        assert assignment_backup.is_dir()
+        group_state = app.lut_groups(card)
+        assert set(group_state['members']) == set(assigned)
+        assert (card / 'nx300m-mod/.state/lut-groups.txt').is_file()
+        favorites = [row[0] for row in app.catalog(card)[1]]
+        app.set_favorites(card, identity, favorites, True)
+        assert app.favorite_keys(card) == set(favorites)
+        app.set_favorites(card, identity, favorites[:1], False)
+        assert app.favorite_keys(card) == set(favorites[1:])
         logs = card / 'nx300m-mod/logs'; logs.mkdir()
         (logs / 'fn-key.log').write_text('fixture', encoding='utf-8')
         (logs / 'photo.jpg').write_bytes(b'not included')

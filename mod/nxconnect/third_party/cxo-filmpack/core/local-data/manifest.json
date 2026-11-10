@@ -1,0 +1,20 @@
+{
+  "asset": {
+    "path": "/Users/chenyixuan/AndroidStudioProjects/CXO FilmPack/local-data/portra400-49.fplut",
+    "bytes": 1412278,
+    "sha256": "9adc3e57db1b830f806d3ac70b214a4aa9b744b3dc1d99462051a270c6676eec"
+  },
+  "golden": {
+    "path": "/Users/chenyixuan/AndroidStudioProjects/CXO FilmPack/local-data/heldout.golden",
+    "sha256": "d97b10a1c5a0f787d87409793228c78e47482136b87ae0c570971e4a89789fb6",
+    "samples": 4096,
+    "columns": "input,expected tetra native/sRGB,expected tri native/sRGB,observed native/sRGB; 7 RGB triples"
+  },
+  "origin_npz_sha256": "d5c80e6af321bd3c08420d7d12c33f792faa1e7f4795f0da60644fe1394065a3",
+  "source_icc_sha256": "046968ab6359293e109e90316890a3394161911a255d41da5f1629a792ba10f7",
+  "native_icc_sha256": "832f32f712011d64f6e1b1fd8c9c8072cb9eb0602cbef8bfded3e72a1c75672b",
+  "dimension": 49,
+  "storage": "little endian, 3 uint16 axes, float32 nodes [R,G,B,channel] with B fastest",
+  "scope": "Fixed measured Portra400 strength100, encoded sRGB input; not a complete whitebox renderer",
+  "platform_evidence": "Exported fixtures only; Kotlin and Android execution tracked separately"
+}

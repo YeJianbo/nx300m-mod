@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 package com.nxwa.nxconnect.ui
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.DialogInterface
 import android.content.res.ColorStateList
@@ -73,6 +74,7 @@ class NxDialogBuilder(context: Context) : MaterialAlertDialogBuilder(context, R.
         return dialog
     }
 
+    @SuppressLint("RestrictedApi")
     private fun styleButtons(dialog: AlertDialog) {
         val buttons = listOf(
             DialogInterface.BUTTON_NEUTRAL,

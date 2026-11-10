@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Views host theme; One UI resources and motion are adapted in this app. -->
     <style name="Theme.NXConnect" parent="Theme.Material3.DayNight.NoActionBar">
@@ -36,7 +36,7 @@
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
         <item name="android:windowBackground">@color/nx_background</item>
         <item name="materialCardViewStyle">@style/NxCard</item>
         <item name="materialButtonStyle">@style/NxButton</item>

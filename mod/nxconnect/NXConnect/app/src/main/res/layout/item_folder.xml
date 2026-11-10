@@ -55,5 +55,5 @@
         android:layout_height="20dp"
         android:contentDescription="@null"
         android:src="@drawable/ic_chevron_right"
-        android:tint="@color/nx_text_note" />
+        app:tint="@color/nx_text_note" />
 </LinearLayout>

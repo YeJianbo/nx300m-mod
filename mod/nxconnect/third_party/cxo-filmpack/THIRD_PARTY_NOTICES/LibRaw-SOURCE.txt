@@ -1,0 +1,4 @@
+LibRaw 0.22.3 (75d1532), CDDL-1.0 selection. Unmodified upstream core source.
+Source: https://github.com/LibRaw/LibRaw/tree/0.22.3
+Pinned source archive SHA256: fc6b94387df269bdfe4dff4a38740fe703fd8df0c3bae41e294f037cdb3ecd75
+Corresponding complete source is retained at app/src/main/cpp/vendor/libraw and must accompany redistributed binaries as a source bundle or equivalent download. The LibRaw build includes no optional GPL demosaic packs, RawSpeed or LibRaw DNG SDK integration. A separate Adobe DNG SDK bridge is used for Apple ProRAW; see Adobe-DNG-SDK.txt.

@@ -4,7 +4,7 @@ set -eu
 set -f
 [ "$#" -eq 1 ] || exit 64
 case $1 in
-    status|network-info|disable-autostart|enable-autostart|preview-toggle|preview-enable|preview-s2-enable|preview-probe-once|preview-identity|preview-monochrome|preview-monochrome-timing|preview-sync|preview-stop|preview-restore|preview-status|preview-diag-export) action=$1 ;;
+    status|network-info|disable-autostart|enable-autostart|preview-preference|preview-toggle|preview-enable|preview-s2-enable|preview-probe-once|preview-identity|preview-monochrome|preview-monochrome-timing|preview-sync|preview-stop|preview-restore|preview-status|preview-diag-export) action=$1 ;;
     fw-*) action=$1 ;;
     *) exit 64 ;;
 esac
@@ -47,19 +47,38 @@ fi
 case $action in
     fw-*)
         control=${NX300M_MOD_ROOT:-$(dirname "$0")}/camera_control.sh
-        [ -f "$control" ] && [ ! -L "$control" ] || { printf 'camera_control.sh 不在安装目录\n' >&2; exit 69; }
+        mode_x11=${NX300M_MOD_ROOT:-$(dirname "$0")}/bin/mode_dial_x11.arm
+        mode_x11_action=0
+        animation_ram=${NX300M_MOD_ROOT:-$(dirname "$0")}/bin/settings_animation.arm
+        animation_ram_action=0
+        case $action in fw-animation-0|fw-animation-1|fw-animation-2)
+            if [ -f "$animation_ram" ] && [ ! -L "$animation_ram" ] && [ -x "$animation_ram" ]; then animation_ram_action=1; fi ;;
+        esac
+        case $action in fw-mode-lock-on|fw-mode-lock-off)
+            if [ -f "$mode_x11" ] && [ ! -L "$mode_x11" ] && [ -x "$mode_x11" ]; then mode_x11_action=1; fi ;;
+        esac
+        if [ "$mode_x11_action" = 0 ] && [ "$animation_ram_action" = 0 ]; then
+            [ -f "$control" ] && [ ! -L "$control" ] || { printf 'camera_control.sh 不在安装目录\n' >&2; exit 69; }
+        fi
         case $action in
-            fw-auto-iso-max-12800|fw-auto-iso-max-25600|fw-auto-iso-max-3200)
+            fw-auto-iso-max-6400|fw-auto-iso-max-12800|fw-auto-iso-max-25600|fw-auto-iso-max-3200)
                 # Distinct bridge: the exposure module (not firmware-mod) owns
                 # the Auto ISO ceiling. 0x003b000e/10/11 are verified stock
                 # enums (auto-iso-policy-probe); 3200 restores the stock
                 # ceiling (software "off" for the extension). The readback
                 # must confirm the exact raw value.
                 case $action in
+                    fw-auto-iso-max-6400)  ceiling_value=6400;  ceiling_raw=003b000f; text='Auto ISO 上限已设为 6400' ;;
                     fw-auto-iso-max-12800) ceiling_value=12800; ceiling_raw=003b0010; text='Auto ISO 上限已设为 12800' ;;
                     fw-auto-iso-max-25600) ceiling_value=25600; ceiling_raw=003b0011; text='Auto ISO 上限已设为 25600' ;;
                     fw-auto-iso-max-3200)  ceiling_value=3200;  ceiling_raw=003b000e; text='Auto ISO 上限已恢复原厂 3200' ;;
                 esac
+                # Release the separate legacy lock before asking the exposure
+                # bridge for a different ceiling. The ceiling readback still
+                # decides success; a stale ready marker cannot fake it.
+                if [ "$ceiling_value" != 6400 ] && [ -f /var/run/nx300m-firmware-mod-ready ]; then
+                    /bin/sh "$control" iso-lock 0 >/dev/null || exit 1
+                fi
                 line=$(/bin/sh "$control" auto-iso "$ceiling_value") || exit 1
                 set -- $line
                 case $# in 6|12|14|15) ;; *) printf '曝光桥响应格式异常\n' >&2; exit 70 ;; esac
@@ -98,6 +117,23 @@ case $action in
         esac
         pref=
         case $op in mode-lock) pref=fw-mode-lock ;; animation) pref=fw-animation ;; iso-lock) pref=fw-auto-iso-lock ;; esac
+        # A newer explicit 6400 lock also sets the remembered ceiling to
+        # 6400, so an older extended-ceiling record cannot undo it at boot.
+        if [ "$op:$value" = iso-lock:6400 ]; then pref='fw-auto-iso-lock fw-auto-iso-max'; fi
+        readback_label='原厂读回'
+        if [ "$mode_x11_action" = 1 ]; then
+            case $value in 1) request=on ;; 0) request=off ;; *) exit 64 ;; esac
+            actual=$("$mode_x11" "$request") || exit 1
+            [ "$actual" = "$value" ] || { printf '模式拨盘 X11 映射读回不一致\n' >&2; exit 70; }
+            mode_name=$actual
+            readback_label='X11读回'
+        elif [ "$animation_ram_action" = 1 ]; then
+            line=$("$animation_ram" "$value") || exit 1
+            set -- $line
+            [ "$#" -eq 3 ] && [ "$2" = "$value" ] || { printf '动画 RAM 读回不一致\n' >&2; exit 70; }
+            mode_name=$2
+            readback_label='RAM读回'
+        else
         line=$(/bin/sh "$control" "$op" "$value") || exit 1
         set -- $line
         [ "$#" -eq 26 ] || { printf '固件桥响应格式异常\n' >&2; exit 70; }
@@ -107,7 +143,9 @@ case $action in
             5) mode_name=M ;; 6) mode_name=BULB ;; 7) mode_name=iFn ;; 8) mode_name=SMARTPRO ;;
             30) mode_name=Wi-Fi ;; *) mode_name="模式$4" ;;
         esac
+        fi
         if [ -n "$pref" ]; then
+          for pref in $pref; do
             data=${NX300M_MOD_SOURCE_ROOT:-${NX300M_MOD_ROOT:-}}
             persist_ok=0
             case $data in
@@ -135,11 +173,34 @@ case $action in
                     ;;
             esac
             if [ "$persist_ok" -ne 1 ]; then
-                printf 'FW_MOD PERSIST-WARNING: %s · 原厂读回 %s（已应用、未保存）\n' "$text" "$mode_name"
+                printf 'FW_MOD PERSIST-WARNING: %s · %s %s（已应用、未保存）\n' "$text" "$readback_label" "$mode_name"
                 exit 75
             fi
+          done
         fi
-        printf 'FW_MOD %s · 原厂读回 %s\n' "$text" "$mode_name"
+        printf 'FW_MOD %s · %s %s\n' "$text" "$readback_label" "$mode_name"
+        exit 0 ;;
+esac
+# With the LUT off, a preview toggle only records the user's preference:
+# hardware preview without an applied LUT is invalid, and the recorded
+# preference takes effect when a LUT is applied again.
+case $action in
+    preview-preference)
+        engine=$ROOT/bin/lut_engine.arm
+        [ -f "$engine" ] && [ ! -L "$engine" ] || fail 'preview preference engine unavailable'
+        data=${NX300M_MOD_SOURCE_ROOT:-$NX300M_MOD_ROOT}
+        case $data in /*) ;; *) fail 'source root must be absolute' ;; esac
+        current=0
+        if [ -f "$data/.state/lut-preview" ] && [ ! -L "$data/.state/lut-preview" ]; then
+            IFS= read -r current < "$data/.state/lut-preview" || current=0
+        fi
+        case $current in 1) next=0 ;; *) next=1 ;; esac
+        NX300M_MOD_SOURCE_ROOT=$data "$engine" save-preview "$next" ||
+            fail 'preview preference write failed'
+        case $next in
+            1) printf 'FW_MOD 预览偏好已开 · 应用 LUT 后生效\n' ;;
+            *) printf 'FW_MOD 预览偏好已关\n' ;;
+        esac
         exit 0 ;;
 esac
 # The probe UI must not hold a preview/media lease. Only its detached RAM job
@@ -278,8 +339,9 @@ case $action in
     disable-autostart)
         if [ ! -e "$SOURCE_ROOT/DISABLED" ]; then : > "$SOURCE_ROOT/DISABLED"; fi
         [ -f "$SOURCE_ROOT/DISABLED" ] || fail 'source DISABLED is not a regular file'
-        if [ ! -e "$ROOT/DISABLED" ]; then : > "$ROOT/DISABLED"; fi
-        [ -f "$ROOT/DISABLED" ] || fail 'DISABLED is not a regular file'
+        # This is a next-boot preference. The source marker stops the next
+        # staging pass; copying it into the running RAM root also kills the
+        # current shortcut helper and strands the user outside the settings.
         ;;
     enable-autostart)
         [ ! -e "$SOURCE_ROOT/DISABLED" ] || { [ -f "$SOURCE_ROOT/DISABLED" ] && rm -f "$SOURCE_ROOT/DISABLED"; }

@@ -64,12 +64,13 @@ object CameraDiscovery {
                 Result.Found(ip, info, daemonPort = daemonPort, cgiPort = cgiPort, network = network)
         }
         data class HttpOnly(val hint: String) : Probe()
-        data class Dead(val reason: String) : Probe()
+        data class Dead(val reason: String, val localNetworkFailure: Boolean = false) : Probe()
     }
 
     private class Scan(
         val found: MutableList<Pair<String, Probe.Daemon>> = mutableListOf(),
         val httpOnly: MutableList<Pair<String, Probe.HttpOnly>> = mutableListOf(),
+        val blockedNetworks: MutableMap<Network?, String> = mutableMapOf(),
         var tried: Int = 0,
     )
 
@@ -83,7 +84,10 @@ object CameraDiscovery {
         onProgress: (String) -> Unit = {},
     ): Result = withContext(Dispatchers.IO) {
         val scan = Scan()
-        val networks = orderedNetworks(ctx) + listOf<Network?>(null)
+        val localTest = explicitIp?.trim() in listOf("127.0.0.1", "localhost", "10.0.2.2")
+        val networks: List<Network?> = if (localTest) listOf(null) else orderedNetworks(ctx)
+        if (networks.isEmpty()) return@withContext Result.NotFound(0,
+            "未获取到可用 WLAN 地址，请确认手机已连接相机 WLAN；使用 VPN 时请允许局域网访问。")
         val seenByNetwork = mutableMapOf<Network?, MutableSet<String>>()
 
         if (!explicitIp.isNullOrBlank()) {
@@ -95,11 +99,12 @@ object CameraDiscovery {
                 when (val p = probe(ip, binder = binderFor(net))) {
                     is Probe.Daemon -> return@withContext p.found(ip, net)
                     is Probe.HttpOnly -> scan.httpOnly.add(Pair(ip, p))
-                    is Probe.Dead -> Unit
+                    is Probe.Dead -> if (p.localNetworkFailure) scan.blockedNetworks[net] = p.reason
                 }
             }
             return@withContext scan.httpOnly.firstOrNull()?.let { (_, p) -> Result.CameraWithoutDaemon(ip, p.hint) }
-                ?: Result.NotFound(scan.tried, "地址 $ip 无响应：请确认手机已连上相机的网络")
+                ?: Result.NotFound(scan.tried, scan.blockedNetworks.values.firstOrNull()
+                    ?: "地址 $ip 无响应：请确认手机已连上相机的网络")
         }
 
         // 同一个 IP 可以出现在不同网络上；只在当前网络内去重。
@@ -135,18 +140,23 @@ object CameraDiscovery {
 
                         is Probe.Dead -> {
                             scan.tried++
+                            if (p.localNetworkFailure) {
+                                scan.blockedNetworks[net] = p.reason
+                                break
+                            }
                             Log.w(TAG, "广播里的 ${b.ip} 无法通过 HTTP 访问")
                         }
                     }
                 }
             }
+            if (net in scan.blockedNetworks) continue
 
             // 0.2) 该网络的 HTTP 地址扫描
             val cands = roundOne(ctx, net).filter { seen.add(it) }
             if (cands.isEmpty()) continue
 
             onProgress("网络 ${net?.toString()?.takeLast(8) ?: "默认"}：探测 ${cands.size} 个地址…")
-            scanFound(scan, cands, binder)
+            scanFound(scan, cands, binder, net)
 
             scan.found.firstOrNull()?.let { (ip, d) ->
                 Log.i(TAG, "found daemon at $ip")
@@ -156,11 +166,12 @@ object CameraDiscovery {
 
         // ---- 第二轮：本网段都没找到，才试文档里的历史地址（相机换过网段就是这种情况）----
         for (net in networks) {
+            if (net in scan.blockedNetworks) continue
             val seen = seenByNetwork.getOrPut(net) { mutableSetOf() }
             val fallback = roundTwo(ctx, net).filter { seen.add(it) }
             if (fallback.isNotEmpty()) {
                 onProgress("本网段未找到，回退探测 ${fallback.size} 个历史地址…")
-                scanFound(scan, fallback, binderFor(net))
+                scanFound(scan, fallback, binderFor(net), net)
                 scan.found.firstOrNull()?.let { (ip, d) ->
                     Log.i(TAG, "found daemon at $ip (fallback)")
                     return@withContext d.found(ip, net)
@@ -175,11 +186,12 @@ object CameraDiscovery {
         //   在真机上就漏过（实测相机落在 .39，而列表里没有）。
         //   既然广播可能被 AP 隔离挡住，就补一次全 /24 扫描：64 并发下约 4 秒。
         for (net in networks) {
+            if (net in scan.blockedNetworks) continue
             val seen = seenByNetwork.getOrPut(net) { mutableSetOf() }
             val fullScan = fullSubnetCandidates(ctx, net).filter { seen.add(it) }
             if (fullScan.isNotEmpty()) {
                 onProgress("正在扫描本网段 ${fullScan.size} 个地址…")
-                scanFound(scan, fullScan, binderFor(net))
+                scanFound(scan, fullScan, binderFor(net), net)
                 scan.found.firstOrNull()?.let { (ip, d) ->
                     Log.i(TAG, "found daemon at $ip (full subnet scan)")
                     return@withContext d.found(ip, net)
@@ -188,11 +200,12 @@ object CameraDiscovery {
         }
 
         scan.httpOnly.firstOrNull()?.let { (ip, h) -> return@withContext Result.CameraWithoutDaemon(ip, h.hint) }
-        Result.NotFound(scan.tried, "已探测 ${scan.tried} 个地址，均无响应")
+        Result.NotFound(scan.tried, scan.blockedNetworks.values.firstOrNull()
+            ?: "已探测 ${scan.tried} 个地址，均无响应")
     }
 
     /** 并发探测一批地址，把结果并进 [scan] */
-    private suspend fun scanFound(scan: Scan, ips: List<String>, binder: HttpBinder) = coroutineScope {
+    private suspend fun scanFound(scan: Scan, ips: List<String>, binder: HttpBinder, network: Network?) = coroutineScope {
         // 限流：一次最多 64 个并发，避免把手机网络栈打满
         ips.chunked(64).forEach { chunk ->
             chunk.map { ip ->
@@ -203,14 +216,14 @@ object CameraDiscovery {
                         when (p) {
                             is Probe.Daemon -> scan.found.add(Pair(ip, p))
                             is Probe.HttpOnly -> scan.httpOnly.add(Pair(ip, p))
-                            is Probe.Dead -> Unit
+                            is Probe.Dead -> if (p.localNetworkFailure) scan.blockedNetworks[network] = p.reason
                         }
                     }
                 }
             }.forEach { it.await() }
             // A successful batch is sufficient. Continuing through the rest
             // of /24 kept the user waiting despite already finding the camera.
-            if (scan.found.isNotEmpty()) return@coroutineScope
+            if (scan.found.isNotEmpty() || network in scan.blockedNetworks) return@coroutineScope
         }
     }
 
@@ -251,7 +264,8 @@ object CameraDiscovery {
         return when (val p = probe(target, port?.let { listOf(it) } ?: DAEMON_PORTS, binderFor(network), onDiagnostic)) {
             is Probe.Daemon -> p.found(target, network)
             is Probe.HttpOnly -> Result.CameraWithoutDaemon(target, p.hint)
-            is Probe.Dead -> Result.NotFound(1, "地址 $target${port?.let { ":$it" }.orEmpty()} 无响应：${p.reason}")
+            is Probe.Dead -> Result.NotFound(1, if (p.localNetworkFailure) p.reason else
+                "地址 $target${port?.let { ":$it" }.orEmpty()} 无响应：${p.reason}")
         }
     }
 
@@ -263,8 +277,7 @@ object CameraDiscovery {
      *  2. 同类型里**没有外网**的优先——相机热点/相机所在网段通常 validated=false，
      *     而手机若同时连着家用路由，那个网络是 validated=true，先试它会白跑一轮
      *  3. 以太网次之
-     *  4. 最后用 null（系统默认路由）兜底——用户可能把相机接在家里路由器上，
-     *     手机也在同一网段，此时默认路由本来就是对的
+     *  4. 相机接家用路由器时仍使用对应 WLAN；不退回蜂窝或 VPN 默认路由。
      */
     private fun orderedNetworks(ctx: Context): List<Network> {
         val cm = NetworkBinder.connectivity(ctx)
@@ -282,7 +295,9 @@ object CameraDiscovery {
                 { transportRank(it) + if (NetworkBinder.hasInternet(ctx, it)) 1 else 0 },
             ),
         )
-        return (listOfNotNull(CameraWifi.currentNetwork) + candidates).distinct()
+        // candidateNetworks already ranks the approved camera WLAN first;
+        // do not prepend a cached Network that Android may have removed.
+        return candidates.distinct()
     }
 
     /**
@@ -367,6 +382,12 @@ object CameraDiscovery {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                networkBindingFailure(e)?.let { detail ->
+                    onDiagnostic("手机网络绑定失败：${e.message}; cause=${e.cause?.message}")
+                    // This failure precedes HTTP; trying another camera port
+                    // cannot fix an Android/VPN refusal to bind the socket.
+                    return Probe.Dead(detail, localNetworkFailure = true)
+                }
                 val cause = e.cause ?: e
                 val detail = when (cause) {
                     is java.net.SocketTimeoutException -> "连接或读取超时"
@@ -406,6 +427,15 @@ object CameraDiscovery {
             }
         }
         return Probe.Dead(errors.joinToString("；").ifEmpty { "相机服务未返回可识别的信息" })
+    }
+
+    internal fun networkBindingFailure(error: Throwable): String? {
+        val bindingFailed = generateSequence(error) { it.cause }.take(8).any {
+            it.message?.contains("Binding socket to network", ignoreCase = true) == true
+        }
+        return if (bindingFailed)
+            "手机网络绑定失败。请在 VPN 中允许局域网或将 NXConnect 排除，也可暂时断开 VPN 后重试；仍失败时请重新连接相机 WLAN。"
+        else null
     }
 
     /** 新原生服务集成相册；旧 NX-WA 服务的 CGI 仍使用独立 8080。 */

@@ -178,8 +178,10 @@ static int action(int argc,char **argv) {
             if(!access(NX_LUT_RAM_MARKER,F_OK)||!access("/var/run/nx300m-preview-backend",F_OK)||nx_lut_hook_ready()) {
                 char *off[]={argv[0],"disable",NULL};return action(2,off);
             }
-            int result=nx_lut_stock();
-            return result?result:nx_lut_preview_preference(0)?0:4;
+            /* A stock boot is the LUT being off, not the user changing the
+             * preview preference; leave the saved preference untouched so a
+             * later apply restores preview per that preference. */
+            return nx_lut_stock();
         }
         if(!nx_lut_read_selection_with_strength(saved,&gen,path,&strength)||!nx_lut_selection_id(path,id,&tune))return 5;
         struct nx_lut_look looks[NX_LUT_MAX_LOOKS];int count=0,result=nx_lut_catalog_index(looks,&count);
@@ -232,8 +234,10 @@ static int action(int argc,char **argv) {
         if(setenv("NX300M_LUT_SKIP_PREVIEW_SYNC","1",1)) return 4;
         int result=nx_lut_stock();if(result) return result;
         /* Ordinary Off drains the same native preview session as restore,
-         * without attaching a second time just to export diagnostics. */
-        result=service_control("smartfilter-preview.sh","stop",1);
+         * without attaching a second time just to export diagnostics. The
+         * wrapper's `pause` keeps the user's preview preference: suspending
+         * preview with the LUT is not the user turning preview off. */
+        result=service_control("smartfilter-preview.sh","pause",1);
         if(result) { fputs("LUT_OFF_FAILED preview stop incomplete\n",stderr);return result; }
         if(!access(NX_LUT_RAM_MARKER,F_OK)||nx_lut_hook_ready()) {
             result=service_control("lut-load.sh","restore",0);

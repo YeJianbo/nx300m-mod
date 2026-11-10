@@ -11,21 +11,29 @@ import shutil
 import struct
 import sys
 import tempfile
-import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-from tkinter import simpledialog
 import uuid
 import zipfile
 from datetime import datetime
 from installer_backend import verify_backend
 from manual_lens_wifi_payload import PREFIX as WIFI_PREFIX, verify_wifi_payload
+from nx300m_lut_core import expand_lut_paths
 from release_payload import verify_complete
 
 BASE = Path(sys.executable if getattr(sys, 'frozen', False) else __file__).resolve().parent
 MANIFEST = BASE / 'manifest.json'
 RESTART = 'nx300m-mod/RESTART_SERVICE'
 FIRST = BASE / 'first-install'
+LUT_GROUPS = 'nx300m-mod/.state/lut-groups.json'
+LUT_GROUPS_CAMERA = 'nx300m-mod/.state/lut-groups.txt'
+LUT_GROUP_LIMIT = 32
+STANDARD_LUT_STYLES = {'STD', 'STANDARD', 'STANDARD COLOR', 'STANDARD COLOUR',
+                       'STANDARD TONE'}
+
+
+def standard_lut_style(style):
+    if not style:
+        return True
+    return ' '.join(str(style).upper().split()) in STANDARD_LUT_STYLES
 
 
 def prepare_first(card, identity):
@@ -161,10 +169,12 @@ def prepare(card):
     info = json.loads(MANIFEST.read_text(encoding='utf-8'))
     if info.get('kind') != 'nx300m-cold-boot-update' or info.get('schema') != 1:
         raise ValueError('升级包格式不受支持。')
-    for name, expected in info['requires'].items():
-        file = safe_path(card, name)
-        if not file.is_file() or checksum(file.read_bytes()) != expected:
-            raise ValueError('后端版本不匹配或文件缺失：' + name)
+    complete_runtime = bool(info.get('complete_runtime'))
+    if not complete_runtime:
+        for name, expected in info['requires'].items():
+            file = safe_path(card, name)
+            if not file.is_file() or checksum(file.read_bytes()) != expected:
+                raise ValueError('后端版本不匹配或文件缺失：' + name)
     writes = {}
     for name, rec in info['payload'].items():
         dest = safe_path(card, name)
@@ -185,10 +195,10 @@ def prepare(card):
             raise ValueError('升级包校验失败：' + name)
         writes[name] = data
     read = lambda name: writes[name] if name in writes else safe_path(card, name).read_bytes()
-    if info.get('complete_runtime'):
+    if complete_runtime:
         verify_complete(read, allow_stock_wifi=True)
     else:
-        verify_backend(read)
+        verify_backend(read, info.get('backend_files'))
     return writes
 
 
@@ -243,7 +253,8 @@ def apply(card, identity):
             target = safe_path(card, name)
             target.parent.mkdir(parents=True, exist_ok=True)
             write_checked(target, data)
-        verify_backend(lambda name: safe_path(card, name).read_bytes())
+        backend_files = json.loads(MANIFEST.read_text(encoding='utf-8')).get('backend_files')
+        verify_backend(lambda name: safe_path(card, name).read_bytes(), backend_files)
         if volume(str(card))['serial'] != identity['serial']:
             raise OSError('写入期间磁盘已更换')
         write_checked(safe_path(card, RESTART), all_writes[RESTART])
@@ -308,10 +319,27 @@ def rename_look(card, identity, key, label):
     backup = BASE / 'backups' / (datetime.now().strftime('%Y%m%d-%H%M%S') + '-lut-' + uuid.uuid4().hex[:6])
     backup.mkdir(parents=True)
     write_checked(backup / 'looks.txt', original)
+    metadata_path = safe_path(card, 'nx300m-mod/looks/' + key + '/look.json')
+    metadata_bytes = metadata_path.read_bytes() if metadata_path.is_file() else None
+    if metadata_bytes is not None:
+        write_checked(backup / 'look.json', metadata_bytes)
     if volume(str(card)) != identity or catalog(card)[0] != original:
         raise ValueError('存储卡或风格目录发生变化，请重新操作。')
-    write_checked(safe_path(card, 'nx300m-mod/looks.txt'),
-                  ('\n'.join('|'.join(row) for row in rows) + '\n').encode('utf-8'))
+    metadata = None
+    if metadata_bytes is not None:
+        metadata = json.loads(metadata_bytes.decode('utf-8'))
+        metadata['label'] = label
+    try:
+        if metadata is not None:
+            write_checked(metadata_path,
+                          (json.dumps(metadata, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+        write_checked(safe_path(card, 'nx300m-mod/looks.txt'),
+                      ('\n'.join('|'.join(row) for row in rows) + '\n').encode('utf-8'))
+    except Exception:
+        if metadata_bytes is not None:
+            write_checked(metadata_path, metadata_bytes)
+        write_checked(safe_path(card, 'nx300m-mod/looks.txt'), original)
+        raise
     return backup
 
 
@@ -401,254 +429,948 @@ def import_cube(card, identity, source, label):
     return key, backup
 
 
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title('NX300M MOD 安装与诊断')
-        self.geometry('960x650')
-        self.minsize(850, 590)
-        self.option_add('*Font', ('Microsoft YaHei UI', 10))
-        self.configure(bg='#eef2f5')
-        style = ttk.Style(self)
-        style.theme_use('clam')
-        style.configure('TFrame', background='#eef2f5')
-        style.configure('TLabel', background='#eef2f5', foreground='#243344')
-        style.configure('TButton', padding=(16, 10), background='#ffffff', foreground='#253648', borderwidth=1)
-        style.map('TButton', background=[('active', '#dcecf8'), ('disabled', '#e3e8ec')], foreground=[('disabled', '#9daab4')])
-        style.configure('Accent.TButton', background='#1479bb', foreground='#ffffff', borderwidth=0)
-        style.map('Accent.TButton', background=[('active', '#11689f'), ('disabled', '#9db9ca')], foreground=[('disabled', '#e5eef4')])
-        self.drive = tk.StringVar()
-        self.status = tk.StringVar(value='请选择相机关机后取出的存储卡。')
-        self.checked = None
-        side = tk.Frame(self, bg='#243a4d', width=205, padx=24, pady=28)
-        side.pack(side='left', fill='y'); side.pack_propagate(False)
-        tk.Label(side, text='NX300M', font=('Microsoft YaHei UI', 20, 'bold'), bg='#243a4d', fg='white').pack(anchor='w')
-        tk.Label(side, text='MOD 工具箱', font=('Microsoft YaHei UI', 11), bg='#243a4d', fg='#a9c6d8').pack(anchor='w', pady=(2, 36))
-        tk.Label(side, text='存储卡安装', font=('Microsoft YaHei UI', 11, 'bold'), bg='#243a4d', fg='#ffffff').pack(anchor='w', pady=(0, 16))
-        tk.Button(side, text='LUT 管理', command=self.looks, font=('Microsoft YaHei UI', 11), bg='#243a4d', fg='#d5e6ef', activebackground='#365469', activeforeground='white', relief='flat', bd=0, cursor='hand2').pack(anchor='w', pady=(0, 16))
-        tk.Button(side, text='排错日志', command=self.logs, font=('Microsoft YaHei UI', 11), bg='#243a4d', fg='#d5e6ef', activebackground='#365469', activeforeground='white', relief='flat', bd=0, cursor='hand2').pack(anchor='w')
-        body = ttk.Frame(self, padding=(32, 26))
-        body.pack(side='left', fill='both', expand=True)
-        ttk.Label(body, text='相机存储卡', font=('Microsoft YaHei UI', 21, 'bold')).pack(anchor='w')
-        ttk.Label(body, text='连接读卡器后，选择相机的存储卡。', foreground='#667c8b').pack(anchor='w', pady=(4, 18))
-        row = ttk.Frame(body); row.pack(fill='x')
-        self.combobox = ttk.Combobox(row, textvariable=self.drive, state='readonly')
-        self.combobox.pack(side='left', fill='x', expand=True, padx=(0, 12), ipady=5)
-        self.combobox.bind('<<ComboboxSelected>>', lambda e: self.reset())
-        ttk.Button(row, text='刷新', command=self.refresh).pack(side='left')
-        ttk.Label(body, text='首次安装', font=('Microsoft YaHei UI', 14, 'bold')).pack(anchor='w', pady=(24, 2))
-        ttk.Label(body, text='适用于已刷入 MFW 的 NX300M 1.15。', foreground='#667c8b').pack(anchor='w')
-        ttk.Button(body, text='安装 MOD 到存储卡', style='Accent.TButton', command=self.first_install).pack(anchor='w', pady=(10, 0))
-        ttk.Label(body, text='管理与维护', font=('Microsoft YaHei UI', 14, 'bold')).pack(anchor='w', pady=(24, 10))
-        buttons = ttk.Frame(body); buttons.pack(fill='x')
-        ttk.Button(buttons, text='LUT 管理', command=self.looks).pack(side='left', padx=(0, 8))
-        ttk.Button(buttons, text='检查升级', command=self.check).pack(side='left', padx=(0, 8))
-        self.install = ttk.Button(buttons, text='升级 MOD', command=self.upgrade, state='disabled')
-        self.install.pack(side='left', padx=(0, 8))
-        ttk.Button(buttons, text='导出日志', command=self.logs).pack(side='left')
-        ttk.Button(body, text='卸载 MOD', command=self.uninstall).pack(anchor='w', pady=(10, 0))
-        ttk.Label(body, text='操作记录', font=('Microsoft YaHei UI', 11, 'bold')).pack(anchor='w', pady=(22, 6))
-        self.output = tk.Text(body, height=5, wrap='word', state='disabled', relief='flat', borderwidth=0, bg='#ffffff', fg='#344b5b', padx=12, pady=10, font=('Microsoft YaHei UI', 10))
-        self.output.pack(fill='both', expand=True)
-        self.refresh()
+def look_metadata(card, key):
+    path = safe_path(card, 'nx300m-mod/looks/' + key + '/look.json')
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding='utf-8'))
 
-    def say(self, text):
-        self.output.configure(state='normal'); self.output.insert('end', text + '\n'); self.output.see('end'); self.output.configure(state='disabled')
-        self.status.set(text)
-        try:
-            with (BASE / 'installer.log').open('a', encoding='utf-8') as log:
-                log.write(datetime.now().isoformat(timespec='seconds') + ' ' + text + '\n')
-        except OSError:
-            pass
 
-    def reset(self):
-        self.checked = None; self.install.configure(state='disabled')
+def favorite_keys(card):
+    path = safe_path(card, 'nx300m-mod/.state/lut-favorites')
+    if not path.is_file():
+        return set()
+    return {token for token in path.read_text(encoding='utf-8').split() if token}
 
-    def refresh(self):
-        self.reset(); drives = []
-        if os.name == 'nt':
-            for i in range(26):
-                root = chr(65+i) + ':\\'
-                try:
-                    data = volume(root)
-                    drives.append(f"{root}  {data['label'] or '未命名'}  {data['filesystem']}  {data['serial']}")
-                except (OSError, ValueError):
-                    pass
-        self.combobox['values'] = drives
-        self.drive.set(drives[0] if len(drives) == 1 else '')
-        self.say('已刷新存储卡列表。' if drives else '未发现可移动存储卡，请连接读卡器后刷新。')
 
-    def selected(self):
-        value = self.drive.get()
-        if not value:
-            raise ValueError('请先选择存储卡。')
-        root = value[:3]
-        return Path(root), volume(root)
+def set_favorite(card, identity, key, favorite):
+    set_favorites(card, identity, [key], favorite)
+    return favorite
 
-    def check(self):
-        self.reset()
-        try:
-            card, identity = self.selected(); prepare(card)
-            self.checked = (str(card), identity)
-            self.install.configure(state='normal')
-            self.say(f"检查通过：{card}  卷号 {identity['serial']}。升级将使用 ABI7 Session 预览。")
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            self.say('检查未通过：' + str(exc))
 
-    def first_install(self):
-        try:
-            card, identity = self.selected()
-            prepare_first(card, identity)
-            if not messagebox.askyesno('首次安装', f'确认相机已刷入 MFW、已关机，并选对存储卡 {card}（{identity["serial"]}）？\n\n将写入 MOD 文件和启动脚本。卡上已有同名文件时会停止。'):
-                return
-            self.say('正在写入并校验，请勿拔出存储卡……')
-            self.update_idletasks()
-            self.attributes('-disabled', True)
-            def work():
-                try:
-                    install_first(card, identity)
-                    result = '安装文件已写入并回读。请安全弹出存储卡，放入已刷 MFW 的相机后开机检查。'
-                except Exception as exc:
-                    result = '首次安装未完成：' + str(exc)
-                self.after(0, lambda: finish(result))
-            def finish(result):
-                self.attributes('-disabled', False)
-                self.reset()
-                self.say(result)
-            threading.Thread(target=work, daemon=True).start()
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            self.say('首次安装检查未通过：' + str(exc))
+def set_favorites(card, identity, keys, favorite):
+    _, rows = catalog(card)
+    requested = list(dict.fromkeys(keys))
+    if not requested or any(key not in {row[0] for row in rows} for key in requested):
+        raise ValueError('风格已不存在，请刷新列表。')
+    path = safe_path(card, 'nx300m-mod/.state/lut-favorites')
+    selected = favorite_keys(card)
+    if favorite:
+        selected.update(requested)
+    else:
+        selected.difference_update(requested)
+    ordered = [row[0] for row in rows if row[0] in selected]
+    data = ''.join(item + '\n' for item in ordered).encode('ascii')
+    if volume(str(card)) != identity:
+        raise ValueError('存储卡信息已变化。')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_checked(path, data)
+    actual = favorite_keys(card)
+    if any((key not in actual) if favorite else (key in actual) for key in requested):
+        raise OSError('收藏状态回读不一致。')
+    return ordered
 
-    def upgrade(self):
-        try:
-            card, identity = self.selected()
-            if not self.checked or (str(card), identity) != self.checked:
-                raise ValueError('存储卡信息已变化，请重新检查。')
-            if not messagebox.askyesno('确认升级', f"相机已关机，且已选对 {card}（{identity['serial']}）？\n\n将备份并更新 MOD 文件。"): return
-            backup = apply(card, identity); self.reset()
-            self.say(f'升级完成，写入已回读。备份：{backup}。请安全弹出存储卡。')
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            self.reset(); self.say('升级未完成：' + str(exc))
-            messagebox.showerror('升级未完成', str(exc))
 
-    def uninstall(self):
-        try:
-            card, identity = self.selected()
-            if not messagebox.askyesno('卸载 MOD', f'确认相机已关机，并卸载存储卡 {card}（{identity["serial"]}）上的 MOD？\n\n启动脚本和 MOD 文件会移到卡上的备份目录，照片和 MFW 固件不受影响。'):
-                return
-            backup = uninstall_mod(card, identity)
-            self.reset()
-            self.say(f'MOD 已从启动入口移除；文件保留在 {backup}。请安全弹出存储卡。')
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            self.say('卸载未完成：' + str(exc))
-            messagebox.showerror('卸载未完成', str(exc))
+def _group_label(value):
+    if not isinstance(value, str):
+        raise ValueError('分组名称必须是文本。')
+    label = str(value).strip()
+    if not label or len(label.encode('utf-8')) > 80 or any(
+            ord(char) < 32 or char in '|\r\n\0' for char in label):
+        raise ValueError('分组名称不能为空，不能含控制字符或竖线，且最多 80 字节。')
+    return label
 
-    def logs(self):
-        try:
-            card, identity = self.selected()
-            if not safe_path(card, 'nx300m-mod').is_dir(): raise ValueError('卡上未找到 NX300M MOD 目录。')
-            destination = filedialog.asksaveasfilename(title='导出排错日志', defaultextension='.zip', initialfile='NX300M-logs.zip', filetypes=[('ZIP 压缩包', '*.zip')])
-            if not destination: return
-            if Path(destination).resolve().is_relative_to(card.resolve()): raise ValueError('请把日志保存到电脑。')
-            count = export_logs(card, destination, identity)
-            self.say(f'已导出 {count} 个日志文件：{destination}。分享前请检查内容。')
-        except (OSError, ValueError) as exc:
-            self.say('日志导出失败：' + str(exc))
 
-    def looks(self):
-        try:
-            card, identity = self.selected()
-            _, rows = catalog(card)
-        except (OSError, ValueError) as exc:
-            self.say('无法读取 LUT：' + str(exc)); return
-        window = tk.Toplevel(self); window.title('LUT 管理'); window.geometry('800x590'); window.minsize(700, 500)
-        window.transient(self); window.grab_set()
-        frame = ttk.Frame(window, padding=26); frame.pack(fill='both', expand=True)
-        header = ttk.Frame(frame); header.pack(fill='x')
-        ttk.Label(header, text='LUT 管理', font=('Microsoft YaHei UI', 20, 'bold')).pack(side='left')
-        button = ttk.Button(header, text='导入 .cube', style='Accent.TButton', command=lambda: begin())
-        button.pack(side='right')
-        title = ttk.Label(frame, text=f'存储卡 {card} · 共 {len(rows)} 款', foreground='#667c8b')
-        title.pack(anchor='w', pady=(4, 14))
-        search = tk.StringVar()
-        search_row = ttk.Frame(frame); search_row.pack(fill='x', pady=(0, 10))
-        ttk.Label(search_row, text='搜索').pack(side='left', padx=(0, 10))
-        ttk.Entry(search_row, textvariable=search).pack(side='left', fill='x', expand=True, ipady=4)
-        list_frame = ttk.Frame(frame); list_frame.pack(fill='both', expand=True)
-        listing = ttk.Treeview(list_frame, columns=('name', 'id'), show='headings', selectmode='browse', height=10)
-        listing.heading('name', text='风格名称'); listing.heading('id', text='风格 ID')
-        listing.column('name', width=280, minwidth=180); listing.column('id', width=290, minwidth=180)
-        scrollbar = ttk.Scrollbar(list_frame, orient='vertical', command=listing.yview)
-        listing.configure(yscrollcommand=scrollbar.set)
-        listing.pack(side='left', fill='both', expand=True); scrollbar.pack(side='right', fill='y')
-        self.style_tree = ttk.Style(window)
-        self.style_tree.configure('Treeview', rowheight=34, font=('Microsoft YaHei UI', 10), background='#ffffff', fieldbackground='#ffffff')
-        self.style_tree.configure('Treeview.Heading', font=('Microsoft YaHei UI', 10, 'bold'), padding=7)
-        def reload():
-            _, current = catalog(card); listing.delete(*listing.get_children())
-            query = search.get().strip().casefold()
-            for row in current:
-                if query in row[1].casefold() or query in row[0].casefold():
-                    listing.insert('', 'end', iid=row[0], values=(row[1], row[0]))
-            title.configure(text=f'存储卡 {card} · 共 {len(current)} 款')
-        search.trace_add('write', lambda *_: reload())
-        reload()
-        state = tk.StringVar(value='支持 sRGB 3D .cube。导入不改变当前风格；有原厂组合表时会同时生成组合版本。')
-        ttk.Label(frame, textvariable=state, wraplength=700, foreground='#667c8b').pack(anchor='w', pady=(12, 0))
-        actions = ttk.Frame(frame); actions.pack(fill='x', pady=(12, 0))
-        def rename():
-            selected = listing.selection()
-            if not selected:
-                state.set('请先选择需要重命名的风格。'); return
-            key = selected[0]
-            old = listing.item(key, 'values')[0]
-            name = simpledialog.askstring('重命名风格', '输入相机中显示的名称：', initialvalue=old, parent=window)
-            if name is None or name.strip() == old: return
+def _group_state(raw, rows):
+    if raw is None:
+        return {'schema': 1, 'groups': [], 'members': {}}
+    try:
+        value = json.loads(raw.decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError('LUT 分组文件不是有效 JSON。') from error
+    if not isinstance(value, dict) or value.get('schema') != 1:
+        raise ValueError('LUT 分组文件版本不受支持。')
+    groups = []
+    group_ids = set()
+    labels = set()
+    items = value.get('groups')
+    members = value.get('members')
+    if not isinstance(items, list) or not isinstance(members, dict):
+        raise ValueError('LUT 分组文件结构不正确。')
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError('LUT 分组条目结构不正确。')
+        group_id = item.get('id')
+        if not isinstance(group_id, str) or not re.fullmatch(r'group-[0-9a-f]{12}', group_id):
+            raise ValueError('LUT 分组 ID 不正确。')
+        label = _group_label(item.get('label'))
+        if group_id in group_ids or label.casefold() in labels:
+            raise ValueError('LUT 分组 ID 或名称重复。')
+        group_ids.add(group_id)
+        labels.add(label.casefold())
+        groups.append({'id': group_id, 'label': label})
+    look_ids = {row[0] for row in rows}
+    normalized = {}
+    for look_id, selected in members.items():
+        if look_id not in look_ids:
+            continue
+        if not isinstance(selected, list) or any(
+                not isinstance(group_id, str) or group_id not in group_ids for group_id in selected):
+            raise ValueError('LUT 分组归属结构不正确。')
+        ordered = [item['id'] for item in groups if item['id'] in set(selected)]
+        if ordered:
+            normalized[look_id] = ordered
+    return {'schema': 1, 'groups': groups, 'members': normalized}
+
+
+def _read_lut_groups(card, rows):
+    path = safe_path(card, LUT_GROUPS)
+    raw = path.read_bytes() if path.is_file() else None
+    return raw, _group_state(raw, rows)
+
+
+def lut_groups(card):
+    _, rows = catalog(card)
+    return _read_lut_groups(card, rows)[1]
+
+
+def _lut_group_camera_data(state):
+    lines = ['NXUTG1']
+    lines.extend(
+        'G|{}|{}'.format(group['id'], group['label']) for group in state['groups'])
+    lines.extend(
+        'L|{}|{}'.format(look_id, '|'.join(group_ids))
+        for look_id, group_ids in state['members'].items())
+    return ('\n'.join(lines) + '\n').encode('utf-8')
+
+
+def _write_lut_groups(card, identity, original, state, action):
+    if volume(str(card)) != identity:
+        raise ValueError('存储卡信息已变化。')
+    backup = BASE / 'backups' / (
+        datetime.now().strftime('%Y%m%d-%H%M%S') + '-' + action + '-' +
+        uuid.uuid4().hex[:6])
+    backup.mkdir(parents=True)
+    if original is None:
+        write_checked(backup / 'previous-missing.txt', b'no lut-groups.json\n')
+    else:
+        write_checked(backup / 'lut-groups.json', original)
+    path = safe_path(card, LUT_GROUPS)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = (json.dumps(state, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+    camera_path = safe_path(card, LUT_GROUPS_CAMERA)
+    camera_original = camera_path.read_bytes() if camera_path.is_file() else None
+    camera_data = _lut_group_camera_data(state)
+    try:
+        write_checked(path, data)
+        write_checked(camera_path, camera_data)
+        if lut_groups(card) != state:
+            raise OSError('LUT 分组回读不一致。')
+        if camera_path.read_bytes() != camera_data:
+            raise OSError('相机端 LUT 分组回读不一致。')
+    except Exception:
+        if original is None:
+            path.unlink(missing_ok=True)
+        else:
+            write_checked(path, original)
+        if camera_original is None:
+            camera_path.unlink(missing_ok=True)
+        else:
+            write_checked(camera_path, camera_original)
+        raise
+    return backup
+
+
+def create_lut_group(card, identity, label):
+    _, rows = catalog(card)
+    original, state = _read_lut_groups(card, rows)
+    label = _group_label(label)
+    if any(item['label'].casefold() == label.casefold() for item in state['groups']):
+        raise ValueError('已有同名 LUT 分组。')
+    if len(state['groups']) >= LUT_GROUP_LIMIT:
+        raise ValueError(f'相机端最多支持 {LUT_GROUP_LIMIT} 个自定义分组。')
+    state['groups'].append({'id': 'group-' + uuid.uuid4().hex[:12], 'label': label})
+    backup = _write_lut_groups(card, identity, original, state, 'lut-group-create')
+    return state['groups'][-1], backup
+
+
+def rename_lut_group(card, identity, group_id, label):
+    _, rows = catalog(card)
+    original, state = _read_lut_groups(card, rows)
+    item = next((group for group in state['groups'] if group['id'] == group_id), None)
+    if item is None:
+        raise ValueError('LUT 分组已不存在，请刷新。')
+    label = _group_label(label)
+    if any(group['id'] != group_id and group['label'].casefold() == label.casefold()
+           for group in state['groups']):
+        raise ValueError('已有同名 LUT 分组。')
+    item['label'] = label
+    backup = _write_lut_groups(card, identity, original, state, 'lut-group-rename')
+    return backup
+
+
+def delete_lut_group(card, identity, group_id):
+    _, rows = catalog(card)
+    original, state = _read_lut_groups(card, rows)
+    if not any(group['id'] == group_id for group in state['groups']):
+        raise ValueError('LUT 分组已不存在，请刷新。')
+    state['groups'] = [group for group in state['groups'] if group['id'] != group_id]
+    for look_id in list(state['members']):
+        state['members'][look_id] = [
+            selected for selected in state['members'][look_id] if selected != group_id]
+        if not state['members'][look_id]:
+            del state['members'][look_id]
+    backup = _write_lut_groups(card, identity, original, state, 'lut-group-delete')
+    return backup
+
+
+def set_looks_groups(card, identity, assignments):
+    """Apply one group transaction for multiple LUTs."""
+    _, rows = catalog(card)
+    known = {row[0] for row in rows}
+    original, state = _read_lut_groups(card, rows)
+    available = {item['id'] for item in state['groups']}
+    if not assignments or any(key not in known for key in assignments):
+        raise ValueError('风格已不存在，请刷新。')
+    changed = False
+    for key, group_ids in assignments.items():
+        requested = set(group_ids)
+        if not requested <= available:
+            raise ValueError('所选 LUT 分组已不存在，请刷新。')
+        ordered = [item['id'] for item in state['groups'] if item['id'] in requested]
+        if ordered:
+            if state['members'].get(key, []) != ordered:
+                state['members'][key] = ordered
+                changed = True
+        elif key in state['members']:
+            state['members'].pop(key, None)
+            changed = True
+    if not changed:
+        return None
+    return _write_lut_groups(card, identity, original, state, 'lut-group-assign')
+
+
+def set_look_groups(card, identity, key, group_ids):
+    return set_looks_groups(card, identity, {key: group_ids})
+
+
+def import_lut_sources(card, identity, paths):
+    """Import .cube/.vlt files or ZIPs as one checked catalogue transaction."""
+    from cube_to_d4 import compile_cube, load_cube
+    paths = [Path(path) for path in paths]
+    if not paths:
+        raise ValueError('没有选择 LUT 文件。')
+    if BASE.resolve().is_relative_to(card.resolve()):
+        raise ValueError('请先把程序完整解压到电脑。')
+    original, rows = catalog(card)
+    if len(rows) >= 255:
+        raise ValueError('风格列表已满，无法继续导入。')
+    existing_hashes = {}
+    known_labels = {row[1].casefold() for row in rows}
+    for row in rows:
+        metadata = look_metadata(card, row[0])
+        if metadata.get('source_sha256'):
+            existing_hashes[metadata['source_sha256']] = row[0]
+        else:
+            legacy_source = safe_path(card, 'nx300m-mod/looks/' + row[0] + '/source.cube')
+            if legacy_source.is_file():
+                existing_hashes[checksum(legacy_source.read_bytes())] = row[0]
+    expanded = expand_lut_paths(paths)
+    baseline_path = safe_path(card, 'nx300m-mod/looks/nx300-adjust-base/table-stock3d.d4lut')
+    stock = None
+    if baseline_path.is_file():
+        baseline = baseline_path.read_bytes()
+        if len(baseline) != 4380 or checksum(baseline) != '8e90e5a7528928585c86e4fe7e74d689ed96abd6cbb37f94bce234ddca09a07a':
+            raise ValueError('原厂组合表不匹配。')
+        stock = struct.unpack('<2190H', baseline)
+        if any(value > 1023 for value in stock) or any(stock[i] for i in (729, 1459, 2189)):
+            raise ValueError('原厂组合表格式错误。')
+    pending = []
+    skipped = []
+    reserved = set()
+    for item in expanded:
+        source_hash = checksum(item.source_bytes)
+        if source_hash in existing_hashes:
+            skipped.append({'name': item.name, 'reason': 'duplicate',
+                            'existing': existing_hashes[source_hash]})
+            continue
+        style = (item.lut.style or '').upper()
+        if not standard_lut_style(style):
+            skipped.append({'name': item.name, 'reason': f'非 Standard 输入域：{item.lut.style}'})
+            continue
+        if len(rows) + len(pending) >= 255:
+            skipped.append({'name': item.name, 'reason': '风格列表已满'})
+            continue
+        label = item.lut.title or Path(item.name).stem
+        label = label.strip()
+        base_label = label
+        suffix = 2
+        while label.casefold() in known_labels or label.casefold() in reserved:
+            label = f'{base_label} ({suffix})'
+            suffix += 1
+        if not label or len(label.encode('utf-8')) > 120 or any(c in '|\r\n\0' or ord(c) < 32 for c in label):
+            skipped.append({'name': item.name, 'reason': '名称不可用于相机目录'})
+            continue
+        with tempfile.TemporaryDirectory(prefix='nx-lut-import-') as temporary:
+            master = Path(temporary) / 'source.cube'
+            master.write_bytes(item.cube_bytes)
+            cube = load_cube(master)
+        direct = compile_cube(cube, method='fit')
+        still = compile_cube(cube, stock, method='fit') if stock is not None else None
+        key = 'import-' + uuid.uuid4().hex[:16]
+        metadata = {
+            'id': key, 'label': label, 'source_kind': 'user-lumix' if item.lut.style else 'user-cube',
+            'source_name': item.name, 'source_format': item.lut.source_format,
+            'source_sha256': source_hash, 'source_style': item.lut.style,
+            'source_grid': item.lut.size, 'input_space': 'srgb', 'output_space': 'srgb',
+            'native_table': 'table.d4lut',
+            'native_format': {'grid': 9, 'channels': 3, 'bits': 10, 'bytes': 4380},
+            'calibration': {'camera': 'NX300M', 'status': 'unmeasured'},
+            'compiler': {'method': 'fit', 'tables': {'table.d4lut': checksum(direct)}},
+            'created_at': datetime.now().isoformat(timespec='seconds'),
+        }
+        tables = [('source.cube', item.cube_bytes), ('table.d4lut', direct)]
+        if still is not None:
+            tables.append(('table-stock3d.d4lut', still))
+            metadata['native_stock_3d_table'] = 'table-stock3d.d4lut'
+            metadata['compiler']['tables']['table-stock3d.d4lut'] = checksum(still)
+        tables.append(('look.json', (json.dumps(metadata, ensure_ascii=False, indent=2) + '\n').encode('utf-8')))
+        pending.append((key, label, tables, metadata, source_hash))
+        reserved.add(label.casefold())
+        existing_hashes[source_hash] = key
+    if not pending:
+        return {'imported': [], 'skipped': skipped, 'backup': None, 'rows': len(rows)}
+    if volume(str(card)) != identity or catalog(card)[0] != original:
+        raise ValueError('存储卡或风格目录发生变化，请重新操作。')
+    backup = BASE / 'backups' / (datetime.now().strftime('%Y%m%d-%H%M%S') + '-lut-batch-' + uuid.uuid4().hex[:6])
+    backup.mkdir(parents=True)
+    write_checked(backup / 'looks.txt', original)
+    created = []
+    try:
+        for key, label, tables, metadata, source_hash in pending:
+            if volume(str(card)) != identity:
+                raise OSError('存储卡信息已变化。')
+            lookdir = safe_path(card, 'nx300m-mod/looks/' + key)
+            if lookdir.exists():
+                raise FileExistsError('导入目标已存在：' + key)
+            lookdir.mkdir()
+            created.append(lookdir)
+            for name, data in tables:
+                write_checked(lookdir / name, data)
+            backup_look = backup / key
+            backup_look.mkdir()
+            for name, data in tables:
+                write_checked(backup_look / name, data)
+        addition = ''.join(key + '|' + label + '|0|0|0|0|0|0|0\n'
+                           for key, label, _, _, _ in pending).encode('utf-8')
+        if volume(str(card)) != identity or catalog(card)[0] != original:
+            raise ValueError('存储卡或风格目录发生变化；新风格尚未加入目录。')
+        write_checked(safe_path(card, 'nx300m-mod/looks.txt'),
+                      original.rstrip(b'\r\n') + b'\n' + addition)
+        updated, updated_rows = catalog(card)
+        if updated_rows[-len(pending):] != [
+                [key, label, *(['0'] * 7)] for key, label, _, _, _ in pending]:
+            raise OSError('LUT 目录回读不一致。')
+    except Exception:
+        write_checked(safe_path(card, 'nx300m-mod/looks.txt'), original)
+        for lookdir in reversed(created):
+            shutil.rmtree(lookdir, ignore_errors=True)
+        raise
+    imported = [{'id': key, 'label': label, 'source_sha256': source_hash,
+                 'grid': metadata['source_grid'], 'style': metadata.get('source_style')}
+                for key, label, _, metadata, source_hash in pending]
+    return {'imported': imported, 'skipped': skipped, 'backup': backup,
+            'rows': len(updated_rows)}
+
+
+def local_lut_root():
+    configured = os.environ.get('NX300M_LUT_LIBRARY')
+    if configured and Path(configured).is_dir():
+        return Path(configured).resolve()
+    current = BASE.resolve()
+    for parent in (current, *current.parents):
+        candidate = parent / 'lut-library'
+        if (candidate / 'catalog.json').is_file() and (candidate / 'LUTs').is_dir():
+            return candidate
+    return None
+
+
+def local_lut_roots(root):
+    root = Path(root)
+    return root.parent / 'looks', root / 'LUTs'
+
+
+def blend_sources(card):
+    """Return compatible local and card masters for two-source blending."""
+    _, rows = catalog(card)
+    result = [{'id': '__original__', 'label': '原图', 'grid': 0, 'valid': True,
+               'reason': '', 'original': True, 'origin': 'original', 'path': None}]
+    local_root = local_lut_root()
+    if local_root is not None:
+        looks_root, cubes_root = local_lut_roots(local_root)
+        catalog_path = local_root / 'catalog.json'
+        catalog_data = json.loads(catalog_path.read_text(encoding='utf-8'))
+        catalog_entries = {entry['id']: entry for entry in catalog_data.get('entries', [])}
+        for path in sorted(cubes_root.rglob('*.cube'), key=lambda item: item.name.casefold()):
+            match = re.search(r'\[([a-z0-9][a-z0-9_-]{0,62})\]\.cube$', path.name, re.I)
+            if not match:
+                continue
+            key = match.group(1).lower()
+            metadata_path = looks_root / key / 'look.json'
             try:
-                backup = rename_look(card, identity, key, name)
-                reload(); state.set(f'名称已更新。目录备份：{backup}')
-            except (OSError, ValueError) as exc:
-                state.set('重命名失败：' + str(exc))
-        rename_button = ttk.Button(actions, text='重命名', command=rename)
-        rename_button.pack(side='left')
-        def builtin():
+                metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            if metadata.get('source_kind') == 'blend-linear-srgb':
+                continue
+            if metadata.get('input_space') != 'srgb' or metadata.get('output_space') != 'srgb':
+                continue
+            catalog_entry = catalog_entries.get(key, {})
+            label = catalog_entry.get('label', key)
+            group = catalog_entry.get('group', '')
+            result.append({
+                'id': 'local:' + key,
+                'label': (str(group) + ' · ' if group else '') + str(label),
+                'grid': metadata.get('source_grid') or 0, 'valid': True,
+                'reason': '', 'original': False, 'origin': 'local', 'path': str(path.resolve()),
+            })
+    for row in rows:
+        key, label = row[0], row[1]
+        metadata = look_metadata(card, key)
+        source = safe_path(card, 'nx300m-mod/looks/' + key + '/source.cube')
+        reason = ''
+        if not source.is_file():
+            reason = '没有保留 source.cube 原文件'
+        elif metadata.get('source_kind') == 'blend-linear-srgb':
+            reason = '首版不允许把已混合风格继续当作输入源'
+        elif metadata.get('input_space') != 'srgb' or metadata.get('output_space') != 'srgb':
+            reason = '未明确声明 sRGB 输入和输出域'
+        result.append({
+            'id': 'card:' + key, 'label': label,
+            'grid': metadata.get('source_grid') or 0,
+            'valid': not reason, 'reason': reason, 'original': False,
+            'origin': 'card', 'path': str(source.resolve()) if not reason else None,
+        })
+    return result
+
+
+def _blend_source(card, key):
+    if key in (None, '', '__original__'):
+        return None, {'id': '__original__', 'label': '原图', 'source_grid': 0}
+    if str(key).startswith('local:'):
+        local_id = str(key)[6:]
+        root = local_lut_root()
+        if root is None:
+            raise ValueError('本地 LUT 仓库已断开，请重新选择仓库。')
+        looks_root, cubes_root = local_lut_roots(root)
+        metadata_path = looks_root / local_id / 'look.json'
+        source = next((path for path in cubes_root.rglob('*.cube')
+                       if path.name.casefold().endswith(f'[{local_id}].cube')), None)
+        if source is None or not source.is_file():
+            raise ValueError('本地 LUT 源已不存在，请刷新列表。')
+        metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+        if metadata.get('source_kind') == 'blend-linear-srgb':
+            raise ValueError('首版不允许把已混合风格继续当作输入源。')
+        if metadata.get('input_space') != 'srgb' or metadata.get('output_space') != 'srgb':
+            raise ValueError('本地 LUT 未明确声明 sRGB 输入和输出域，不能参与混合。')
+        metadata = dict(metadata, id=str(key), label=metadata.get('label', local_id))
+        return source, metadata
+    if str(key).startswith('card:'):
+        key = str(key)[5:]
+    _, rows = catalog(card)
+    row = next((item for item in rows if item[0] == key), None)
+    if row is None:
+        raise ValueError('混合源已不存在，请刷新 LUT 列表。')
+    metadata = look_metadata(card, key)
+    source = safe_path(card, 'nx300m-mod/looks/' + key + '/source.cube')
+    if not source.is_file():
+        raise ValueError(f'“{row[1]}”没有保留 source.cube，不能用于混合。')
+    if metadata.get('source_kind') == 'blend-linear-srgb':
+        raise ValueError('首版不允许把已混合风格继续当作输入源。')
+    if metadata.get('input_space') != 'srgb' or metadata.get('output_space') != 'srgb':
+        raise ValueError(f'“{row[1]}”未明确声明 sRGB 输入和输出域，不能参与混合。')
+    metadata = dict(metadata, id=str(key), label=row[1])
+    return source, metadata
+
+
+def blended_lut(card, source_a, source_b, amount_b):
+    from nx300m_lut_core import blend_luts, identity_lut, parse_lut_file
+    a_path, a_metadata = _blend_source(card, source_a)
+    b_path, b_metadata = _blend_source(card, source_b)
+    a = identity_lut(title='原图') if a_path is None else parse_lut_file(a_path).lut
+    b = identity_lut(title='原图') if b_path is None else parse_lut_file(b_path).lut
+    return blend_luts(a, b, float(amount_b), title='混合预览')
+
+
+def snapshot_blended_lut(card, key, amount_b):
+    from nx300m_lut_core import blend_luts, parse_lut_file
+    directory = safe_path(card, 'nx300m-mod/looks/' + key)
+    recipe_path = directory / 'blend.json'
+    if not recipe_path.is_file():
+        raise ValueError('该 LUT 没有可编辑的混合配方。')
+    recipe = json.loads(recipe_path.read_text(encoding='utf-8'))
+    if recipe.get('algorithm') != 'linear-srgb-output-v1':
+        raise ValueError('混合算法版本不受支持。')
+    a = parse_lut_file(directory / 'sources/a.cube').lut
+    b = parse_lut_file(directory / 'sources/b.cube').lut
+    return blend_luts(a, b, float(amount_b), title='混合预览')
+
+
+def _valid_blend_label(label):
+    label = str(label).strip()
+    if not label or len(label.encode('utf-8')) > 120 or any(
+            c in '|\r\n\0' or ord(c) < 32 for c in label):
+        raise ValueError('名称不能为空，也不能包含竖线或换行。')
+    return label
+
+
+def _build_blend_package(source_a, source_b, key, label, amount_b, source_a_id,
+                         source_b_id, reference_image=None):
+    from look_library import LookLibrary
+    with tempfile.TemporaryDirectory(prefix='nx-blend-build-') as temporary:
+        root = Path(temporary) / 'looks'
+        library = LookLibrary(root=root)
+        metadata = library.add_blend(
+            source_a, source_b, key, label=label, amount_b=amount_b,
+            source_a_id=source_a_id, source_b_id=source_b_id,
+            reference_image=Path(reference_image) if reference_image else None,
+            description='两款 sRGB LUT 按比例生成的独立风格', method='round')
+        metadata['created_at'] = datetime.now().isoformat(timespec='seconds')
+        metadata['derived_from_card_sources'] = True
+        (root/key/'look.json').write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        files = {}
+        for path in (root/key).rglob('*'):
+            if path.is_file():
+                files[path.relative_to(root/key).as_posix()] = path.read_bytes()
+        return files, metadata
+
+
+def _blend_file_label(label):
+    value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', str(label))
+    return ' '.join(value.split()).strip(' .')[:88].rstrip(' .') or 'LUT'
+
+
+def _write_local_catalog_index(catalog, path):
+    lines = ['分组\t状态\t名称\t稳定ID\t源网格\t文件']
+    for entry in catalog.get('entries', []):
+        lines.append('\t'.join(str(entry.get(name, '')) for name in
+                                ('group', 'status', 'label', 'id', 'source_grid', 'file')))
+    write_checked(Path(path), ('\n'.join(lines) + '\n').encode('utf-8'))
+
+
+def _save_blend_to_local_repository(files, metadata, key, label):
+    root = local_lut_root()
+    if root is None:
+        return None
+    looks_root, cubes_root = local_lut_roots(root)
+    catalog_path = root / 'catalog.json'
+    index_path = root / 'catalog.tsv'
+    source_catalog_path = looks_root / 'catalog.json'
+    if not catalog_path.is_file():
+        raise ValueError('本地 LUT 仓库缺少 catalog.json。')
+    catalog_raw = catalog_path.read_bytes()
+    index_raw = index_path.read_bytes() if index_path.is_file() else None
+    source_catalog_raw = source_catalog_path.read_bytes() if source_catalog_path.is_file() else None
+    catalog = json.loads(catalog_raw.decode('utf-8'))
+    if any(entry.get('id') == key for entry in catalog.get('entries', [])):
+        return {'id': key, 'already_present': True}
+    group_dir = cubes_root / '自制'
+    group_dir.mkdir(parents=True, exist_ok=True)
+    number = len([path for path in group_dir.glob('*.cube') if path.is_file()]) + 1
+    target_cube = group_dir / f'{number:03d} {_blend_file_label(label)} [{key}].cube'
+    lookdir = looks_root / key
+    if lookdir.exists() or target_cube.exists():
+        raise FileExistsError('本地 LUT 仓库已有同名混合条目：' + key)
+    backup = BASE / 'backups' / (
+        datetime.now().strftime('%Y%m%d-%H%M%S') + '-blend-local-' + uuid.uuid4().hex[:6])
+    backup.mkdir(parents=True)
+    write_checked(backup / 'catalog.json', catalog_raw)
+    if index_raw is not None:
+        write_checked(backup / 'catalog.tsv', index_raw)
+    if source_catalog_raw is not None:
+        write_checked(backup / 'looks-catalog.json', source_catalog_raw)
+    try:
+        lookdir.mkdir(parents=True)
+        for relative, data in files.items():
+            target = lookdir / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_checked(target, data)
+        output_cube = files['source.cube']
+        write_checked(target_cube, output_cube)
+        output_hash = checksum(output_cube)
+        entry = {
+            'id': key, 'label': label, 'group': '自制', 'groups': ['自制'],
+            'file': target_cube.relative_to(root).as_posix(),
+            'source_sha256': output_hash, 'local_sha256': output_hash,
+            'source_grid': 33, 'source_kind': 'blend-linear-srgb',
+            'source_style': None, 'status': 'source-only', 'camera_ready': False,
+        }
+        catalog.setdefault('entries', []).append(entry)
+        catalog['count'] = len(catalog['entries'])
+        groups = catalog.setdefault('groups', [])
+        if '自制' not in groups:
+            groups.append('自制')
+        catalog['generated_at'] = datetime.now().astimezone().isoformat(timespec='seconds')
+        write_checked(catalog_path, (json.dumps(catalog, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+        _write_local_catalog_index(catalog, index_path)
+        source_catalog = (json.loads(source_catalog_raw.decode('utf-8'))
+                          if source_catalog_raw is not None else {'version': 1, 'groups': []})
+        group = next((item for item in source_catalog.setdefault('groups', [])
+                      if item.get('name') == '自制'), None)
+        if group is None:
+            group = {'name': '自制', 'ids': []}
+            source_catalog['groups'].append(group)
+        if key not in group.setdefault('ids', []):
+            group['ids'].append(key)
+        write_checked(source_catalog_path,
+                      (json.dumps(source_catalog, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+    except Exception:
+        shutil.rmtree(lookdir, ignore_errors=True)
+        target_cube.unlink(missing_ok=True)
+        write_checked(catalog_path, catalog_raw)
+        if index_raw is None:
+            index_path.unlink(missing_ok=True)
+        else:
+            write_checked(index_path, index_raw)
+        if source_catalog_raw is None:
+            source_catalog_path.unlink(missing_ok=True)
+        else:
+            write_checked(source_catalog_path, source_catalog_raw)
+        raise
+    return {'id': key, 'path': target_cube, 'backup': backup}
+
+
+def _update_local_blend_repository(files, metadata, key, label):
+    root = local_lut_root()
+    if root is None:
+        return None
+    looks_root, cubes_root = local_lut_roots(root)
+    catalog_path = root / 'catalog.json'
+    index_path = root / 'catalog.tsv'
+    source_catalog_path = looks_root / 'catalog.json'
+    catalog_raw = catalog_path.read_bytes()
+    catalog = json.loads(catalog_raw.decode('utf-8'))
+    entry = next((item for item in catalog.get('entries', []) if item.get('id') == key), None)
+    if entry is None:
+        return {'id': key, 'missing': True}
+    old_cube = root / entry['file']
+    old_cube_bytes = old_cube.read_bytes() if old_cube.is_file() else None
+    prefix = re.match(r'^(\d+)\s+', old_cube.name)
+    target_cube = old_cube.parent / f'{(prefix.group(1) if prefix else "999")} {_blend_file_label(label)} [{key}].cube'
+    lookdir = looks_root / key
+    index_raw = index_path.read_bytes() if index_path.is_file() else None
+    source_catalog_raw = source_catalog_path.read_bytes() if source_catalog_path.is_file() else None
+    backup = BASE / 'backups' / (
+        datetime.now().strftime('%Y%m%d-%H%M%S') + '-blend-local-edit-' + uuid.uuid4().hex[:6])
+    backup.mkdir(parents=True)
+    write_checked(backup / 'catalog.json', catalog_raw)
+    if index_raw is not None:
+        write_checked(backup / 'catalog.tsv', index_raw)
+    if source_catalog_raw is not None:
+        write_checked(backup / 'looks-catalog.json', source_catalog_raw)
+    for path in lookdir.rglob('*'):
+        if path.is_file():
+            target = backup / key / path.relative_to(lookdir)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_checked(target, path.read_bytes())
+    try:
+        for relative, data in files.items():
+            target = lookdir / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_checked(target, data)
+        write_checked(target_cube, files['source.cube'])
+        if target_cube != old_cube:
+            old_cube.unlink()
+        output_hash = checksum(files['source.cube'])
+        entry.update(label=label, file=target_cube.relative_to(root).as_posix(),
+                     source_sha256=output_hash, local_sha256=output_hash)
+        catalog['generated_at'] = datetime.now().astimezone().isoformat(timespec='seconds')
+        write_checked(catalog_path, (json.dumps(catalog, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+        _write_local_catalog_index(catalog, index_path)
+    except Exception:
+        if lookdir.is_dir():
+            for path in list(lookdir.rglob('*'))[::-1]:
+                if path.is_file():
+                    path.unlink(missing_ok=True)
+                elif path.is_dir():
+                    try:
+                        path.rmdir()
+                    except OSError:
+                        pass
             try:
-                count,backup=add_builtin_looks(card,identity)
-                reload();state.set(f'已添加 {count} 款内置风格。'+(f'目录备份：{backup}' if backup else ''))
-            except (OSError,ValueError,KeyError) as exc:
-                state.set('添加失败：'+str(exc))
-        builtin_button=ttk.Button(actions,text='添加内置风格',command=builtin)
-        builtin_button.pack(side='left',padx=(8,0))
-        close_button = ttk.Button(actions, text='关闭', command=window.destroy)
-        close_button.pack(side='right')
-        def begin():
-            filename = filedialog.askopenfilename(parent=window, title='选择 sRGB 3D LUT', filetypes=[('3D LUT', '*.cube')])
-            if not filename: return
-            name = simpledialog.askstring('风格名称', '输入相机中显示的名称：', initialvalue=Path(filename).stem, parent=window)
-            if name is None: return
-            button.configure(state='disabled'); rename_button.configure(state='disabled'); close_button.configure(state='disabled'); state.set('正在编译 LUT，请稍候……')
-            builtin_button.configure(state='disabled')
-            window.protocol('WM_DELETE_WINDOW', lambda: None)
-            def work():
-                try:
-                    key, backup = import_cube(card, identity, Path(filename), name)
-                    window.after(0, lambda: done(f'已导入 {key}。备份：{backup}', True))
-                except Exception as exc:
-                    msg = str(exc)
-                    window.after(0, lambda: done('导入失败：' + msg, False))
-            threading.Thread(target=work, daemon=True).start()
-        def done(text, success):
-            window.protocol('WM_DELETE_WINDOW', window.destroy); button.configure(state='normal'); rename_button.configure(state='normal'); close_button.configure(state='normal'); state.set(text)
-            builtin_button.configure(state='normal')
-            if success: reload()
-        window.protocol('WM_DELETE_WINDOW', window.destroy)
+                lookdir.rmdir()
+            except OSError:
+                pass
+        for path in (backup / key).rglob('*') if (backup / key).is_dir() else ():
+            if path.is_file():
+                target = lookdir / path.relative_to(backup / key)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                write_checked(target, path.read_bytes())
+        if old_cube_bytes is not None:
+            write_checked(old_cube, old_cube_bytes)
+        if target_cube != old_cube:
+            target_cube.unlink(missing_ok=True)
+        write_checked(catalog_path, catalog_raw)
+        if index_raw is None:
+            index_path.unlink(missing_ok=True)
+        else:
+            write_checked(index_path, index_raw)
+        raise
+    return {'id': key, 'path': target_cube, 'backup': backup}
 
 
-if __name__ == '__main__':
+def create_blended_look(card, identity, source_a, source_b, amount_b, label,
+                        reference_image=None):
+    """Atomically add a camera-ready blend with editable recipe and snapshots."""
+    label = _valid_blend_label(label)
+    a_path, a_metadata = _blend_source(card, source_a)
+    b_path, b_metadata = _blend_source(card, source_b)
+    baseline_path = safe_path(card, 'nx300m-mod/looks/nx300-adjust-base/table-stock3d.d4lut')
+    if not baseline_path.is_file():
+        raise ValueError('卡内缺少原厂 3D 基准表，不能生成可用的 Still 组合表。')
+    baseline = baseline_path.read_bytes()
+    if len(baseline) != 4380 or checksum(baseline) != '8e90e5a7528928585c86e4fe7e74d689ed96abd6cbb37f94bce234ddca09a07a':
+        raise ValueError('原厂组合表不匹配，不能生成混合风格。')
+    words = struct.unpack('<2190H', baseline)
+    if any(value > 1023 for value in words) or any(words[i] for i in (729, 1459, 2189)):
+        raise ValueError('原厂组合表格式错误。')
+    original, rows = catalog(card)
+    if len(rows) >= 255:
+        raise ValueError('风格列表已满，无法继续创建混合风格。')
+    key = 'blend-' + uuid.uuid4().hex[:16]
+    files, metadata = _build_blend_package(
+        a_path, b_path, key, label, float(amount_b),
+        a_metadata.get('id', '__original__'), b_metadata.get('id', '__original__'),
+        reference_image)
+    if volume(str(card)) != identity or catalog(card)[0] != original:
+        raise ValueError('存储卡或风格目录发生变化，请重新操作。')
+    backup = BASE / 'backups' / (
+        datetime.now().strftime('%Y%m%d-%H%M%S') + '-blend-' + uuid.uuid4().hex[:6])
+    backup.mkdir(parents=True)
+    write_checked(backup / 'looks.txt', original)
+    lookdir = safe_path(card, 'nx300m-mod/looks/' + key)
+    if lookdir.exists():
+        raise FileExistsError('混合风格目标已存在：' + key)
+    group_raw, group_state = _read_lut_groups(card, rows)
+    camera_groups_path = safe_path(card, LUT_GROUPS_CAMERA)
+    camera_groups_raw = camera_groups_path.read_bytes() if camera_groups_path.is_file() else None
+    group = next((item for item in group_state['groups'] if item['label'] == '自制'), None)
+    groups_changed = False
+    try:
+        lookdir.mkdir()
+        for relative, data in files.items():
+            target = lookdir / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_checked(target, data)
+            (backup / key / relative).parent.mkdir(parents=True, exist_ok=True)
+            write_checked(backup / key / relative, data)
+        line = (key + '|' + label + '|0|0|0|0|0|0|0\n').encode('utf-8')
+        if volume(str(card)) != identity or catalog(card)[0] != original:
+            raise ValueError('存储卡或风格目录发生变化；混合风格尚未加入目录。')
+        write_checked(safe_path(card, 'nx300m-mod/looks.txt'),
+                      original.rstrip(b'\r\n') + b'\n' + line)
+        if group is None:
+            group = {'id': 'group-' + uuid.uuid4().hex[:12], 'label': '自制'}
+            group_state['groups'].append(group)
+        group_state.setdefault('members', {})[key] = [group['id']]
+        _write_lut_groups(card, identity, group_raw, group_state, 'lut-blend-group')
+        groups_changed = True
+        updated, updated_rows = catalog(card)
+        if updated_rows[-1][:2] != [key, label]:
+            raise OSError('LUT 目录回读不一致。')
+    except Exception:
+        write_checked(safe_path(card, 'nx300m-mod/looks.txt'), original)
+        if groups_changed or group_raw is not None or camera_groups_raw is not None:
+            groups_path = safe_path(card, LUT_GROUPS)
+            if group_raw is None:
+                groups_path.unlink(missing_ok=True)
+            else:
+                write_checked(groups_path, group_raw)
+            if camera_groups_raw is None:
+                camera_groups_path.unlink(missing_ok=True)
+            else:
+                write_checked(camera_groups_path, camera_groups_raw)
+        shutil.rmtree(lookdir, ignore_errors=True)
+        raise
+    try:
+        local_repository = _save_blend_to_local_repository(files, metadata, key, label)
+    except Exception as error:
+        local_repository = {'error': str(error)}
+    return {'id': key, 'label': label, 'backup': backup, 'recipe': metadata['blend_recipe'],
+            'group': group, 'local_repository': local_repository}
+
+
+def update_blended_look(card, identity, key, amount_b, label, reference_image=None):
+    """Rebuild a saved blend from its snapshots and replace its runtime files."""
+    label = _valid_blend_label(label)
+    directory = safe_path(card, 'nx300m-mod/looks/' + key)
+    recipe_path = directory / 'blend.json'
+    metadata_path = directory / 'look.json'
+    if not recipe_path.is_file() or not metadata_path.is_file():
+        raise ValueError('该 LUT 没有可编辑的混合配方。')
+    recipe = json.loads(recipe_path.read_text(encoding='utf-8'))
+    if recipe.get('algorithm') != 'linear-srgb-output-v1':
+        raise ValueError('混合算法版本不受支持。')
+    a_snapshot = directory / recipe.get('a', {}).get('snapshot', 'sources/a.cube')
+    b_snapshot = directory / recipe.get('b', {}).get('snapshot', 'sources/b.cube')
+    files, metadata = _build_blend_package(
+        a_snapshot, b_snapshot, key, label, float(amount_b),
+        recipe.get('a', {}).get('id', 'original'),
+        recipe.get('b', {}).get('id', 'original'), reference_image)
+    metadata['created_at'] = json.loads(metadata_path.read_text(encoding='utf-8')).get(
+        'created_at', datetime.now().isoformat(timespec='seconds'))
+    metadata['updated_at'] = datetime.now().isoformat(timespec='seconds')
+    files['look.json'] = (json.dumps(metadata, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+    original, rows = catalog(card)
+    index = next((i for i, row in enumerate(rows) if row[0] == key), None)
+    if index is None:
+        raise ValueError('混合风格已不在 LUT 目录中。')
+    if volume(str(card)) != identity:
+        raise ValueError('存储卡信息已变化。')
+    backup = BASE / 'backups' / (
+        datetime.now().strftime('%Y%m%d-%H%M%S') + '-blend-edit-' + uuid.uuid4().hex[:6])
+    backup.mkdir(parents=True)
+    write_checked(backup / 'looks.txt', original)
+    for path in directory.rglob('*'):
+        if path.is_file():
+            target = backup / key / path.relative_to(directory)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_checked(target, path.read_bytes())
+    old_files = {path.relative_to(directory).as_posix(): path.read_bytes()
+                 for path in directory.rglob('*') if path.is_file()}
+    try:
+        for relative, data in files.items():
+            target = directory / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_checked(target, data)
+        rows[index][1] = label
+        write_checked(safe_path(card, 'nx300m-mod/looks.txt'),
+                      ('\n'.join('|'.join(row) for row in rows) + '\n').encode('utf-8'))
+    except Exception:
+        for relative, data in old_files.items():
+            write_checked(directory / relative, data)
+        write_checked(safe_path(card, 'nx300m-mod/looks.txt'), original)
+        raise
+    try:
+        local_repository = _update_local_blend_repository(files, metadata, key, label)
+    except Exception as error:
+        local_repository = {'error': str(error)}
+    return {'id': key, 'label': label, 'backup': backup, 'recipe': metadata['blend_recipe'],
+            'local_repository': local_repository}
+
+
+def delete_look(card, identity, key):
+    original, rows = catalog(card)
+    if key == 'nx300-adjust-base':
+        raise ValueError('原图微调是基准项，不能删除。')
+    match = next((row for row in rows if row[0] == key), None)
+    if match is None:
+        raise ValueError('风格已不存在，请刷新列表。')
+    lookdir = safe_path(card, 'nx300m-mod/looks/' + key)
+    if not lookdir.is_dir():
+        raise ValueError('风格目录缺失，已停止修改目录。')
+    groups_original, groups_state = _read_lut_groups(card, rows)
+    camera_group_path = safe_path(card, LUT_GROUPS_CAMERA)
+    camera_groups_original = (
+        camera_group_path.read_bytes() if camera_group_path.is_file() else None)
+    groups_replacement = None
+    if key in groups_state['members']:
+        del groups_state['members'][key]
+        groups_replacement = groups_state
+    backup = BASE / 'backups' / (datetime.now().strftime('%Y%m%d-%H%M%S') + '-lut-delete-' + uuid.uuid4().hex[:6])
+    backup.mkdir(parents=True)
+    shutil.copytree(lookdir, backup / key)
+    write_checked(backup / 'looks.txt', original)
+    if groups_original is not None:
+        write_checked(backup / 'lut-groups.json', groups_original)
+        if camera_groups_original is not None:
+            write_checked(backup / 'lut-groups.txt', camera_groups_original)
+    remaining = [row for row in rows if row[0] != key]
+    replacement = ('\n'.join('|'.join(row) for row in remaining) + '\n').encode('utf-8')
+    if volume(str(card)) != identity or catalog(card)[0] != original:
+        raise ValueError('存储卡或风格目录发生变化，请重新操作。')
+    favorites = favorite_keys(card)
+    favorite_path = safe_path(card, 'nx300m-mod/.state/lut-favorites')
+    favorite_original = favorite_path.read_bytes() if favorite_path.is_file() else None
+    favorite_written = False
+    catalog_written = False
+    groups_written = False
+    camera_groups_written = False
+    try:
+        write_checked(safe_path(card, 'nx300m-mod/looks.txt'), replacement)
+        catalog_written = True
+        if catalog(card)[1] != remaining:
+            raise OSError('LUT 目录回读不一致。')
+        if groups_replacement is not None:
+            group_path = safe_path(card, LUT_GROUPS)
+            group_path.parent.mkdir(parents=True, exist_ok=True)
+            write_checked(
+                group_path,
+                (json.dumps(groups_replacement, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+            groups_written = True
+            write_checked(camera_group_path, _lut_group_camera_data(groups_replacement))
+            camera_groups_written = True
+            if lut_groups(card) != groups_replacement:
+                raise OSError('LUT 分组回读不一致。')
+            if camera_group_path.read_bytes() != _lut_group_camera_data(groups_replacement):
+                raise OSError('相机端 LUT 分组回读不一致。')
+        if key in favorites:
+            favorites.discard(key)
+            favorite_path.parent.mkdir(parents=True, exist_ok=True)
+            write_checked(favorite_path,
+                          ''.join(row[0] + '\n' for row in remaining
+                                  if row[0] in favorites).encode('ascii'))
+            favorite_written = True
+            if key in favorite_keys(card):
+                raise OSError('收藏状态回读不一致。')
+    except Exception:
+        if catalog_written:
+            write_checked(safe_path(card, 'nx300m-mod/looks.txt'), original)
+        if groups_written:
+            write_checked(safe_path(card, LUT_GROUPS), groups_original or b'')
+        if camera_groups_written:
+            if camera_groups_original is None:
+                camera_group_path.unlink(missing_ok=True)
+            else:
+                write_checked(camera_group_path, camera_groups_original)
+        if favorite_written:
+            write_checked(favorite_path, favorite_original or b'')
+        raise
+    try:
+        shutil.rmtree(lookdir)
+    except OSError as error:
+        raise OSError(
+            f'已从相机列表移除，但旧目录未能完整清理；完整备份保存在 {backup}。{error}') from error
+    return backup
+
+
+def main():
     if len(sys.argv) == 3 and sys.argv[1] == '--check-converter':
         from cube_to_d4 import compile_cube
         values = [(r, g, b) for b in range(2) for g in range(2) for r in range(2)]
         result = compile_cube((2, (0.,)*3, (1.,)*3, values), method='fit')
         Path(sys.argv[2]).write_text(str(len(result)), encoding='ascii')
-    else:
-        App().mainloop()
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == '--ui-smoke-test':
+        from PySide6.QtCore import QTimer
+        from PySide6.QtGui import QFontDatabase
+        from nx300m_client_ui import create_app
+        app, window = create_app(sys.modules[__name__])
+        font = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'Fonts/msyh.ttc'
+        if font.is_file():
+            QFontDatabase.addApplicationFont(str(font))
+        window.show()
+        def finish():
+            if not window.grab().save(sys.argv[2]):
+                app.exit(2)
+                return
+            app.quit()
+        QTimer.singleShot(1200, finish)
+        return app.exec()
+    from nx300m_client_ui import create_app
+    app, window = create_app(sys.modules[__name__])
+    window.show()
+    return app.exec()
+if __name__ == '__main__':
+    raise SystemExit(main())

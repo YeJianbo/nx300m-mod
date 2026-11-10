@@ -1,0 +1,30 @@
+NX300M MOD Windows LUT client third-party notices
+
+PySide6 6.11.3
+License: LGPL-3.0-only
+Project: https://pypi.org/project/PySide6/
+Use: dynamically loaded desktop UI runtime; the application is distributed
+with the PySide6 and Qt shared libraries kept separately relinkable.
+
+Qt 6.11.3
+License: LGPL-3.0-only for the Qt modules used by this application
+Project: https://www.qt.io/
+Use: windowing, rendering, widgets, image handling, and event loop.
+
+hestela/lut-previewer
+Copyright (c) 2026 Henry Estela
+License: MIT
+Project: https://github.com/hestela/lut-previewer
+Use: the before/after photo comparison, draggable split, zoom, pan, and
+intensity-preview interaction were adapted for this application.
+
+OwenWhw/CUBE-to-XMP
+Copyright (c) 2026 魏浩文 (Claw)
+License: MIT
+Project: https://github.com/OwenWhw/CUBE-to-XMP
+Use: LUT interchange parsing, local-library workflow, and batch-import
+structure were cross-checked and adapted for this application.
+
+The complete license texts are in the LICENSES directory. LUT artwork and
+photographic styles remain subject to the rights of their respective authors;
+the software licenses above do not grant redistribution rights for LUT files.

@@ -1,5 +1,7 @@
 # 曝光控制功能
 
+2026-11-08 的免刷机接口复核见 [运行时控制接口逆向](RUNTIME_CONTROL_INTERFACES.md)，包含 Ecore 正常线程入口候选、IQ 参数 37 消费路径及 A/P 程序线限制；静态定位不表示当前实体会话已经接入。
+
 实时 ISO 显示已按用户修订取消。当前桥接原厂 ISO 步长、ISO 扩展和 Auto ISO 上限的 UserData 设置；自动曝光最快快门限制另由 [SHUTTER_LIMIT.md](SHUTTER_LIMIT.md) 所述模块提供。
 
 ## 原厂编码与证据

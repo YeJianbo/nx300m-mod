@@ -28,6 +28,7 @@ PERSISTENT_HOOKS = {
 }
 LAUNCH_PROFILES = {
     'stock': [],
+    'settings': ['exposure_controls.so', 'camera_firmware_mod.so'],
     'services': ['service-loader.so'],
     'controls': ['exposure_controls.so', 'shutter_limit.so', 'lcd-capture.so',
                  'service-loader.so', 'camera_firmware_mod.so'],

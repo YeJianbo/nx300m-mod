@@ -1,0 +1,14 @@
+Runtime dependency license inventory
+
+The accompanying dependency-license-review.csv inventories 125 coordinates
+resolved from the app runtime dependency graph. All rows were identified as
+Apache License 2.0 from cached or official upstream Maven POM metadata, except
+com.google.guava:listenablefuture:1.0, whose source file header identifies
+Apache License 2.0 while its POM has no license element. The complete Apache
+License 2.0 text is included as Apache-2.0.txt.
+
+The coordinate count is not a count of libraries embedded in the APK. It can
+include BOMs and multiplatform metadata aliases. This inventory records license
+evidence; it does not assert that every coordinate contributes a separate
+binary to the package. Directly vendored components have their own notices in
+this directory. LibRaw source and license details are in LibRaw-SOURCE.txt.

@@ -1,0 +1,18 @@
+{
+  "schema": "cxo-project-link-v2",
+  "project_name": "CXO FilmPack",
+  "research_dir": "/Users/chenyixuan/ReverseWork/DxOFilmPack",
+  "project_dir": "/Users/chenyixuan/AndroidStudioProjects/CXO FilmPack",
+  "product_version": "1.0.1",
+  "product_version_code": 33,
+  "current_distribution_scope": "closed photography and technology group; single stable line signed with the project's long-term key; no self-imposed release gates",
+  "canonical_product_data": "core/local-data",
+  "research_project_map": "/Users/chenyixuan/ReverseWork/DxOFilmPack/android-project.json",
+  "gradle_modules": {
+    "app": "Android UI, import/export orchestration, RAW/HEIF pipeline, native bridges and packaged assets",
+    "core": "platform-independent film, RAW, grain, color management and post-processing algorithms; product data in core/local-data",
+    "android-adapter": "Android Bitmap, metadata and platform image adapters with instrumentation tests",
+    "glass-catalog": "Backdrop/LiquidGlass UI components and upstream provenance"
+  },
+  "build_command": "./gradlew :core:check :app:assembleStable :app:lintStable"
+}

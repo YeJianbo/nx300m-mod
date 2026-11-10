@@ -85,6 +85,38 @@ int main(void){
         lut_origin_selected==1&&lut_origin_strength==100&&nx_tune_zero(&lut_origin_tune)&&!lut_matches_applied());
     result("active_look_visible_despite_stale_group",lut_category==2&&lut_in_group(selected)&&lut_tab_start==-1);
 
+    init_case();
+    put(".state/lut-groups.txt","NXUTG1\n"
+        "G|group-000000000001|常用\n"
+        "G|group-000000000002|旅行\n"
+        "L|nx300-fuji-test|group-000000000001|group-000000000002\n"
+        "L|nx300-hard-mono|group-000000000001\n");
+    current("nx300-fuji-test");put(".state/lut-category","group-000000000002\n");enter();
+    result("custom_groups_load_multi_membership_and_restore",lut_custom_group_count==2&&
+        lut_category==NX_LUT_CUSTOM_GROUP_BASE+1&&lut_in_group(1)&&
+        lut_category_count[NX_LUT_CUSTOM_GROUP_BASE]==2&&lut_category_count[NX_LUT_CUSTOM_GROUP_BASE+1]==1&&
+        lut_category_available(NX_LUT_CUSTOM_GROUP_BASE+1));
+    lut_set_category(NX_LUT_CUSTOM_GROUP_BASE);choose(2);
+    lut_set_category(NX_LUT_CUSTOM_GROUP_BASE+1);
+    result("custom_group_filter_excludes_nonmember",lut_category==NX_LUT_CUSTOM_GROUP_BASE+1&&
+        selected==1&&lut_in_group(1));
+    lut_set_category(NX_LUT_CUSTOM_GROUP_BASE);lut_nav_dirty=1;lut_save_navigation();
+    char category_saved[64]="";char category_path[1024];
+    snprintf(category_path,sizeof category_path,"%s/.state/lut-category",root);
+    FILE *category_file=fopen(category_path,"r");
+    if(category_file){fgets(category_saved,sizeof category_saved,category_file);fclose(category_file);}
+    category_saved[strcspn(category_saved,"\r\n")]=0;
+    result("custom_group_saved_by_stable_id",!strcmp(category_saved,"group-000000000001")&&
+        lut_custom_group_mask[1]&3U&&lut_custom_group_mask[2]&1U);
+    result("explicit_groups_replace_automatic_brand_categories",lut_category_count[2]==0&&lut_category_count[8]==0&&
+        !lut_category_available(2)&&!lut_category_available(8)&&!lut_item_in_category(1,2)&&!lut_item_in_category(2,8));
+    put(".state/lut-category","2\n");enter();
+    result("stale_brand_page_restores_assigned_group",lut_category==NX_LUT_CUSTOM_GROUP_BASE&&lut_in_group(selected));
+    put(".state/lut-groups.txt","NXUTG1\nG|group-000000000001|常用\nL|nx300-fuji-test|group-000000000001\n");
+    enter();
+    result("unassigned_look_keeps_automatic_category",lut_category_count[2]==0&&lut_category_count[8]==1&&
+        lut_item_in_category(2,8)&&lut_category_count[NX_LUT_CUSTOM_GROUP_BASE]==1);
+
     init_case();current("nx300-hard-mono");put(".state/lut-category","0\n");enter();
     result("compatible_group_and_cursor_restored",selected==2&&lut_category==0&&lut_list_cursor==1);
 
@@ -140,7 +172,7 @@ work/qemu/qemu-arm-static -L "$rf" {shlex.quote(wsl_path(out/'probe.arm'))}
     (out/'stdout.log').write_text(p.stdout,encoding='utf-8');(out/'stderr.log').write_text(p.stderr,encoding='utf-8')
     checks=[json.loads(s[6:]) for s in p.stdout.splitlines() if s.startswith('CHECK ')]
     report=dict(scope='Production ARM UI logic; redirected selection files; no X server/ISP/card',exit_code=p.returncode,
-        checks=checks,passed=p.returncode==0 and len(checks)==16 and all(c['passed'] for c in checks),
+        checks=checks,passed=p.returncode==0 and len(checks)==22 and all(c['passed'] for c in checks),
         source_sha256={s:hashlib.sha256((ROOT/s).read_bytes()).hexdigest() for s in ('mod/metol/nxui.c','mod/metol/nxui_lut_panel.h','mod/metol/lut_tune.h','mod/metol/lut_tune_store.h')})
     (out/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(report,ensure_ascii=False,indent=2))

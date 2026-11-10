@@ -98,6 +98,22 @@ class NxBeaconParserTest {
 class CameraDiscoveryTest {
 
     @Test
+    fun `Android socket binding failure is a phone network error`() {
+        val error = NxException("请求失败", java.net.SocketException(
+            "Binding socket to network 512 failed: Operation not permitted"))
+        val message = CameraDiscovery.networkBindingFailure(error).orEmpty()
+        assertTrue(message.contains("手机网络绑定失败"))
+        assertTrue(message.contains("VPN"))
+        assertFalse(message.contains("相机服务无响应"))
+    }
+
+    @Test
+    fun `camera timeout is not relabeled as a VPN failure`() {
+        val error = NxException("请求失败", java.net.SocketTimeoutException("Read timed out"))
+        assertEquals(null, CameraDiscovery.networkBindingFailure(error))
+    }
+
+    @Test
     fun `相机接路由器时 同网段候选 必须覆盖 DHCP 池里的随机地址`() {
         // 真机：PC 192.168.5.36，网关 192.168.5.1，相机 192.168.5.39
         val cands = CameraDiscovery.candidatesForTest(

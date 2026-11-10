@@ -24,7 +24,7 @@ feedback() {
     note "lut cycle feedback: $text"
     # Feedback is read-only: do not reload the hook or overwrite panel backup.
     if ! NXUI_LOCK_TAG=-flash NXUI_LUT_NOTICE="$text" NX300M_MOD_SOURCE_ROOT="$ROOT" \
-        /bin/sh "$ROOT/lut-panel.sh" --dry-run --lifetime-ms 1500; then
+        /bin/sh "$ROOT/lut-panel.sh" --dry-run --lifetime-ms 650; then
         note 'lut cycle: feedback panel unavailable'
         printf 'NX300M LUT: %s (feedback panel unavailable)\n' "$text" >&2
     fi

@@ -23,7 +23,7 @@ from elftools.elf.elffile import ELFFile
 PROJECT = Path(__file__).resolve().parents[1]
 OUTPUT = PROJECT / 'outputs/deployment/sd-bundle'
 SCRIPTS = ('common.sh', 'start.sh', 'stop.sh', 'service.sh', 'panel.sh', 'quickshare-panel.sh',
-           'ram-start.sh', 'mfw-ram-stage.sh', 'firmware-mod-restore.sh')
+           'ram-start.sh', 'mfw-ram-stage.sh', 'firmware-mod-restore.sh', 'mode-dial-restore.sh')
 RAM_SCRIPTS = {'ram-start.sh': 'mfw/autoexec-services.sh', 'mfw-ram-stage.sh': 'mfw/ram-stage.sh'}
 SWITCH_SCRIPTS = (
     'toggle_dial_lock.sh', 'off_toggle_dial_lock.sh',
@@ -34,10 +34,25 @@ MENUS = ('gui_ini.NX300M', 'gui_modes.NX300M', 'gui_looks.NX300M', 'gui_controls
 PANEL_BINARIES = ('nxui.arm', 'recipe_engine.arm', 'lut_engine.arm')
 PANEL_FONT = 'usr/share/fonts/SDIC_GP_US_20120720.ttf'
 
+# Short Custom-key cycling is deliberately smaller than the full in-panel
+# catalogue. Favorites still take priority when the user creates them.
+CYCLE_IDS = (
+    'nx300-fuji-classic-chrome-cxo50', 'nx300-fuji-astia-cxo50',
+    'nx300-fuji-eterna-cxo40', 'nx300-fuji-classic-negative-cxo60',
+    'blend-metol-portra400-cxo60', 'blend-metol-ektachrome-cxo75',
+    'metol-trix400-cxo50', 'metol-velvia50-cxo80',
+    'cxo-digital-fujirealaace', 'panasonic-lumix-skin-tone-boost',
+    'blend-cxo-teal-orange-cxo60', 'panasonic-lumix-color-harmony',
+)
 
-def bundle_looks(root, *, method=DEFAULT_METHOD, complete=False):
+
+def bundle_looks(root, *, method=DEFAULT_METHOD, complete=False, include_ids=None):
     library = LookLibrary()
-    looks = camera_looks(library, complete=complete)
+    if include_ids is None:
+        looks = camera_looks(library, complete=complete)
+    else:
+        ordered = list(dict.fromkeys(include_ids))
+        looks = [library.get(key) for key in ordered]
     if len(looks) > 256:
         raise ValueError('Native LUT catalog supports at most 256 entries')
     rows, ids = [], set()
@@ -78,10 +93,11 @@ def bundle_looks(root, *, method=DEFAULT_METHOD, complete=False):
         rows.append('|'.join([key, label, *['0'] * 7]) + '\n')
     (root / 'looks.txt').write_text(''.join(rows), encoding='utf-8', newline='\n')
     if complete:
-        everyday={look['id'] for look in camera_looks(library)}
-        # Add the requested Panasonic style to the short zero-UI cycle too.
-        everyday.add('panasonic-classic-neo-look')
-        (root/'looks-cycle.txt').write_text(''.join(row for row in rows if row.split('|',1)[0] in everyday),encoding='utf-8',newline='\n')
+        cycle=set(CYCLE_IDS)
+        selected=[row for row in rows if row.split('|',1)[0] in cycle]
+        if not selected:
+            raise ValueError('Short LUT cycle has no deployed entries')
+        (root/'looks-cycle.txt').write_text(''.join(selected),encoding='utf-8',newline='\n')
     return sorted(ids)
 
 
@@ -133,6 +149,7 @@ def build(remote=None, *, lut_method=DEFAULT_METHOD):
     quickshare = PROJECT / 'outputs/quickshare/nx-quickshare-armv7'
     web = PROJECT / 'outputs/metol/remote/web_root'
     binaries = (remote, quickshare, PROJECT / 'outputs/quickshare/gallery/quickshare-panel.arm',
+                PROJECT / 'outputs/controls/mode-dial-x11/mode_dial_x11.arm',
                 *(PROJECT / 'outputs/metol' / name for name in PANEL_BINARIES))
     native_dependencies = {binary.name: arm_elf(binary) for binary in binaries}
     if not (web / 'index.html').is_file():

@@ -1,0 +1,21 @@
+{
+  "schema": "cxo-dynamic-direct-hsv-review-v1",
+  "context": {
+    "feature5_enabled": false,
+    "jpeg_tone_mode": 0,
+    "runtime_bw": false,
+    "curve_kind": 0,
+    "intensity": 100,
+    "pipeline": "WideGamut / no-grain / fixed entry + provider WB + HSV"
+  },
+  "production_catalog_entries_added": 0,
+  "presets": [
+    {"id": "ColorModeArgentiqueAstia", "rendering_type": 1000, "provider": "Astia", "provider_gains": [1.0, 1.0, 1.0], "asset": "ColorModeArgentiqueAstia.cxohsv", "sha256": "ef4ef839cb9d1445b83469a5edab83dc5d1452534fad5411036066753c61832a"},
+    {"id": "ColorModeArgentiqueProvia", "rendering_type": 1001, "provider": "Provia", "provider_gains": [1.0, 1.0, 1.0], "asset": "ColorModeArgentiqueProvia.cxohsv", "sha256": "0803e103322c0e9d69018257209ca531de47b31b5e6bacf2fae3d66ccc733ed6"},
+    {"id": "ColorModeArgentiqueVelvia", "rendering_type": 1002, "provider": "Velvia", "provider_gains": [1.0, 1.0, 1.0], "asset": "ColorModeArgentiqueVelvia.cxohsv", "sha256": "9aef1a8d88beb309ff743c3c72993527282c02ebd07f8aee7fec574618275d9d"},
+    {"id": "ColorModeArgentiqueEkta100VS", "rendering_type": 1003, "provider": "Ekta100VS", "provider_gains": [1.096523404121399, 1.026210904121399, 1.029726505279541], "asset": "ColorModeArgentiqueEkta100VS.cxohsv", "sha256": "6a9970c3326ed5a647b2d093ee9203c42df387b00996a3febe1772047fde49ab"},
+    {"id": "ColorModeArgentiqueKod64", "rendering_type": 1004, "provider": "Kod64", "provider_gains": [1.0369819402694702, 1.0109899044036865, 1.0429127216339111], "asset": "ColorModeArgentiqueKod64.cxohsv", "sha256": "4a565e8179ec91e843a4ba403cc69fdffbe85c275e0465c43af9204a360ea14c"}
+  ],
+  "native_execution": false,
+  "android_execution": false
+}

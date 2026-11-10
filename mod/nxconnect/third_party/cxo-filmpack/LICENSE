@@ -1,0 +1,50 @@
+CXO FilmPack 非商业使用许可 / Non-Commercial License
+Copyright (c) 2026 Macchen
+
+中文
+
+本许可适用于本仓库中由 Macchen 创作并享有著作权的代码、文档及其他材料。
+
+在保留本版权声明和许可文本、注明修改内容，并继续以本许可分发衍生材料的
+条件下，允许个人或组织为非商业目的使用、复制、研究、修改和分发上述材料。
+
+未经著作权人事先书面许可，不得将上述材料或其衍生作品用于商业目的，包括
+销售、付费分发、收费服务、广告变现、商业产品集成或企业内部商业运营。
+商业授权请联系著作权人另行协商。
+
+本许可不授予第三方代码、照片、字体、商标、胶片数据、颗粒或其他资源的
+额外权利。第三方材料继续适用其各自的许可和权利声明；本许可不改变或限制
+这些材料原有许可授予的权利。详见 THIRD_PARTY_NOTICES、各依赖目录和文件头。
+本许可亦不表示本项目获得 DxO 或其他品牌的官方授权或认可。
+
+本软件按“现状”提供，不附带任何明示或默示保证。在适用法律允许的范围内，
+著作权人不对使用本软件造成的损失承担责任。
+
+English
+
+This license applies to code, documentation and other materials authored and
+copyrighted by Macchen in this repository.
+
+You may use, copy, study, modify and redistribute those materials for
+non-commercial purposes, provided that you retain this copyright notice and
+license, identify your modifications, and distribute derivative materials
+under the same license.
+
+Commercial use requires prior written permission from the copyright holder.
+Commercial use includes sale, paid distribution, paid services, advertising
+monetization, integration into commercial products, and internal business
+operations. Contact the copyright holder to discuss commercial permission.
+
+This license grants no additional rights to third-party code, photographs,
+fonts, trademarks, film data, grain or other assets. Those materials remain
+subject to their own licenses and rights notices. This license does not alter
+or restrict rights granted under those separate licenses. See
+THIRD_PARTY_NOTICES, dependency directories and individual file headers.
+It does not imply authorization or endorsement by DxO or other brands.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR
+IMPLIED. TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE COPYRIGHT HOLDER SHALL
+NOT BE LIABLE FOR DAMAGES ARISING FROM USE OF THE SOFTWARE.
+
+中英文含义不一致时，以中文为准。
+If the two language versions differ, the Chinese version prevails.

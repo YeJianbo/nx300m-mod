@@ -17,7 +17,7 @@ report = json.loads((checked / 'report.json').read_text(encoding='utf-8'))
 assert report['passed'] and report['abi'] == 7
 assert report['default_preview_enables_session_with_diagnostics_off']
 payload = FIRST / 'payload/nx300m-mod'
-assert (payload / 'smartfilter-preview.sh').read_bytes() == (checked / 'source-files/smartfilter-live-preview.sh').read_bytes()
+assert (payload / 'smartfilter-preview.sh').read_bytes() == (ROOT / 'mod/deployment/mfw/smartfilter-live-preview.sh').read_bytes()
 assert (payload / 'ipcs-diagnostic/lib/smartfilter_ram.bin').read_bytes() == (checked / 'source-files/smartfilter_ram.bin').read_bytes()
 broken = {name: (FIRST / 'payload' / name).read_bytes()
           for name in json.loads((FIRST / 'manifest.json').read_text(encoding='utf-8'))['files']}

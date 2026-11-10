@@ -17,6 +17,7 @@ val buildStamp: String = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(
 android {
     namespace = "com.nxwa.nxconnect"
     compileSdk = 35
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.nxwa.nxconnect"
@@ -24,8 +25,20 @@ android {
         targetSdk = 35
         testInstrumentationRunner = "com.nxwa.nxconnect.GalleryInteractionProbe"
         // 版本规则：<主>.<次>.<修订>；每加一次功能或修一批 bug 就把 versionCode +1
-        versionCode = 83
-        versionName = "0.20.35"
+        versionCode = 90
+        versionName = "0.22.0"
+
+        externalNativeBuild {
+            cmake {
+                arguments += "-DANDROID_STL=c++_static"
+                arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+                arguments += "-DANDROID_WEAK_API_DEFS=ON"
+                cppFlags += "-std=c++17"
+            }
+        }
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+        }
 
         buildConfigField("String", "BUILD_STAMP", "\"$buildStamp\"")
         resValue("string", "build_stamp", "\"$buildStamp\"")
@@ -91,6 +104,13 @@ android {
     buildFeatures {
         viewBinding = true
         buildConfig = true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     testOptions {

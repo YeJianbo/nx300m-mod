@@ -1,0 +1,162 @@
+{
+  "schema": "cxo-provider-bw-conditional-review-v1",
+  "native_pixels_read": false,
+  "fitted_parameters": 0,
+  "production_entries_added": 0,
+  "candidates": [
+    {
+      "id": "ColorModeArgentiqueKodakHIEFiltre",
+      "asset": "ColorModeArgentiqueKodakHIEFiltre.cxohsv",
+      "sha256": "9c4d03b7ab6a8a285f77104d2b805d14c922ec9b5af62ba41a68ffa3bb9287af",
+      "tc": 1,
+      "type_bw": true,
+      "runtime_bw": true,
+      "feature5": false,
+      "wb": 2,
+      "camera_base": 0,
+      "pre_matrix": [
+        [
+          1.0000000579659323,
+          7.753322928127915e-09,
+          1.667511961844781e-09
+        ],
+        [
+          -1.320670489635134e-09,
+          0.9999999986644281,
+          8.341061175087816e-11
+        ],
+        [
+          -1.6771793953651581e-09,
+          6.423973464286803e-09,
+          1.000000083015734
+        ]
+      ],
+      "third_matrix": [
+        [
+          0.9818398952484131,
+          -0.01994297094643116,
+          0.038104116916656494
+        ],
+        [
+          0.015161504969000816,
+          0.9485233426094055,
+          0.036315131932497025
+        ],
+        [
+          0.04963544011116028,
+          0.2318599671125412,
+          0.718505322933197
+        ]
+      ],
+      "composed_curve_sha256": "bc21c936b95c34cbf2cb867a0bdeff947f56c228422628ec55603cc70ccd9b86",
+      "bake": {
+        "first_invalid": 6738,
+        "third_invalid": 1233,
+        "pre_invalid": 0,
+        "post_invalid": 6163,
+        "valid_nodes": 8541,
+        "invalid_nodes": 10023,
+        "total_nodes": 18564
+      },
+      "repair": {
+        "range_first": 0,
+        "range_last_initial": 9,
+        "full_s5_planes": [
+          0,
+          1
+        ],
+        "range_last_used": 1,
+        "warning_no_full_s5_plane": false,
+        "smoothed_centers": 1628,
+        "filled_s_nodes": 1284,
+        "skip_saturation_clamp": true,
+        "remaining_invalid_h": 0,
+        "nonfinite_components": 0,
+        "source": "Engine0x4bc9ac/0x4bd130 static transcription, not native execution"
+      }
+    },
+    {
+      "id": "ColorModeArgentiqueRolleiIR400",
+      "asset": "ColorModeArgentiqueRolleiIR400.cxohsv",
+      "sha256": "bdc5051f12e1af474d9af3f21f41be8a16c110dcd33f3b7fd0014ef1b8ad76c5",
+      "tc": 1,
+      "type_bw": true,
+      "runtime_bw": true,
+      "feature5": false,
+      "wb": 2,
+      "camera_base": 0,
+      "pre_matrix": [
+        [
+          1.0000000579659323,
+          7.753322928127915e-09,
+          1.667511961844781e-09
+        ],
+        [
+          -1.320670489635134e-09,
+          0.9999999986644281,
+          8.341061175087816e-11
+        ],
+        [
+          -1.6771793953651581e-09,
+          6.423973464286803e-09,
+          1.000000083015734
+        ]
+      ],
+      "third_matrix": [
+        [
+          0.9818398952484131,
+          -0.01994297094643116,
+          0.038104116916656494
+        ],
+        [
+          0.015161504969000816,
+          0.9485233426094055,
+          0.036315131932497025
+        ],
+        [
+          0.04963544011116028,
+          0.2318599671125412,
+          0.718505322933197
+        ]
+      ],
+      "composed_curve_sha256": "bcda5a96af93d58374b67bc9ddd15f82c0e8c039bb580a54c73096ec1be00036",
+      "bake": {
+        "first_invalid": 6738,
+        "third_invalid": 1233,
+        "pre_invalid": 0,
+        "post_invalid": 5655,
+        "valid_nodes": 9131,
+        "invalid_nodes": 9433,
+        "total_nodes": 18564
+      },
+      "repair": {
+        "range_first": 0,
+        "range_last_initial": 9,
+        "full_s5_planes": [
+          0,
+          1,
+          2
+        ],
+        "range_last_used": 2,
+        "warning_no_full_s5_plane": false,
+        "smoothed_centers": 2645,
+        "filled_s_nodes": 1723,
+        "skip_saturation_clamp": true,
+        "remaining_invalid_h": 0,
+        "nonfinite_components": 0,
+        "source": "Engine0x4bc9ac/0x4bd130 static transcription, not native execution"
+      }
+    }
+  ],
+  "sources": {
+    "evidence/core-engine-20261031/dynamic/dynamic-parameters.json": "04c412ac27dfc60a7b65790a4ffa96f5d05aa769858542e345c35dcae6326814",
+    "evidence/runtime-bw-20261101/build_candidates.py": "5b2c4392f674b6339e4e960419958f5d1ec54179116a620ff5b646cf80eb4981",
+    "scripts/shared_hsv_engine.py": "b0a050ba49261261c67283a0bcee4b64dd9b14fee529b642dfe87a484368d31e",
+    "scripts/evaluate_whitebox_candidate.py": "b48fa4c635fb5eccc967bb3a12d82943cbda0ba22443c703b54e9678a4c5fe45"
+  },
+  "catalog_status": "conditional-review-only",
+  "fixed_catalog_entries_added": 0,
+  "native_validation": "evidence/intensity-native-20261101/comparison.json",
+  "runtime_observation": "evidence/runtime-bw-20261101/owned-context-summary.json",
+  "android_execution": false
+}

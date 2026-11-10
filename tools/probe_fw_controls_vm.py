@@ -284,10 +284,10 @@ key KP_Right
 key KP_Right
 key KP_Enter
 /rescue/busybox usleep 300000
-for ceiling in 12800 25600 3200; do
+for ceiling in 12800 25600 3200 6400; do
     key KP_Down; key KP_Down; key KP_Down
     key KP_Enter
-    case $ceiling in 12800) completed=1 ;; 25600) completed=2 ;; 3200) completed=3 ;; esac
+    case $ceiling in 12800) completed=1 ;; 25600) completed=2 ;; 3200) completed=3 ;; 6400) completed=4 ;; esac
     wait_count /perf/pass6.log "$completed"
     [ "$(cat /perf/mod/.state/fw-auto-iso-max)" = "$ceiling" ]
 done
@@ -298,7 +298,7 @@ grep -q 'exposure request .*data=0000003b value=003b0011' /perf/bridge.log
 key Menu; key Menu
 wait "$panel"
 # --- Saved extensions and explicit stock restore all replay through exposure.
-for ceiling in 12800 25600 3200; do
+for ceiling in 12800 25600 3200 6400; do
 printf '%s\n' "$ceiling" > /perf/mod/.state/fw-auto-iso-max
 echo MARK_ISO_RESTORE >> /perf/bridge.log
 NX300M_MOD_ROOT=/perf/mod /bin/sh /perf/mod/firmware-mod-restore.sh
@@ -435,10 +435,10 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
             collect(out,'target-checks.log')
             restore=vm.call('exec','cat /perf/mod/.state/fw-restore.log')['output']
             report.update(scope='Actual ARM UI + stock shell/control client; fixture exposure bridge, no real ISO/hardware',
-                ui_auto_iso_cycle=all('原厂读回 '+raw in pass6 for raw in ('003b0010','003b0011','003b000e')),
-                restore_all_three=all('restored fw-auto-iso-max='+str(n) in restore for n in (12800,25600,3200)),
+                ui_auto_iso_cycle=all('原厂读回 '+raw in pass6 for raw in ('003b0010','003b0011','003b000e','003b000f')),
+                restore_all_four=all('restored fw-auto-iso-max='+str(n) in restore for n in (12800,25600,3200,6400)),
                 abnormal_targets_preserved=(out/'target-checks.log').read_text().count('rc=75 preserved=1')==6)
-            report['passed']=report['ui_auto_iso_cycle'] and report['restore_all_three'] and report['abnormal_targets_preserved']
+            report['passed']=report['ui_auto_iso_cycle'] and report['restore_all_four'] and report['abnormal_targets_preserved']
             return
         report.update(
             ui_lock_on_off='FW_MOD 拨盘锁定已开启 · 原厂读回 P' in pass1 and 'FW_MOD 拨盘锁定已关闭' in pass1,

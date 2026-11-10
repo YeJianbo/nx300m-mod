@@ -24,7 +24,7 @@ SKIP_NAMES = {'local.properties', 'keystore.properties', 'project.local.json',
 SKIP_TOOLS = {'inspect_codex_sessions.py', 'parse_transcript.py',
               'filter_prompts.py', 'search_iso_keywords.py',
               'inspect_lr_favorites.py'}
-TEXT_EXTS = {'.py', '.c', '.h', '.ld', '.sh', '.ps1', '.md', '.txt', '.json',
+TEXT_EXTS = {'.py', '.c', '.h', '.cc', '.cpp', '.cxx', '.hpp', '.cmake', '.ld', '.sh', '.ps1', '.md', '.txt', '.json',
              '.xml', '.kt', '.java', '.kts', '.properties', '.toml', '.lock',
              '.yaml', '.yml', '.html', '.css', '.js', '.ts', '.proto', '.in',
              '.bat', '.pro', '.nx300m', '.cube', '.d4lut', '.rs'}
@@ -67,7 +67,7 @@ def allowed(p: Path) -> bool:
         if rel.as_posix() == 'mod/nxconnect/README.md':
             return False
     return (p.suffix.lower() in TEXT_EXTS or
-            p.name in {'LICENSE', 'NOTICE', 'jsmn-LICENSE', 'gradlew',
+            p.name in {'LICENSE', 'LICENSE.CDDL', 'LICENSE.LGPL', 'COPYRIGHT', 'NOTICE', 'jsmn-LICENSE', 'gradlew',
                        '.gitignore', '.gitattributes', 'launch-profile',
                        'nx300m-camera-launch'})
 

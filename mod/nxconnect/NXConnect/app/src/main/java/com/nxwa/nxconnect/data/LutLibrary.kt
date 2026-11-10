@@ -13,8 +13,18 @@ import java.util.UUID
 class LutLibrary(context: Context) {
     data class Entry(val id: String, val label: String, val filename: String, val grid: Int,
                      val importedAt: Long, val domainMin: List<Double>, val domainMax: List<Double>)
+    private data class CachedBlendInput(
+        val size: Long,
+        val modified: Long,
+        val input: CardLutLibrary.BlendInput,
+    )
     private val directory = File(context.filesDir, "lut-library").apply { mkdirs() }
     private val index = AtomicFile(File(directory, "index.json"))
+    private val blendInputCache = object : LinkedHashMap<String, CachedBlendInput>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedBlendInput>?): Boolean {
+            return size > 2
+        }
+    }
 
     @Synchronized fun list(): List<Entry> {
         if (!index.baseFile.exists() && !File(directory, "index.json.bak").exists()) return emptyList()
@@ -72,6 +82,7 @@ class LutLibrary(context: Context) {
         val entries = list()
         require(entries.any { it.id == id }) { "LUT 已不存在" }
         save(entries.map { if (it.id == id) it.copy(label = name) else it })
+        blendInputCache.remove(id)
     }
 
     @Synchronized fun delete(id: String) {
@@ -79,6 +90,7 @@ class LutLibrary(context: Context) {
         require(entries.any { it.id == id }) { "LUT 已不存在" }
         save(entries.filterNot { it.id == id })
         File(directory, "$id.cube").delete()
+        blendInputCache.remove(id)
     }
 
     @Synchronized fun move(id: String, direction: Int) {
@@ -98,6 +110,29 @@ class LutLibrary(context: Context) {
     @Synchronized fun source(id: String): File {
         require(list().any { it.id == id }) { "LUT 已不存在" }
         return File(directory, "$id.cube").also { check(it.isFile) { "LUT 原文件已丢失，请重新导入" } }
+    }
+
+    @Synchronized fun blendSources(): List<Entry> = list().filter { entry ->
+        (0..2).all { kotlin.math.abs(entry.domainMin[it]) <= 1e-6 } &&
+            (0..2).all { kotlin.math.abs(entry.domainMax[it] - 1.0) <= 1e-6 } &&
+            File(directory, "${entry.id}.cube").isFile
+    }
+
+    @Synchronized fun preparedBlendInput(id: String): CardLutLibrary.BlendInput {
+        val entry = list().firstOrNull { it.id == id } ?: error("手机 LUT 已不存在")
+        val file = File(directory, "${entry.id}.cube")
+        check(file.isFile) { "LUT 原文件已丢失，请重新导入" }
+        val cached = blendInputCache[id]
+        if (cached != null && cached.size == file.length() && cached.modified == file.lastModified()) {
+            return cached.input
+        }
+        val snapshot = file.readBytes()
+        require(snapshot.size <= 64 * 1024 * 1024) { "LUT 文件不能超过 64 MB" }
+        val data = snapshot.inputStream().reader(Charsets.UTF_8).use(CubeLut::read)
+        CubeLut.requireCanonical(data)
+        return CardLutLibrary.BlendInput("phone:" + entry.id, entry.label, data, snapshot).also { input ->
+            blendInputCache[id] = CachedBlendInput(file.length(), file.lastModified(), input)
+        }
     }
 
     private fun save(entries: List<Entry>) {

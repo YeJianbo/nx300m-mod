@@ -6,7 +6,7 @@ SECTIONS {
     LONG(__data_start) LONG(__blob_end - __data_start)
     LONG(nx_lut_ram_update) LONG(nx_lut_ram_ipcs)
     LONG(nx_lut_ram_config) LONG(196)
-    LONG(nx_lut_ram_contexts) LONG(4720) LONG(8)
+    LONG(nx_lut_ram_contexts) LONG(4732) LONG(8)
     LONG(nx_lut_build_tag) LONG(0) LONG(0)
   }
   .text : { *(.text .text.*) }

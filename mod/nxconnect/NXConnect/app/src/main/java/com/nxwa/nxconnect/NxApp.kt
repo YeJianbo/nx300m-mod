@@ -44,7 +44,7 @@ class NxApp : Application() {
                     prefs.edit().putString("rvf_client_identity", value).apply()
                     value
                 }
-                StockRvfClient(cam.ip, identity, binder = cam.httpBinder)
+                StockRvfClient(cam.ip, identity, binder = cam.httpBinder, log = { log(it) })
             }, log = { log(it) })
         androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
             getSharedPreferences("appearance", 0).getInt("mode", androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM))

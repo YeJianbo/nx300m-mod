@@ -19,7 +19,7 @@ IDENTITY = {'serial': 'FIXTURE', 'label': 'isolated', 'filesystem': 'exFAT'}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', default='v0.1.0-preview.4')
+    parser.add_argument('--version', default='v0.1.0-preview.6')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     checks = []

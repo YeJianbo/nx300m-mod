@@ -1,6 +1,81 @@
 #ifndef NX_LUT_TUNE_CACHE_H
 #define NX_LUT_TUNE_CACHE_H
+#include <dirent.h>
 #include "lut_tune.h"
+/* Issue 11: bounded eviction of composed per-look cache directories. Control
+ * events only, never per frame. Protection: the runtime selection, the
+ * persisted choice and the directory just composed are never evicted; fresh
+ * entries get a one-minute grace so an in-flight compose cannot be removed
+ * under a concurrent reader. Temp compose dirs (.nx-tune-*) are untouched. */
+#define NX_TUNE_CACHE_MAX 24
+static void nx_tune_evict_extract(const char *body,char *out,size_t size) {
+    const char *mark=strstr(body,"/looks/nx-tune-");
+    if(!mark)return;
+    mark+=strlen("/looks/");
+    size_t n=0;
+    while(mark[n]&&mark[n]!='/'&&n+1<size){out[n]=mark[n];n++;}
+    out[n]=0;
+}
+static void nx_tune_cache_evict(const char *root,const char *just_composed_dir) {
+    char looks[768];struct stat st;
+    if(!root||snprintf(looks,sizeof looks,"%s/looks",root)>=(int)sizeof looks)return;
+    char protect[3][32];
+    memset(protect,0,sizeof protect);
+    const char *base=strrchr(just_composed_dir,'/');
+    snprintf(protect[0],sizeof protect[0],"%.24s",base?base+1:"");
+    char body[512];
+    FILE *in=fopen("/var/run/nx300m-lut-selection","r");
+    if(in){size_t n=fread(body,1,sizeof body-1,in);fclose(in);body[n]=0;nx_tune_evict_extract(body,protect[1],sizeof protect[1]);}
+    char choice[768];
+    if(snprintf(choice,sizeof choice,"%s/.state/lut-choice",root)<(int)sizeof choice){
+        in=fopen(choice,"r");
+        if(in){size_t n=fread(body,1,sizeof body-1,in);fclose(in);body[n]=0;nx_tune_evict_extract(body,protect[2],sizeof protect[2]);}
+    }
+    DIR *dir=opendir(looks);
+    if(!dir)return;
+    char names[64][32];long long ages[64];int count=0,fresh=0;
+    long long now=(long long)time(0);
+    struct dirent *entry;
+    while((entry=readdir(dir))&&count<64) {
+        if(strncmp(entry->d_name,"nx-tune-",8))continue;
+        char path[832];
+        if(snprintf(path,sizeof path,"%.767s/%.31s",looks,entry->d_name)>=(int)sizeof path)continue;
+        if(stat(path,&st)||!S_ISDIR(st.st_mode))continue;
+        /* Grace for fresh composes; they still count against the bound so a
+         * rapid burst cannot walk past it, but they are never victims. */
+        if(now-(long long)st.st_mtime<60){fresh++;continue;}
+        snprintf(names[count],sizeof names[0],"%.31s",entry->d_name);
+        ages[count]=(long long)st.st_mtime;count++;
+    }
+    closedir(dir);
+    int remaining=count+fresh;
+    while(remaining>NX_TUNE_CACHE_MAX) {
+        int oldest=-1;
+        for(int i=0;i<count;i++) {
+            if(!names[i][0])continue;
+            int protected_entry=0;
+            for(int p=0;p<3;p++)if(protect[p][0]&&!strcmp(names[i],protect[p]))protected_entry=1;
+            if(protected_entry)continue;
+            if(oldest<0||ages[i]<ages[oldest])oldest=i;
+        }
+        if(oldest<0)break;
+        char victim[832];
+        if(snprintf(victim,sizeof victim,"%.767s/%.31s",looks,names[oldest])>=(int)sizeof victim)break;
+        for(int pass=0;pass<2;pass++) {
+            DIR *v=opendir(victim);if(!v)break;
+            struct dirent *ve;int entries=0;
+            while((ve=readdir(v))) {
+                if(!strcmp(ve->d_name,".")||!strcmp(ve->d_name,".."))continue;
+                char fp[1100];snprintf(fp,sizeof fp,"%.831s/%.255s",victim,ve->d_name);
+                unlink(fp);entries++;
+            }
+            closedir(v);
+            if(!entries)break;
+        }
+        rmdir(victim);
+        names[oldest][0]=0;remaining--;
+    }
+}
 /* The cache key includes both source tables and the output controls. A cache
  * hit is also compared byte for byte, so a hash collision cannot alias looks.
  * All writes finish in a private directory before publishing a selectable path. */
@@ -64,6 +139,7 @@ static inline int nx_tune_cache(const char *id,const struct nx_lut_tune *t,unsig
         snprintf(file,sizeof file,"%s/looks",nx_lut_data_root());fd=open(file,O_RDONLY|O_DIRECTORY);
         if(fd<0)return 4;
         ok=!fsync(fd);close(fd);if(!ok)return 4;
+        nx_tune_cache_evict(nx_lut_data_root(),directory);
     }
     (void)strength;
     int n=snprintf(path,256,"%s/table.d4lut",directory);return n>0&&n<256?0:4;

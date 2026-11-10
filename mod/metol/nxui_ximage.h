@@ -30,6 +30,12 @@ typedef struct XFont {
     unsigned clock;
     struct nx_cpu_glyph glyphs[128][4];
 } XFont;
+struct nx_cpu_box { int left,top,right,bottom; };
+struct nx_cpu_frame { unsigned char *data; size_t size,capacity; };
+struct nx_cpu_record {
+    unsigned span,bytes,type,revision;
+    struct nx_cpu_box clip,bounds;
+};
 typedef struct XSurface {
     Display *dpy;
     int screen, present_failed;
@@ -38,12 +44,16 @@ typedef struct XSurface {
     int rotated_ready, image_valid, force_full;
     unsigned full_uploads, partial_uploads, skipped_uploads;
     unsigned long long uploaded_pixels;
+    unsigned long long raster_pixels;
+    struct nx_cpu_frame previous,current;
+    struct nx_cpu_box damage;
+    uint32_t clear_color;
     uint32_t *pixels;
     XImage *image;
     int left, top, right, bottom;
 } XSurface;
 static struct { Display *dpy; struct nk_context ctx; XSurface *surf; } xlib;
-struct nx_cpu_image { unsigned w,h;const uint32_t *pixels; };
+struct nx_cpu_image { unsigned w,h;const uint32_t *pixels; unsigned revision; };
 
 static int nx_cpu_rune(const char *text, int size, nk_rune *rune) {
     int length = nk_utf_decode(text, rune, size);
@@ -183,12 +193,113 @@ static void nx_cpu_text(XSurface *s, const struct nk_command_text *t) {
     while (offset<t->length) {
         offset+=nx_cpu_rune(t->string+offset,t->length-offset,&rune);
         struct nx_cpu_glyph *glyph=nx_cpu_get_glyph(font,rune);
-        if(glyph->coverage)for (unsigned y=0;y<glyph->h;y++)for (unsigned x=0;x<glyph->w;x++) {
-            unsigned cover=glyph->coverage[(size_t)y*glyph->w+x];
-            if(cover)nx_cpu_pixel(s,pen+glyph->left+x,t->y+font->ascent-glyph->top+y,t->foreground,cover);
-        }
+        int gx=pen+glyph->left,gy=t->y+font->ascent-glyph->top;
+        if(glyph->coverage)for(int y=NK_MAX(s->top-gy,0);y<NK_MIN(s->bottom-gy,(int)glyph->h);y++)
+            for(int x=NK_MAX(s->left-gx,0);x<NK_MIN(s->right-gx,(int)glyph->w);x++) {
+                unsigned cover=glyph->coverage[(size_t)y*glyph->w+x];
+                if(cover)nx_cpu_pixel(s,gx+x,gy+y,t->foreground,cover);
+            }
         pen+=glyph->advance;
     }
+}
+static struct nx_cpu_box nx_cpu_intersect(struct nx_cpu_box a,struct nx_cpu_box b) {
+    return (struct nx_cpu_box){NK_MAX(a.left,b.left),NK_MAX(a.top,b.top),
+                              NK_MIN(a.right,b.right),NK_MIN(a.bottom,b.bottom)};
+}
+static void nx_cpu_damage_add(struct nx_cpu_box *a,struct nx_cpu_box b) {
+    if(b.right<=b.left||b.bottom<=b.top)return;
+    a->left=NK_MIN(a->left,b.left);a->top=NK_MIN(a->top,b.top);
+    a->right=NK_MAX(a->right,b.right);a->bottom=NK_MAX(a->bottom,b.bottom);
+}
+/* Keep owned copies: Nuklear reuses its command storage after nk_clear().
+ * Compare command payloads and effective clips exactly, without pixel hashes.
+ * Repainting the union through every intersecting command preserves overlaps,
+ * removed objects and translucent edges in the original painter order. */
+static struct nx_cpu_box nx_cpu_damage(XSurface *s,struct nk_color clear) {
+    const struct nk_command *cmd;
+    struct nx_cpu_frame *frame=&s->current,*old=&s->previous;
+    struct nx_cpu_box full={0,0,(int)s->w,(int)s->h},clip=full;
+    struct nx_cpu_box damage={(int)s->w,(int)s->h,0,0};
+    size_t previous=0;frame->size=0;
+    uint32_t color=0xff000000u|((uint32_t)clear.r<<16)|((uint32_t)clear.g<<8)|clear.b;
+    int complete=!s->image_valid||s->force_full||s->clear_color!=color;
+    s->clear_color=color;
+    nk_foreach(cmd,&xlib.ctx) {
+        struct nx_cpu_record record;memset(&record,0,sizeof record);
+        record.type=cmd->type;record.clip=clip;
+        size_t bytes=0;struct nx_cpu_box bounds=full;
+        switch(cmd->type) {
+        case NK_COMMAND_NOP:continue;
+        case NK_COMMAND_SCISSOR: {
+            const struct nk_command_scissor *c=(const void *)cmd;
+            clip=nx_cpu_intersect(full,(struct nx_cpu_box){c->x,c->y,c->x+c->w,c->y+c->h});continue;
+        }
+        case NK_COMMAND_RECT_FILLED: {
+            const struct nk_command_rect_filled *c=(const void *)cmd;bytes=sizeof *c;
+            bounds=(struct nx_cpu_box){c->x,c->y,c->x+c->w,c->y+c->h};
+        } break;
+        case NK_COMMAND_RECT: {
+            const struct nk_command_rect *c=(const void *)cmd;bytes=sizeof *c;
+            bounds=(struct nx_cpu_box){c->x,c->y,c->x+c->w,c->y+c->h};
+        } break;
+        case NK_COMMAND_LINE: {
+            const struct nk_command_line *c=(const void *)cmd;bytes=sizeof *c;
+            int pad=NK_MAX(c->line_thickness,1);
+            bounds=(struct nx_cpu_box){NK_MIN(c->begin.x,c->end.x)-pad,NK_MIN(c->begin.y,c->end.y)-pad,
+                                      NK_MAX(c->begin.x,c->end.x)+pad+1,NK_MAX(c->begin.y,c->end.y)+pad+1};
+        } break;
+        case NK_COMMAND_TRIANGLE_FILLED: {
+            const struct nk_command_triangle_filled *c=(const void *)cmd;bytes=sizeof *c;
+            bounds=(struct nx_cpu_box){NK_MIN(c->a.x,NK_MIN(c->b.x,c->c.x)),NK_MIN(c->a.y,NK_MIN(c->b.y,c->c.y)),
+                                      NK_MAX(c->a.x,NK_MAX(c->b.x,c->c.x))+1,NK_MAX(c->a.y,NK_MAX(c->b.y,c->c.y))+1};
+        } break;
+        case NK_COMMAND_TEXT: {
+            const struct nk_command_text *c=(const void *)cmd;
+            bytes=offsetof(struct nk_command_text,string)+(size_t)c->length+1;
+            XFont *font=c->font->userdata.ptr;int pen=c->x,offset=0;nk_rune rune;
+            bounds=(struct nx_cpu_box){(int)s->w,(int)s->h,0,0};
+            while(offset<c->length) {
+                offset+=nx_cpu_rune(c->string+offset,c->length-offset,&rune);
+                struct nx_cpu_glyph *g=nx_cpu_get_glyph(font,rune);
+                if(g->coverage)nx_cpu_damage_add(&bounds,(struct nx_cpu_box){pen+g->left,c->y+font->ascent-g->top,
+                    pen+g->left+(int)g->w,c->y+font->ascent-g->top+(int)g->h});
+                pen+=g->advance;
+            }
+        } break;
+        case NK_COMMAND_IMAGE: {
+            const struct nk_command_image *c=(const void *)cmd;bytes=sizeof *c;
+            const struct nx_cpu_image *image=c->img.handle.ptr;
+            bounds=(struct nx_cpu_box){c->x,c->y,c->x+c->w,c->y+c->h};
+            if(image)record.revision=image->revision;
+        } break;
+        default:complete=1;continue;
+        }
+        record.bounds=nx_cpu_intersect(bounds,clip);
+        record.bytes=(unsigned)(bytes-sizeof *cmd);
+        record.span=(unsigned)((sizeof record+record.bytes+7)&~(size_t)7);
+        if(frame->size+record.span>frame->capacity) {
+            size_t capacity=(frame->size+record.span+16383)&~(size_t)16383;
+            unsigned char *data=realloc(frame->data,capacity);
+            if(!data){old->size=0;frame->size=0;return full;}
+            frame->data=data;frame->capacity=capacity;
+        }
+        unsigned char *data=frame->data+frame->size;
+        memcpy(data,&record,sizeof record);memcpy(data+sizeof record,cmd+1,record.bytes);
+        const struct nx_cpu_record *before=previous<old->size?(const void *)(old->data+previous):NULL;
+        if(!before||before->bytes!=record.bytes||memcmp(before,&record,sizeof record)||
+           memcmp((const unsigned char *)before+sizeof record,cmd+1,record.bytes)) {
+            nx_cpu_damage_add(&damage,record.bounds);
+            if(before)nx_cpu_damage_add(&damage,before->bounds);
+        }
+        if(before)previous+=before->span;
+        frame->size+=record.span;
+    }
+    while(previous<old->size) {
+        const struct nx_cpu_record *before=(const void *)(old->data+previous);
+        nx_cpu_damage_add(&damage,before->bounds);previous+=before->span;
+    }
+    struct nx_cpu_frame swap=*old;*old=*frame;*frame=swap;
+    return complete?full:damage;
 }
 static void nx_cpu_upload(Drawable target, XSurface *s, unsigned int w, unsigned int h, int changes_only) {
     if (s->present_failed) return;
@@ -198,8 +309,10 @@ static void nx_cpu_upload(Drawable target, XSurface *s, unsigned int w, unsigned
     if (!s->rotated_ready) {
         /* A tiled transpose keeps both buffers local on the camera's CPU. */
         if(partial){left=(int)h;top=(int)w;right=bottom=0;}
-        for (unsigned by=0;by<h;by+=16) for (unsigned bx=0;bx<w;bx+=16)
-            for (unsigned y=by;y<NK_MIN(by+16,h);y++) for (unsigned x=bx;x<NK_MIN(bx+16,w);x++) {
+        unsigned x0=partial?(unsigned)s->damage.left:0,y0=partial?(unsigned)s->damage.top:0;
+        unsigned x1=partial?(unsigned)s->damage.right:w,y1=partial?(unsigned)s->damage.bottom:h;
+        for (unsigned by=y0;by<y1;by+=16) for (unsigned bx=x0;bx<x1;bx+=16)
+            for (unsigned y=by;y<NK_MIN(by+16,y1);y++) for (unsigned x=bx;x<NK_MIN(bx+16,x1);x++) {
                 uint32_t value=s->pixels[(size_t)y*w+x];
                 uint32_t *destination=(uint32_t *)(s->image->data+(size_t)x*s->image->bytes_per_line)+h-1-y;
                 if(partial) {
@@ -239,16 +352,22 @@ static struct nk_context *nk_xlib_init(XFont *font, Display *dpy, int screen, Wi
 static void nk_xlib_render(Drawable target, struct nk_color clear) {
     XSurface *s=xlib.surf; const struct nk_command *cmd;
     if (s->present_failed) {nk_clear(&xlib.ctx);return;}
+    s->damage=nx_cpu_damage(s,clear);
+    if(s->damage.right<=s->damage.left||s->damage.bottom<=s->damage.top) {
+        s->skipped_uploads++;nk_clear(&xlib.ctx);return;
+    }
     s->rotated_ready=0;
     uint32_t background=0xff000000u|((uint32_t)clear.r<<16)|((uint32_t)clear.g<<8)|clear.b;
-    for (size_t i=0;i<(size_t)s->w*s->h;i++) s->pixels[i]=background;
-    s->left=s->top=0;s->right=s->w;s->bottom=s->h;
+    for(int y=s->damage.top;y<s->damage.bottom;y++)for(int x=s->damage.left;x<s->damage.right;x++)
+        s->pixels[(size_t)y*s->w+x]=background;
+    s->raster_pixels+=(unsigned)(s->damage.right-s->damage.left)*(unsigned)(s->damage.bottom-s->damage.top);
+    s->left=s->damage.left;s->top=s->damage.top;s->right=s->damage.right;s->bottom=s->damage.bottom;
     nk_foreach(cmd,&xlib.ctx) switch(cmd->type) {
     case NK_COMMAND_NOP: break;
     case NK_COMMAND_SCISSOR: {
         const struct nk_command_scissor *c=(const void *)cmd;
-        s->left=NK_MAX(c->x,0);s->top=NK_MAX(c->y,0);
-        s->right=NK_MIN(c->x+c->w,(int)s->w);s->bottom=NK_MIN(c->y+c->h,(int)s->h);
+        s->left=NK_MAX(c->x,s->damage.left);s->top=NK_MAX(c->y,s->damage.top);
+        s->right=NK_MIN(c->x+c->w,s->damage.right);s->bottom=NK_MIN(c->y+c->h,s->damage.bottom);
     } break;
     case NK_COMMAND_RECT_FILLED: {
         const struct nk_command_rect_filled *c=(const void *)cmd;
@@ -299,7 +418,7 @@ static void nk_xlib_handle_event(Display *dpy, int screen, Window window, XEvent
 }
 static void nk_xlib_shutdown(void) {
     XSurface *s=xlib.surf;
-    if (s) {if(s->image)XDestroyImage(s->image);free(s->pixels);XFreeGC(s->dpy,s->gc);free(s);}
+    if (s) {if(s->image)XDestroyImage(s->image);free(s->pixels);free(s->previous.data);free(s->current.data);XFreeGC(s->dpy,s->gc);free(s);}
     nk_free(&xlib.ctx);memset(&xlib,0,sizeof xlib);
 }
 #endif

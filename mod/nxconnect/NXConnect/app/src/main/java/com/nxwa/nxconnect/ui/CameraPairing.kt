@@ -1,10 +1,13 @@
 package com.nxwa.nxconnect.ui
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
@@ -15,6 +18,7 @@ import android.os.Looper
 import android.widget.EditText
 import android.text.InputType
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -75,8 +79,17 @@ class CameraPairing(private val activity: AppCompatActivity,
         systemSavePending=false
         systemSaveJoin=null
     }
+    @SuppressLint("MissingPermission")
     fun start() {
         if(scanning)return
+        val scanPermissions = buildList {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+            if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
+        if(scanPermissions.any { ContextCompat.checkSelfPermission(activity, it) != PackageManager.PERMISSION_GRANTED }) {
+            status("缺少附近的 WLAN 权限，请重新点连接并允许扫描")
+            return
+        }
         val manager=activity.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         if(!manager.isWifiEnabled) {
             NxDialogBuilder(activity).setTitle("开启 WLAN").setMessage("开启 WLAN 后即可查找相机。")
@@ -155,6 +168,7 @@ class CameraPairing(private val activity: AppCompatActivity,
     }
 
     /** Returns false when the system add-networks entry is unavailable, falling back to the specifier. */
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun joinViaSystemSave(ssid:String,password:String,wpa3:Boolean,currentAttempt:Int): Boolean {
         val suggestion=try {
             WifiNetworkSuggestion.Builder().setSsid(ssid).apply {

@@ -16,33 +16,52 @@ def is_core(name):
 
 
 def deployed_overlay(root):
-    """Only promote the four rebuilt binaries actually read back from the card."""
+    """Promote the latest checked standard runtime into the first-install payload."""
     import lut_build_contract
-    report = json.loads((root / 'outputs/review/2026-11-07-card/deployment-result.json').read_text(encoding='utf-8'))
-    if report['status'] != 'verified' or not report['backend_preserved']:
-        raise ValueError('最新菜单/关闭候选缺少完整写卡回读记录。')
     lut_build_contract.require(root / 'outputs/metol/lut_engine.arm', root / 'outputs/metol/lut-build-report.json')
     lut_build_contract.require(root / 'outputs/deployment/lut-live-loader/lut_live_loader.arm',
                                root / 'outputs/deployment/lut-live-loader/lut-build-report.json')
+    menu = root / 'outputs/metol/nxui.arm'
+    probe = json.loads((root / 'outputs/review/lut-client-ui/camera-group-panel-regression-vm/report.json').read_text(encoding='utf-8'))
+    group_render = json.loads((root / 'outputs/review/lut-client-ui/camera-group-x11-vm/report.json').read_text(encoding='utf-8'))
+    group_logic = json.loads((root / 'outputs/review/lut-client-ui/camera-group-arm-probe/report.json').read_text(encoding='utf-8'))
+    menu_hash = hashlib.sha256(menu.read_bytes()).hexdigest()
+    if not probe.get('passed') or probe.get('menu_sha256') != menu_hash:
+        raise ValueError('最新菜单与通过的私有 VM 回归不一致。')
+    if (not group_render.get('passed') or group_render.get('nxui_sha256') != menu_hash
+            or not group_render.get('visual_pixels_differ')):
+        raise ValueError('最新菜单与通过的自定义分组 X11 回归不一致。')
+    expected_sources = {
+        name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+        for name in ('mod/metol/nxui.c', 'mod/metol/nxui_lut_panel.h')
+    }
+    if not group_logic.get('passed') or any(
+            group_logic.get('source_sha256', {}).get(name) != digest
+            for name, digest in expected_sources.items()):
+        raise ValueError('最新菜单与通过的自定义分组 ARM 逻辑回归不一致。')
     sources = {
-        PREFIX + 'bin/nxui.arm': 'outputs/metol/nxui.arm',
-        PREFIX + 'fn-panel/bin/nxui.arm': 'outputs/metol/nxui.arm',
+        PREFIX + 'bin/nxui.arm': menu,
+        PREFIX + 'fn-panel/bin/nxui.arm': menu,
         PREFIX + 'bin/lut_engine.arm': 'outputs/metol/lut_engine.arm',
         PREFIX + 'bin/lut_live_loader.arm': 'outputs/deployment/lut-live-loader/lut_live_loader.arm',
+        PREFIX + 'lib/lut_ram_blob.bin': 'outputs/deployment/lut-live-loader/lut_ram_blob.bin',
+        PREFIX + 'smartfilter-preview.sh': 'mod/deployment/mfw/smartfilter-live-preview.sh',
+        PREFIX + 'mfw-panel-actions.sh': 'mod/deployment/mfw/panel-actions.sh',
+        PREFIX + 'mfw-services.sh': 'mod/deployment/mfw/services.sh',
     }
     files = {}
     for name, source in sources.items():
-        data = (root / source).read_bytes()
-        expected = report['files'][name]
-        if len(data) != expected['bytes'] or hashlib.sha256(data).hexdigest() != expected['sha256']:
-            raise ValueError('本地构建与已写卡候选不同：' + name)
+        path = source if isinstance(source, Path) else root / source
+        if not path.is_file():
+            raise ValueError('最新运行文件缺失：' + name)
+        data = path.read_bytes()
         files[name] = data
     return files
 
 
-def verify_complete(read, *, allow_stock_wifi=False):
+def verify_complete(read, *, allow_stock_wifi=False, backend_files=None):
     """Check the actual runtime closure, including the separate Wi-Fi entry."""
-    backend = verify_backend(read)
+    backend = verify_backend(read, backend_files)
     wifi = verify_wifi_payload(read, allow_stock=allow_stock_wifi)
     runtime = read(PREFIX + 'runtime-files.list').decode('ascii').splitlines()
     required = {

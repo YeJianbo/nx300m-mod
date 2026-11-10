@@ -56,7 +56,8 @@ object ThumbLoader {
                     if (camera.profile.galleryPreview) {
                         for (file in group.previewFiles) {
                             val decoded = attempt {
-                                decode(camera.fetchPreview(file.relPath, if (full) "full" else "grid"), width)
+                                val image = camera.fetchPreviewImage(file.relPath, if (full) "full" else "grid")
+                                decode(image.bytes, width, image.embedded)
                             }
                             if (decoded != null) return@withPermit decoded
                         }
@@ -96,7 +97,7 @@ object ThumbLoader {
         null
     }
 
-    private fun decode(bytes: ByteArray, maxEdge: Int): Bitmap? {
+    private fun decode(bytes: ByteArray, maxEdge: Int, embedded: Boolean = false): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
@@ -104,9 +105,24 @@ object ThumbLoader {
         // Decode at or above the requested edge; rounding down first can leave a
         // 2048px viewer with only 1368px and permanently soften cached thumbnails.
         val target = maxEdge.coerceAtLeast(1)
-        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= target) sample *= 2
-        val sampled = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+        val smallEmbedded = embedded && bounds.outWidth == 160 && bounds.outHeight == 120
+        if (!smallEmbedded) {
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= target) sample *= 2
+        }
+        var sampled = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
             BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+        // Trim before scaling/orientation so the cache, grid and viewer placeholder
+        // share the same content bounds, including portrait photos.
+        if (embedded && sampled.width == 160 && sampled.height == 120) {
+            val pixels = IntArray(sampled.width * sampled.height)
+            sampled.getPixels(pixels, 0, sampled.width, 0, 0, sampled.width, sampled.height)
+            val inset = EmbeddedPreviewPadding.topInset(sampled.width, sampled.height, pixels)
+            if (inset > 0) {
+                val trimmed = Bitmap.createBitmap(sampled, 0, inset, sampled.width, sampled.height - inset * 2)
+                if (trimmed !== sampled) sampled.recycle()
+                sampled = trimmed
+            }
+        }
         val edge = maxOf(sampled.width, sampled.height)
         val decoded = if (edge > target) {
             val ratio = target.toDouble() / edge

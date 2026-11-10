@@ -59,6 +59,17 @@ fi
 # Close this worker's entry lock in its descendants.
 # Imaging restore does not depend on HTTP readiness. Start it as soon as RAM
 # staging/replacement has finished, rather than after the daemon's wait.
+if [ -f "$ROOT/mode-dial-restore.sh" ] && [ ! -L "$ROOT/mode-dial-restore.sh" ]; then
+    /bin/sh "$ROOT/mode-dial-restore.sh" </dev/null >> "$STATE/mode-dial-restore.log" 2>&1 7>&- &
+fi
+if [ -f "$ROOT/animation-restore.sh" ] && [ ! -L "$ROOT/animation-restore.sh" ]; then
+    /bin/sh "$ROOT/animation-restore.sh" </dev/null >> "$STATE/animation-restore.log" 2>&1 7>&- &
+fi
+if [ -f "$ROOT/firmware-mod-restore.sh" ] && [ ! -L "$ROOT/firmware-mod-restore.sh" ] &&
+   { [ -r /usr/lib/nx300m-mod/preload.sh ] || [ -f /var/run/nx300m-firmware-mod-ready ] ||
+     [ -f /var/run/nx300m-exposure-ready ]; }; then
+    /bin/sh "$ROOT/firmware-mod-restore.sh" </dev/null >> "$STATE/fw-restore-worker.log" 2>&1 7>&- &
+fi
 if [ -f "$ROOT/lut-boot.sh" ] && [ ! -L "$ROOT/lut-boot.sh" ]; then
     /bin/sh "$ROOT/lut-boot.sh" </dev/null >> "$STATE/lut-boot.log" 2>&1 7>&- &
 fi

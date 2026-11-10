@@ -58,7 +58,7 @@ class CameraSettingsActivity : OneUiInfoActivity() {
     private fun render(message: String? = null) {
         page.binding.pageContent.removeAllViews()
         val camera = NxApp.camera
-        action(page.card(), "LUT 库", "管理手机 LUT 与切换相机色彩") {
+        action(page.card(), "LUT 卡管理", "离线管理 SD 卡；连接后可切换相机色彩") {
             OneUiTransitions.open(this, Intent(this, LutLibraryActivity::class.java)
                 .putExtra("camera_tab", NxApp.camera?.profile?.looks == true))
         }
