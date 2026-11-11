@@ -31,6 +31,7 @@ TEXT_EXTS = {'.py', '.c', '.h', '.cc', '.cpp', '.cxx', '.hpp', '.cmake', '.ld', 
 BINARY_ASSETS = {
     'mod/metol/assets/lut-reference.png',
     'mod/metol/assets/lut-reference-landscape.png',
+    'mod/metol/assets/lut-reference-street.png',
     'mod/metol/assets/lut-reference-night.png',
     'mod/nxconnect/NXConnect/gradle/wrapper/gradle-wrapper.jar',
     'mod/nxconnect/NXConnect/app/src/main/res/drawable-nodpi/home_device_photo.jpg',

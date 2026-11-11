@@ -1,16 +1,20 @@
 #ifndef NXUI_PREVIEW_STATE_H
 #define NXUI_PREVIEW_STATE_H
+#include "lut_tune.h"
+#include "lut_choice_store.h"
 
 enum { NX_PREVIEW_OFF, NX_PREVIEW_ON, NX_PREVIEW_WAIT, NX_PREVIEW_BUSY, NX_PREVIEW_FAILED, NX_PREVIEW_SUSPENDED };
 
-/* The LUT choice on the card: a leading "0" means Off. Reading it keeps the
- * preview state honest about whether hardware preview has anything to show. */
+/* The LUT choice on the card, read through the same dual-slot store as the
+ * engine and boot. A record counts as applied only when it is a complete,
+ * checksummed (or legacy) valid selection: missing, empty, truncated and
+ * otherwise damaged records are all "not applied" — an empty file used to
+ * read back as applied here. A valid Off record is a real choice and reads
+ * as not applied. */
 static int nx_preview_lut_applied(const char *data_root) {
-    char path[1024];int first;
-    if(snprintf(path,sizeof path,"%s/.state/lut-choice",data_root)>=(int)sizeof path)return -1;
-    FILE *f=fopen(path,"r");if(!f)return -1;
-    first=fgetc(f);fclose(f);
-    return first!='0';
+    struct nx_lut_choice choice;
+    if(!nx_lut_choice_read_root(data_root,&choice)||!choice.valid)return 0;
+    return choice.off?0:1;
 }
 
 /* Only RAM acknowledgements mean enabled. A saved preference describes intent,

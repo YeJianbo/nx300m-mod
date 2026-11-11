@@ -11,9 +11,11 @@ fn_note() {
 }
 fail() { fn_note "ram stage fail: $*"; printf 'NX300M RAM staging: %s\n' "$*" >&2; exit 1; }
 run=0
+deferred=0
 mode=mfw
 if [ "${1:-}" = --service ]; then mode=service; shift; fi
 if [ "${1:-}" = --run ]; then run=1; shift; fi
+if [ "${1:-}" = --deferred ]; then deferred=1; shift; fi
 fn_note "ram stage begin mode=$mode run=$run"
 [ "$#" -eq 2 ] || fail 'expected source root and RAM directory'
 SOURCE=$(CDPATH= cd -P "$1" && pwd -P) || exit 1
@@ -31,7 +33,7 @@ STATE=$RAM/state
 [ ! -L "$ROOT" ] || fail 'RAM runtime is a symbolic link'
 [ ! -L "$STATE" ] || fail 'RAM state is a symbolic link'
 SOURCE_ID=$(stat -c '%d:%i' "$SOURCE") || fail 'cannot identify SD source directory'
-if [ "$run" -eq 1 ]; then
+if [ "$run" -eq 1 ] || [ "$deferred" -eq 1 ]; then
     [ "${NX300M_MOD_SOURCE_ID:-}" = "$SOURCE_ID" ] || fail 'SD source directory identity changed after staging'
 fi
 export NX300M_MOD_SOURCE_ROOT="$SOURCE" NX300M_MOD_SOURCE_ID="$SOURCE_ID"
@@ -68,94 +70,87 @@ consume_marker() {
     mv "$STATE/control-receipts/$1.pending-id" "$STATE/control-receipts/$1.id"
 }
 
-if [ "$run" -eq 1 ]; then
-    [ "$(readlink -f "$0")" = "$ROOT/mfw-ram-stage.sh" ] || fail 'resident launcher is not the verified RAM copy'
-    cd "$ROOT"
-    if [ "$mode" = service ]; then
-        exec /bin/sh "$ROOT/start.sh" </dev/null >> "$STATE/service-entry.log" 2>&1 6>&-
-    fi
-    # Only this RAM shell waits for the finite diagnostics. The supervisor,
-    # remote, panels and any locks/logs inherit RAM paths and cwd.
-    set +e
-    fn_note 'ram run launching services'
-    /bin/sh "$ROOT/mfw-services.sh" </dev/null >> "$STATE/mfw-entry.log" 2>&1 6>&-
-    result=$?
-    fn_note "ram run services exit=$result"
-    set -e
-    if [ "$result" -eq 0 ] && [ -e "$STATE/control-receipts/TRACE_HTTP.pending-id" ] && [ ! -e "$ROOT/TRACE_HTTP" ]; then
-        consume_marker TRACE_HTTP
-    fi
-    printf 'RAM service entry exit=%s state=%s\n' "$result" "$STATE"
-    exit "$result"
-fi
+stage=
+file_list=
 
-exec 6> "$RAM/stage.lock"
-flock -n 6 || { fn_note 'ram stage exit: staging lock busy'; exit 0; }
-[ ! -e "$SOURCE/DISABLED" ] || { fn_note 'ram stage exit: DISABLED marker'; exit 0; }
-[ -s "$SOURCE/runtime-files.list" ] && [ ! -L "$SOURCE/runtime-files.list" ] || fail 'runtime file list is unavailable'
-stage=$(mktemp -d "$RAM/stage.XXXXXX") || fail 'cannot allocate RAM staging directory'
-# A failed copy, process-ownership refusal or full tmpfs must not leave a new
-# full resource tree behind on every subsequent MFW entry. Only this shell's
-# mktemp directory is disposable; published/previous generations are excluded.
-cleanup_stage() {
-    result=$?
-    trap - 0 HUP INT TERM
-    case ${stage:-} in
-        "$RAM"/stage.*)
-            [ ! -L "$stage" ] && rm -rf "$stage" ;;
-    esac
-    exit "$result"
-}
-trap cleanup_stage 0
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-printf 'RAM staging source=%s source_id=%s candidate=%s\n' "$SOURCE" "$SOURCE_ID" "$stage"
 validate_relative() {
-    case $1 in ''|/*|*[!A-Za-z0-9_./-]*|*/|*//*|.|..|./*|../*|*/./*|*/../*|*/.|*/..|.state|.state/*|DISABLED|NO_PANEL_SHORTCUT|TRACE_HTTP|RESTART_SERVICE) return 1 ;; esac
+    case $1 in ''|/*|*[!A-Za-z0-9_./-]*|*/|*//*|.|..|./*|../*|*/./*|*/../*|*/.|*/..|.state|.state/*|DISABLED|NO_PANEL_SHORTCUT|TRACE_HTTP|RESTART_SERVICE|.runtime-*) return 1 ;; esac
 }
 copy_files() {
+    set --
+    copy_dir=
     while IFS= read -r relative; do
         validate_relative "$relative" || fail 'invalid runtime file list entry'
         [ -f "$SOURCE/$relative" ] && [ ! -L "$SOURCE/$relative" ] || fail "source file missing or linked: $relative"
         if [ "$relative" = runtime-files.list ]; then
             cmp -s "$SOURCE/$relative" "$stage/$relative" || fail 'source file list changed during staging'
-            chmod 400 "$stage/$relative"
             continue
         fi
-        case $relative in */*) mkdir -p "$stage/${relative%/*}" ;; esac
-        cp "$SOURCE/$relative" "$stage/$relative" || fail "cannot stage $relative"
-        cmp -s "$SOURCE/$relative" "$stage/$relative" || fail "staged bytes differ: $relative"
-        case $relative in *.sh|bin/*|fn-panel/bin/*) chmod 500 "$stage/$relative" ;; *) chmod 400 "$stage/$relative" ;; esac
-    done < "$stage/runtime-files.list"
+        case $relative in
+            */*) directory=${relative%/*} ;;
+            *) directory=. ;;
+        esac
+        if [ "$directory" != "$copy_dir" ]; then
+            if [ "$#" -gt 0 ]; then
+                [ "$deferred" -eq 0 ] || deferred_alive || fail 'deferred runtime or source is no longer active'
+                cp "$@" "$stage/$copy_dir/" || fail "cannot stage directory: $copy_dir"
+            fi
+            copy_dir=$directory
+            [ -d "$stage/$copy_dir" ] || mkdir -p "$stage/$copy_dir"
+            set --
+        fi
+        set -- "$@" "$SOURCE/$relative"
+    done < "$file_list"
+    if [ "$#" -gt 0 ]; then
+        [ "$deferred" -eq 0 ] || deferred_alive || fail 'deferred runtime or source is no longer active'
+        cp "$@" "$stage/$copy_dir/" || fail "cannot stage directory: $copy_dir"
+    fi
+    # Preserve the manifest snapshot; each other file is copied only into its
+    # own directory. One cp per directory avoids per-file cold-boot exec costs.
+    set --
+    while IFS= read -r relative; do
+        set -- "$@" "$stage/$relative"
+    done < "$file_list"
+    # The complete verify_files pass below compares every copied byte before
+    # publication. Per-copy cmp repeated the same SD reads and process launches.
+    chmod 400 "$@" || fail 'cannot protect staged assets'
+    set --
+    while IFS= read -r relative; do
+        case $relative in *.sh|bin/*|fn-panel/bin/*) set -- "$@" "$stage/$relative" ;; esac
+    done < "$file_list"
+    [ "$#" -eq 0 ] || chmod 500 "$@" || fail 'cannot mark staged executables'
 }
 verify_files() {
-    while IFS= read -r relative; do
-        validate_relative "$relative" || return 1
-        [ -f "$SOURCE/$relative" ] && [ ! -L "$SOURCE/$relative" ] || return 1
-        [ -f "$1/$relative" ] && [ ! -L "$1/$relative" ] || return 1
-        cmp -s "$SOURCE/$relative" "$1/$relative" || return 1
-    done < "$stage/runtime-files.list"
-    cmp -s "$SOURCE/runtime-files.list" "$1/runtime-files.list"
+    verifier=$1/bin/ram_asset_verify.arm
+    [ "$deferred" -eq 0 ] || verifier=$ROOT/bin/ram_asset_verify.arm
+    # Bootstrap trust with the stock cmp before executing this RAM-only tool.
+    # It then checks every listed source/destination byte in a single process.
+    [ -f "$SOURCE/bin/ram_asset_verify.arm" ] && [ ! -L "$SOURCE/bin/ram_asset_verify.arm" ] &&
+        [ -f "$verifier" ] && [ ! -L "$verifier" ] &&
+        cmp -s "$SOURCE/bin/ram_asset_verify.arm" "$verifier" || return 1
+    "$verifier" "$SOURCE" "$1" "$file_list"
 }
-cp "$SOURCE/runtime-files.list" "$stage/runtime-files.list" || fail 'cannot snapshot runtime file list'
-cmp -s "$SOURCE/runtime-files.list" "$stage/runtime-files.list" || fail 'source file list changed while copying'
-# Repeated MFW entry must not allocate another full tmpfs tree just to discover
-# that the resident bytes already match. The small manifest snapshot also keeps
-# both comparisons on the same list if the source is changed while staging.
-same=0
-if [ -d "$ROOT" ] && verify_files "$ROOT"; then same=1; fi
-verified=$ROOT
-if [ "$same" -eq 0 ]; then
+
+check_capacity() {
     # Account only the manifest assets, not unrelated SD backups.
     required_kb=0
+    set --
     while IFS= read -r relative; do
         validate_relative "$relative" || fail 'invalid runtime file list entry'
         [ -f "$SOURCE/$relative" ] && [ ! -L "$SOURCE/$relative" ] || fail "source file missing or linked: $relative"
-        bytes=$(stat -c '%s' "$SOURCE/$relative") || fail 'cannot size source asset'
+        set -- "$@" "$SOURCE/$relative"
+    done < "$file_list"
+    # BusyBox stat accepts multiple operands. Collect sizes in one process
+    # instead of loading the applet once for every small resource on cold boot.
+    asset_count=$#
+    sizes=$(stat -c '%s' "$@") || fail 'cannot size source assets'
+    sized_count=0
+    for bytes in $sizes; do
         case $bytes in ''|*[!0-9]*) fail 'invalid source asset size' ;; esac
         required_kb=$((required_kb+((bytes+4095)/4096)*4))
-    done < "$stage/runtime-files.list"
+        sized_count=$((sized_count+1))
+    done
+    [ "$sized_count" -eq "$asset_count" ] || fail 'incomplete source asset sizes'
     # df is a tmpfs quota, not physical RAM availability. Linux 3.5 lacks
     # MemAvailable: subtract Shmem from Cached before estimating reclaimable
     # file cache, so previous tmpfs generations are never counted as free RAM.
@@ -189,17 +184,178 @@ if [ "$same" -eq 0 ]; then
     available_kb=$(unset POSIXLY_CORRECT; df -Pk "$RAM" | awk 'END {print $4}')
     case $available_kb in ''|*[!0-9]*) fail 'cannot read RAM filesystem capacity' ;; esac
     [ "$available_kb" -ge "$required_kb" ] || fail "insufficient RAM filesystem space: need=${required_kb}KiB available=${available_kb}KiB"
+}
+
+cleanup_stage() {
+    result=${1:-$?}
+    trap - 0 HUP INT TERM
+    case ${stage:-} in
+        "$RAM"/stage.*)
+            [ ! -L "$stage" ] && rm -rf "$stage" ;;
+    esac
+    exit "$result"
+}
+deferred_alive() {
+    [ ! -e "$STATE/media-paused" ] && [ ! -e "$SOURCE/DISABLED" ] || return 1
+    if [ -f "$STATE/manual-stop" ]; then
+        stopped_boot=
+        IFS= read -r stopped_boot < "$STATE/manual-stop" || :
+        [ "$stopped_boot" != "$worker_boot" ] || return 1
+    fi
+    [ "$(stat -c '%d:%i' "$ROOT")" = "${NX300M_RUNTIME_ID:-}" ] &&
+        [ "$(stat -c '%d:%i' "$SOURCE")" = "$SOURCE_ID" ]
+}
+
+if [ "$deferred" -eq 1 ]; then
+    [ "$(readlink -f "$0")" = "$ROOT/mfw-ram-stage.sh" ] || fail 'deferred launcher is not the verified RAM copy'
+    [ /proc/self/fd/6 -ef "$RAM/stage.lock" ] && flock -n 6 || fail 'deferred staging lease is missing'
+    IFS= read -r worker_boot < /proc/sys/kernel/random/boot_id || exit 1
+    deferred_alive || fail 'deferred runtime or source is no longer active'
+    [ -s "$ROOT/.runtime-deferred.list" ] && [ ! -L "$ROOT/.runtime-deferred.list" ] || fail 'deferred list is unavailable'
+    [ ! -e "$ROOT/.runtime-assets-ready" ] || exit 0
+    # Media pause cannot acknowledge card release while this worker reads it.
+    [ ! -L "$STATE/media-io.lock" ] || fail 'media lease is a symbolic link'
+    exec 7>"$STATE/media-io.lock"
+    flock -s -n 7 || fail 'media access is paused'
+    deferred_alive || fail 'deferred loading was stopped before media admission'
+    stage=$(mktemp -d "$RAM/stage.XXXXXX") || fail 'cannot allocate deferred staging directory'
+    finish_deferred() {
+        worker_result=$?
+        if [ "$worker_result" -ne 0 ]; then
+            printf 'failed\n' > "$STATE/deferred-assets.state"
+            fn_note "deferred assets failed rc=$worker_result; core service retained"
+        fi
+        cleanup_stage "$worker_result"
+    }
+    trap finish_deferred 0
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    printf 'loading\n' > "$STATE/deferred-assets.state"
+    cp "$ROOT/runtime-files.list" "$stage/runtime-files.list" || fail 'cannot snapshot deferred manifest'
+    file_list=$ROOT/.runtime-deferred.list
+    check_capacity
+    copy_files
+    verify_files "$stage" || fail 'deferred source changed or RAM verification failed'
+    deferred_alive || fail 'deferred runtime or source changed before publication'
+    # Publish the complete website. The core root
+    # and daemon inode stay intact, including a panel already open in it.
+    if [ -d "$stage/web_root" ]; then
+        [ ! -L "$ROOT/web_root" ] || fail 'published web directory is linked'
+        mv "$ROOT/web_root" "$stage/web_root.previous" || fail 'cannot retain prior web resources'
+        if ! mv "$stage/web_root" "$ROOT/web_root"; then
+            mv "$stage/web_root.previous" "$ROOT/web_root" || :
+            fail 'cannot publish web resources'
+        fi
+    fi
+    printf 'ready\n' > "$ROOT/.runtime-assets-ready"
+    printf 'ready\n' > "$STATE/deferred-assets.state"
+    fn_note 'deferred network assets ready; core daemon unchanged'
+    exit 0
+fi
+
+if [ "$run" -eq 1 ]; then
+    [ "$(readlink -f "$0")" = "$ROOT/mfw-ram-stage.sh" ] || fail 'resident launcher is not the verified RAM copy'
+    cd "$ROOT"
+    if [ "$mode" = service ]; then
+        exec /bin/sh "$ROOT/start.sh" </dev/null >> "$STATE/service-entry.log" 2>&1 6>&-
+    fi
+    # Only this RAM shell waits for the finite diagnostics. The supervisor,
+    # remote, panels and any locks/logs inherit RAM paths and cwd.
+    set +e
+    fn_note 'ram run launching services'
+    /bin/sh "$ROOT/mfw-services.sh" </dev/null >> "$STATE/mfw-entry.log" 2>&1 6>&-
+    result=$?
+    fn_note "ram run services exit=$result"
+    set -e
+    if [ "$result" -eq 0 ] && [ -e "$STATE/control-receipts/TRACE_HTTP.pending-id" ] && [ ! -e "$ROOT/TRACE_HTTP" ]; then
+        consume_marker TRACE_HTTP
+    fi
+    printf 'RAM service entry exit=%s state=%s\n' "$result" "$STATE"
+    if [ "$result" -eq 0 ] && [ -s "$ROOT/.runtime-deferred.list" ] &&
+       [ ! -e "$ROOT/.runtime-assets-ready" ]; then
+        NX300M_RUNTIME_ID=$(stat -c '%d:%i' "$ROOT")
+        export NX300M_RUNTIME_ID
+        # Inherit the staging lease, not the services' entry lock. A second
+        # generation cannot replace the files while this finite worker runs.
+        /bin/sh "$ROOT/mfw-ram-stage.sh" --deferred "$SOURCE" "$RAM" \
+            </dev/null >> "$STATE/deferred-assets.log" 2>&1 &
+    fi
+    exit "$result"
+fi
+
+exec 6> "$RAM/stage.lock"
+flock -n 6 || { fn_note 'ram stage exit: staging lock busy'; exit 0; }
+[ ! -e "$SOURCE/DISABLED" ] || { fn_note 'ram stage exit: DISABLED marker'; exit 0; }
+[ -s "$SOURCE/runtime-files.list" ] && [ ! -L "$SOURCE/runtime-files.list" ] || fail 'runtime file list is unavailable'
+stage=$(mktemp -d "$RAM/stage.XXXXXX") || fail 'cannot allocate RAM staging directory'
+# A failed copy, process-ownership refusal or full tmpfs must not leave a new
+# full resource tree behind on every subsequent MFW entry. Only this shell's
+# mktemp directory is disposable; published/previous generations are excluded.
+trap cleanup_stage 0
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+printf 'RAM staging source=%s source_id=%s candidate=%s\n' "$SOURCE" "$SOURCE_ID" "$stage"
+cp "$SOURCE/runtime-files.list" "$stage/runtime-files.list" || fail 'cannot snapshot runtime file list'
+cmp -s "$SOURCE/runtime-files.list" "$stage/runtime-files.list" || fail 'source file list changed while copying'
+file_list=$stage/runtime-files.list
+defer_assets=0
+if [ "$mode" = mfw ]; then
+    : > "$stage/.runtime-core.list"
+    : > "$stage/.runtime-deferred.list"
+    while IFS= read -r relative; do
+        validate_relative "$relative" || fail 'invalid runtime file list entry'
+        case $relative in
+            web_root/*) list=.runtime-deferred.list ;;
+            *) list=.runtime-core.list ;;
+        esac
+        printf '%s\n' "$relative" >> "$stage/$list"
+    done < "$stage/runtime-files.list"
+    if [ -s "$stage/.runtime-deferred.list" ]; then
+        defer_assets=1
+        file_list=$stage/.runtime-core.list
+        chmod 400 "$stage/.runtime-core.list" "$stage/.runtime-deferred.list"
+    fi
+fi
+# Repeated MFW entry must not allocate another full tmpfs tree just to discover
+# that the resident bytes already match. The small manifest snapshot also keeps
+# both comparisons on the same list if the source is changed while staging.
+same=0
+if [ -d "$ROOT" ]; then
+    core_list=$file_list
+    if [ "$defer_assets" -eq 0 ] || [ -f "$ROOT/.runtime-assets-ready" ]; then
+        file_list=$stage/runtime-files.list
+    fi
+    if verify_files "$ROOT"; then
+        if [ "$defer_assets" -eq 0 ] ||
+           { [ ! -L "$ROOT/.runtime-core.list" ] && [ ! -L "$ROOT/.runtime-deferred.list" ] &&
+             cmp -s "$stage/.runtime-core.list" "$ROOT/.runtime-core.list" &&
+             cmp -s "$stage/.runtime-deferred.list" "$ROOT/.runtime-deferred.list"; }; then same=1; fi
+    fi
+    file_list=$core_list
+fi
+verified=$ROOT
+if [ "$same" -eq 0 ]; then
+    check_capacity
     copy_files
     verify_files "$stage" || fail 'source changed during staging or RAM verification failed'
+    [ "$defer_assets" -eq 0 ] || mkdir -p "$stage/web_root"
     verified=$stage
 else
     printf 'RAM runtime bytes unchanged; full staging copy skipped\n'
 fi
 required_entry='mfw-services.sh mfw-panel.sh mfw-panel-actions.sh gui_mfw.NX300M'
-if [ "$mode" = service ]; then required_entry='ram-start.sh panel.sh quickshare-panel.sh fonts/SDIC_GP_US_20120720.ttf'; fi
-for required in common.sh start.sh stop.sh service.sh mfw-ram-stage.sh bin/nx-remote-controller.arm bin/nxui.arm bin/nx-quickshare-armv7 web_root/index.html fonts/fonts.conf.in $required_entry; do
+if [ "$mode" = service ]; then required_entry='ram-start.sh panel.sh fonts/SDIC_GP_US_20120720.ttf'; fi
+for required in common.sh start.sh stop.sh service.sh mfw-ram-stage.sh bin/ram_asset_verify.arm bin/nx-remote-controller.arm bin/nxui.arm fonts/fonts.conf.in $required_entry; do
     [ -s "$verified/$required" ] || fail "required RAM asset missing: $required"
 done
+
+if [ "$defer_assets" -eq 0 ]; then
+    [ -s "$verified/web_root/index.html" ] || fail 'network assets are missing'
+else
+    [ -d "$verified/web_root" ] || fail 'RAM web resource directory is missing'
+fi
 
 # Reuse the shared PID/boot/starttime/executable-inode checks without creating
 # or updating the old SD state directory. Only the verified RAM common is read.

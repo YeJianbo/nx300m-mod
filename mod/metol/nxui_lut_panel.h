@@ -10,6 +10,11 @@ static unsigned lut_reference_position[256],lut_reference_fraction[256];
 static int lut_reference_axes_ready;
 static int lut_reference_index=-1,lut_reference_valid;
 static int lut_reference_mono,lut_nav_dirty;
+/* Full-strength LUT colour before the strength mix. Strength dialing and
+ * original-image comparison reuse this shared buffer; a zero-strength view
+ * defers interpolation until the effect is needed again. */
+static unsigned char lut_reference_unmixed[NX_REF_W*NX_REF_H*3];
+static int lut_reference_unmixed_dirty=1;
 static int lut_filtered[NXUI_MAX_RECIPES],lut_filtered_count,lut_filtered_category=-1;
 /* H5: expected favorite state while a write is published but its directory
  * durability is unconfirmed; re-tapping the same look retries the same
@@ -291,7 +296,7 @@ static void lut_key(KeySym key) {
         if(key==XK_Menu||key==XK_Escape)lut_request_leave(mfw_menu_root?2:1);
         dirty=1;return;
     }
-    if(key==XK_space){lut_reference_scene=(lut_reference_scene+1)%NX_REF_COUNT;lut_reference_dirty=dirty=1;return;}
+    if(key==XK_space){lut_reference_scene=(lut_reference_scene+1)%NX_REF_COUNT;lut_reference_unmixed_dirty=1;lut_reference_dirty=dirty=1;return;}
     /* Fn owns view changes. Reference-image taps and the top parameter must
      * never silently turn a tuning-wheel event into selection of another LUT. */
     if(!selected)return;
@@ -342,6 +347,7 @@ static void lut_update_reference(void) {
     if(lut_reference_index!=selected) {
         lut_reference_index=selected;lut_reference_valid=0;
         lut_reference_mono=0;
+        lut_reference_unmixed_dirty=1;
         if(selected) {
             char file[NXUI_PATH];snprintf(file,sizeof file,"%s/looks/%s/table.d4lut",root,recipes[selected].key);
             FILE *in=fopen(file,"rb");
@@ -354,6 +360,7 @@ static void lut_update_reference(void) {
        memcmp(&lut_reference_cached_tune,&lut_tune,sizeof lut_tune))) {
         nx_tune_table(lut_reference_table,lut_reference_tuned,&lut_tune);
         lut_reference_cached_tune=lut_tune;lut_reference_tuned_index=selected;
+        lut_reference_unmixed_dirty=1;
     }
     if(!lut_reference_axes_ready) {
         for(unsigned i=0;i<256;i++) {
@@ -363,17 +370,30 @@ static void lut_update_reference(void) {
         }
         lut_reference_axes_ready=1;
     }
+    if(lut_reference_valid&&!lut_reference_original&&lut_strength&&lut_reference_unmixed_dirty) {
+        for(unsigned i=0;i<NX_REF_W*NX_REF_H;i++) {
+            const unsigned char *src=nx_reference_rgb[lut_reference_scene]+3*i;
+            unsigned pos[3],f[3];
+            for(int c=0;c<3;c++){pos[c]=lut_reference_position[src[c]];f[c]=lut_reference_fraction[src[c]];}
+            unsigned index=pos[0]*81+pos[1]*9+pos[2];
+            for(int c=0;c<3;c++) {
+                unsigned v=nx_ref_interpolate(lut_reference_tuned+c*730+index,f[0],f[1],f[2]);
+                lut_reference_unmixed[3*i+c]=(unsigned char)((v*255+511)/1023);
+            }
+        }
+        lut_reference_unmixed_dirty=0;
+    }
     for(unsigned i=0;i<NX_REF_W*NX_REF_H;i++) {
         const unsigned char *src=nx_reference_rgb[lut_reference_scene]+3*i;
         unsigned output[3]={src[0],src[1],src[2]};
-        if(lut_reference_valid&&!lut_reference_original) {
-            unsigned pos[3],f[3];
-            for(int c=0;c<3;c++){pos[c]=lut_reference_position[src[c]];f[c]=lut_reference_fraction[src[c]];}
+        if(lut_reference_valid&&!lut_reference_original&&lut_strength) {
+            const unsigned char *unmixed=lut_reference_unmixed+3*i;
             for(int c=0;c<3;c++) {
-                unsigned index=pos[0]*81+pos[1]*9+pos[2];
-                unsigned v=nx_ref_interpolate(lut_reference_tuned+c*730+index,f[0],f[1],f[2]);
-                unsigned color=(v*255+511)/1023;
-                output[c]=(color*lut_strength+src[c]*(100-lut_strength)+50)/100;
+                unsigned color=unmixed[c];
+                /* strength 100 is the default and divides out exactly; keep
+                 * the general formula for every other value unchanged. */
+                output[c]=lut_strength==100?color:
+                    (color*lut_strength+src[c]*(100-lut_strength)+50)/100;
             }
         }
         lut_reference_pixels[i]=0xff000000U|(output[0]<<16)|(output[1]<<8)|output[2];
@@ -524,7 +544,7 @@ static void draw_lut_panel(void) {
         /* Favorite feedback uses its own notice flag so a card-write problem
          * is visible without being misread as a LUT submission failure. */
         nk_label_colored(ctx,(lut_submit_failed||lut_favorite_notice)?status:lut_toolbar_focus>=0?"左右／转盘选择  OK操作  ↓分组":lut_category_focus?"左右切组  ↑开关  ↓回列表":lut_list_open?(lut_list_cursor?"↑↓选风格  OK应用  Fn微调":"↑选分组  再↑开关  Fn微调"):"↑↓选项  转盘调整  Fn保存回列表",NK_TEXT_LEFT,nk_rgb(158,171,188));
-        static const char *scenes[]={"人像","风景","夜景"};
+        static const char *scenes[]={"人像","街景","风景"};
         snprintf(line,sizeof line,"%s·%s  点按切图／按住原图",lut_reference_original?"原图":"参考",scenes[lut_reference_scene]);
         lut_place(0,436,308,32);nk_label_wrap(ctx,line);
         nk_style_set_font(ctx,main_font);

@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include "mod_paths.h"
 #include "lut_tune.h"
+#include "lut_choice_store.h"
 #include "../../runtime/lut_ram_blob.h"
 #include "../../runtime/lut_ram_blob_build.h"
 
@@ -374,38 +375,33 @@ static inline int nx_lut_mark_session(void) {
     return ok;
 }
 static inline int nx_lut_selection_persisted(void) {
-    char saved[PATH_MAX],current_path[256],saved_path[256];unsigned int gen,strength,saved_gen,saved_strength;
-    if (!nx_lut_saved_path(saved)) return 0;
-    if (access(NX_LUT_SELECTION,F_OK)) return errno==ENOENT && nx_lut_saved_stock(saved);
-    return nx_lut_read_selection_with_strength(NX_LUT_SELECTION,&gen,current_path,&strength) &&
-        nx_lut_read_selection_with_strength(saved,&saved_gen,saved_path,&saved_strength) &&
-        !strcmp(current_path,saved_path) && strength==saved_strength;
+    /* The saved choice is one fact read through the unified dual-slot store;
+     * UI, boot, CLI and cache protection must agree with this reader. */
+    const char *root=nx_lut_data_root();struct nx_lut_choice choice;
+    if (!root || !nx_lut_choice_read_root(root,&choice)) return 0;
+    char current_path[256];unsigned int gen,strength;
+    if (access(NX_LUT_SELECTION,F_OK)) return errno==ENOENT && choice.valid && choice.off;
+    if (!nx_lut_read_selection_with_strength(NX_LUT_SELECTION,&gen,current_path,&strength)) return 0;
+    return choice.valid && !choice.off && choice.generation==gen &&
+        choice.strength==strength && !strcmp(choice.table,current_path);
 }
-/* The caller holds the shared engine lock. The test card has duplicate
- * lut-selection entries. Avoid rename-over-existing on this camera FAT path:
- * keep one new entry and update it in place; RAM publication remains atomic.
- * An incomplete saved record is rejected on restore, never partially applied. */
+/* The caller holds the shared engine lock. Card choices use fixed slots;
+ * incomplete writes leave the other valid slot available on restore. */
 static inline int nx_lut_persist_selection(void) {
     if (nx_lut_selection_persisted()) return 1;
-    char saved[PATH_MAX],directory[PATH_MAX],path[256];unsigned int gen,strength;
-    if (!nx_lut_saved_path(saved)) return 0;
-    int n=snprintf(directory,sizeof directory,"%s/.state",nx_lut_data_root());
-    if (n<0 || n>=(int)sizeof directory) return 0;
-    struct stat state;
-    if (mkdir(directory,0700) && errno!=EEXIST) return 0;
-    if (lstat(directory,&state) || !S_ISDIR(state.st_mode)) return 0;
+    const char *root=nx_lut_data_root();if (!root) return 0;
+    struct nx_lut_choice record;memset(&record,0,sizeof record);
+    char current_path[256];unsigned int gen=0,strength=100;
     int selected=access(NX_LUT_SELECTION,F_OK)==0;
-    if (selected && !nx_lut_read_selection_with_strength(NX_LUT_SELECTION,&gen,path,&strength)) return 0;
-    int fd=open(saved,O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0600);if (fd<0) return 0;
-    FILE *out=fdopen(fd,"w");if (!out) {close(fd);return 0;}
-    int ok=(selected?fprintf(out,"%u %s %u\n",gen,path,strength):fprintf(out,"0\n"))>=0;
-    if (fflush(out) || fsync(fd)) ok=0;
-    if (fclose(out)) ok=0;
-    if (!ok) return 0;
-    fd=open(directory,O_RDONLY|O_DIRECTORY);
-    if (fd<0) return 0;
-    ok=!fsync(fd);close(fd);if (!ok) return 0;
-    return nx_lut_selection_persisted();
+    if (selected && !nx_lut_read_selection_with_strength(NX_LUT_SELECTION,&gen,current_path,&strength)) return 0;
+    if (selected) {
+        record.off=0;record.generation=gen;record.strength=strength;
+        int n=snprintf(record.table,sizeof record.table,"%s",current_path);
+        if (n<0||n>=(int)sizeof record.table) return 0;
+    } else record.off=1;   /* no RAM selection: a deliberate Off record */
+    int result=nx_lut_choice_write_root(root,&record);
+    if (result<0) fputs("PERSIST-WARNING choice visible but durability unconfirmed\n",stderr);
+    return result==1;
 }
 /* A control event only. The frame hook never launches a process or reads SD. */
 /* Reader for the user's saved preview preference (single writer: the
@@ -574,32 +570,29 @@ static inline int nx_lut_stock(void) {
 static inline int nx_lut_restore_selection(void) {
     if (!access(NX_LUT_SELECTION,F_OK)) return 0;
     if (errno!=ENOENT) return 4;
-    char session[PATH_MAX]="",saved[PATH_MAX],path[256];unsigned int gen,strength;
+    char session[PATH_MAX]="";
     FILE *in=fopen(NX_LUT_SESSION,"r");
     if (in) {
         int read=fgets(session,sizeof session,in)!=NULL;fclose(in);
         session[strcspn(session,"\r\n")]=0;
         if (read && !strcmp(session,nx_lut_data_root())) return 0;
     }
-    if (!nx_lut_saved_path(saved)) return 4;
-    if (access(saved,F_OK)) {
-        if (errno!=ENOENT) return 4;
-        /* Read old cards once; the next successful choice uses lut-choice. */
-        int n=snprintf(saved,sizeof saved,"%s/.state/lut-selection",nx_lut_data_root());
-        if (n<0 || n>=(int)sizeof saved) return 4;
-        if (access(saved,F_OK)) return errno==ENOENT?0:4;
-    }
-    if (nx_lut_saved_stock(saved)) return nx_lut_mark_session()?0:4;
-    if (!nx_lut_read_selection_with_strength(saved,&gen,path,&strength)) return 5;
+    /* One unified reader for slots, legacy lut-choice and old lut-selection.
+     * `recorded` separates a fresh card (nothing to restore) from records
+     * that exist but are all invalid: damage is reported, never applied. */
+    const char *root=nx_lut_data_root();if (!root) return 4;
+    struct nx_lut_choice choice;int recorded=0;
+    if (!nx_lut_choice_read_root_full(root,&choice,&recorded)) return recorded?5:0;
+    if (choice.off) return nx_lut_mark_session()?0:4;
     char id[64];struct nx_lut_tune tune;
-    if(!nx_lut_selection_id(path,id,&tune))return 5;
+    if(!nx_lut_selection_id(choice.table,id,&tune))return 5;
     struct nx_lut_look looks[NX_LUT_MAX_LOOKS];int count=0;
     int result=nx_lut_catalog_index(looks,&count);if (result) return result;
     for (int i=0;i<count;i++) {
         char actual[256];int composed;
         if (!strcmp(id,looks[i].id) && nx_lut_validate_look(id,actual,&composed)) {
-            int result=nx_tune_cache(id,&tune,strength,actual);if(result)return result;
-            return nx_lut_stage_with_strength(actual,strength,NULL);
+            int result=nx_tune_cache(id,&tune,choice.strength,actual);if(result)return result;
+            return nx_lut_stage_with_strength(actual,choice.strength,NULL);
         }
     }
     return 5;

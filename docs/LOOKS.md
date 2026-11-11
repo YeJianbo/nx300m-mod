@@ -2,7 +2,7 @@
 
 LUT 库将 `.cube`、DCP 风格表和兼容的 Metol 表转换为 NX300M 使用的数据。每个风格保存在 `looks/<id>/`，包含源表、编译后的 D4 表和记录来源及色彩空间的 `look.json`。仓库自带 Hard Mono；其他风格需要从有权使用的来源导入。
 
-本地风格包括 GR Neg、GR Pos，以及富士 CC、Astia、Eterna、NC 和 NN。理光两项来自指定的 GR IV Negative Film Exact 和 Positive Film Exact 配置；当前提取的是 DCP Creative LookTable，完整 Lightroom 曝光、色调曲线及 RAW 显影尚未移植。蓝色表现和机身色彩需要继续校准。
+本地风格包括 GR Neg、GR Pos，以及富士 CC、Astia、Eterna、NC 和 NN。机内理光两项为 2026-11-11 入库的补充包版本 `ricoh-gr-positive`／`ricoh-gr-negative`（HZ GR 正片／负片，基于标准 sRGB 显示 LUT）；此前 Exact 两项（`ricoh-positive-exact`／`ricoh-negative-exact`）仍保留在库中备用，其 DCP Creative LookTable 提取范围不变，完整 Lightroom 曝光、色调曲线及 RAW 显影尚未移植。蓝色表现和机身色彩需要继续校准。
 
 ## 添加和编译
 

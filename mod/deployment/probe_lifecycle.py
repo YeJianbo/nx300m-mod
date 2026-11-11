@@ -58,7 +58,6 @@ def main():
             source.write_text(FIXTURE)
             binary = root / 'bin/nx-remote-controller.arm'
             subprocess.run(['gcc', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(binary)], check=True)
-            os.chmod(root / 'bin/nx-quickshare-armv7', 0o755)
             state = workspace / 'state'
             state.mkdir()
             env = dict(os.environ, NX300M_MOD_ROOT=str(root), NX_STATE_DIR=str(state), NX_START_TIMEOUT='5', NX_STOP_TIMEOUT='4')

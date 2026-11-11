@@ -1,13 +1,40 @@
 #ifndef NX_LUT_TUNE_CACHE_H
 #define NX_LUT_TUNE_CACHE_H
 #include <dirent.h>
+#include <stdlib.h>
 #include "lut_tune.h"
-/* Issue 11: bounded eviction of composed per-look cache directories. Control
- * events only, never per frame. Protection: the runtime selection, the
- * persisted choice and the directory just composed are never evicted; fresh
- * entries get a one-minute grace so an in-flight compose cannot be removed
- * under a concurrent reader. Temp compose dirs (.nx-tune-*) are untouched. */
+#include "lut_choice_store.h"
+/* Issue 11 + 2026-11-11 acceptance: bounded eviction of composed per-look
+ * cache directories. Control events only, never per frame.
+ *
+ * Contract enforced here:
+ *  - Candidates are found with lstat: a `looks/nx-tune-*` symlink (live or
+ *    dangling) is never followed and never deleted; it is reported as an
+ *    anomalous entry, not silently counted or destroyed.
+ *  - Only files the generator owns (tune.txt, table.d4lut,
+ *    table-stock3d.d4lut) are unlinked. Any other content marks the
+ *    directory anomalous and the whole directory is preserved.
+ *  - A directory counts as removed only after every owned file was unlinked
+ *    AND rmdir succeeded. A failed unlink/rmdir is reported as failed and
+ *    never decrements the remaining count.
+ *  - Protected from eviction: the runtime RAM selection, the saved choice
+ *    in both valid slots and legacy fallback records, and the directory
+ *    just composed. Fresh composes keep their
+ *    one-minute grace; they count toward the total but are never victims.
+ *  - The whole candidate set is scanned (the previous 64-entry cap left 100
+ *    stale caches at 60). Protected/fresh/anomalous directories may keep the
+ *    total above the target; the summary line reports that state instead of
+ *    pretending the hard bound was met. Temp compose dirs (.nx-tune-*) are
+ *    untouched: they do not match the nx-tune- prefix scan. */
 #define NX_TUNE_CACHE_MAX 24
+/* Transient scan memory ceiling. Far above any real burst; hitting it is
+ * reported as truncated rather than silently ignored. */
+#define NX_TUNE_SCAN_LIMIT 4096
+static int nx_tune_cache_name_valid(const char *name) {
+    if(strlen(name)!=24||strncmp(name,"nx-tune-",8))return 0;
+    for(int i=8;i<24;i++)if(!((name[i]>='0'&&name[i]<='9')||(name[i]>='a'&&name[i]<='f')))return 0;
+    return 1;
+}
 static void nx_tune_evict_extract(const char *body,char *out,size_t size) {
     const char *mark=strstr(body,"/looks/nx-tune-");
     if(!mark)return;
@@ -16,65 +43,112 @@ static void nx_tune_evict_extract(const char *body,char *out,size_t size) {
     while(mark[n]&&mark[n]!='/'&&n+1<size){out[n]=mark[n];n++;}
     out[n]=0;
 }
-static void nx_tune_cache_evict(const char *root,const char *just_composed_dir) {
-    char looks[768];struct stat st;
-    if(!root||snprintf(looks,sizeof looks,"%s/looks",root)>=(int)sizeof looks)return;
-    char protect[3][32];
+struct nx_tune_candidate { char name[32]; long long age; int fresh,protected_entry,anomalous,failed; };
+static int nx_tune_candidate_compare(const void *a,const void *b) {
+    long long delta=((const struct nx_tune_candidate*)a)->age-((const struct nx_tune_candidate*)b)->age;
+    return delta<0?-1:delta>0?1:0;
+}
+/* Returns the number of cache directories remaining after this pass. */
+static int nx_tune_cache_evict(const char *root,const char *just_composed_dir) {
+    char looks[768];struct stat64 st;
+    if(!root||snprintf(looks,sizeof looks,"%s/looks",root)>=(int)sizeof looks)return -1;
+    char protect[6][32];
     memset(protect,0,sizeof protect);
     const char *base=strrchr(just_composed_dir,'/');
     snprintf(protect[0],sizeof protect[0],"%.24s",base?base+1:"");
     char body[512];
     FILE *in=fopen("/var/run/nx300m-lut-selection","r");
     if(in){size_t n=fread(body,1,sizeof body-1,in);fclose(in);body[n]=0;nx_tune_evict_extract(body,protect[1],sizeof protect[1]);}
-    char choice[768];
-    if(snprintf(choice,sizeof choice,"%s/.state/lut-choice",root)<(int)sizeof choice){
-        in=fopen(choice,"r");
-        if(in){size_t n=fread(body,1,sizeof body-1,in);fclose(in);body[n]=0;nx_tune_evict_extract(body,protect[2],sizeof protect[2]);}
+    struct nx_lut_choice choice;char saved_path[PATH_MAX];
+    for(int i=0;i<2;i++)
+        if(nx_lut_choice_slot_path(saved_path,sizeof saved_path,root,i)&&
+           nx_lut_choice_slot_read(saved_path,&choice)&&!choice.off)
+            nx_tune_evict_extract(choice.table,protect[2+i],sizeof protect[2+i]);
+    static const char *const legacy_names[]={"lut-choice","lut-selection"};
+    for(int i=0;i<2;i++) {
+        int n=snprintf(saved_path,sizeof saved_path,"%s/.state/%s",root,legacy_names[i]);
+        if(n>0&&n<(int)sizeof saved_path&&nx_lut_choice_legacy_read(saved_path,&choice)&&!choice.off)
+            nx_tune_evict_extract(choice.table,protect[4+i],sizeof protect[4+i]);
     }
     DIR *dir=opendir(looks);
-    if(!dir)return;
-    char names[64][32];long long ages[64];int count=0,fresh=0;
+    if(!dir)return -1;
+    struct nx_tune_candidate *candidates=NULL;
+    int count=0,links=0,truncated=0,invalid_names=0;
     long long now=(long long)time(0);
     struct dirent *entry;
-    while((entry=readdir(dir))&&count<64) {
+    while((entry=readdir(dir))) {
         if(strncmp(entry->d_name,"nx-tune-",8))continue;
+        if(!nx_tune_cache_name_valid(entry->d_name)){invalid_names++;continue;}
         char path[832];
         if(snprintf(path,sizeof path,"%.767s/%.31s",looks,entry->d_name)>=(int)sizeof path)continue;
-        if(stat(path,&st)||!S_ISDIR(st.st_mode))continue;
-        /* Grace for fresh composes; they still count against the bound so a
-         * rapid burst cannot walk past it, but they are never victims. */
-        if(now-(long long)st.st_mtime<60){fresh++;continue;}
-        snprintf(names[count],sizeof names[0],"%.31s",entry->d_name);
-        ages[count]=(long long)st.st_mtime;count++;
+        if(!nx_lut_choice_lstat(path,&st))continue;                /* raced away: not ours to judge */
+        if(S_ISLNK(st.st_mode)) {links++;continue;} /* never follow, never delete */
+        if(!S_ISDIR(st.st_mode))continue;
+        if(count==NX_TUNE_SCAN_LIMIT){truncated=1;break;}
+        struct nx_tune_candidate *grown=realloc(candidates,(size_t)(count+1)*sizeof *candidates);
+        if(!grown){truncated=1;break;}
+        candidates=grown;
+        snprintf(candidates[count].name,sizeof candidates[count].name,"%.31s",entry->d_name);
+        candidates[count].age=(long long)st.st_mtime;
+        candidates[count].fresh=now-(long long)st.st_mtime<60;
+        candidates[count].protected_entry=0;
+        for(unsigned p=0;p<sizeof protect/sizeof *protect;p++)if(protect[p][0]&&!strcmp(candidates[count].name,protect[p]))candidates[count].protected_entry=1;
+        candidates[count].anomalous=0;
+        candidates[count].failed=0;
+        count++;
     }
     closedir(dir);
-    int remaining=count+fresh;
-    while(remaining>NX_TUNE_CACHE_MAX) {
-        int oldest=-1;
-        for(int i=0;i<count;i++) {
-            if(!names[i][0])continue;
-            int protected_entry=0;
-            for(int p=0;p<3;p++)if(protect[p][0]&&!strcmp(names[i],protect[p]))protected_entry=1;
-            if(protected_entry)continue;
-            if(oldest<0||ages[i]<ages[oldest])oldest=i;
+    qsort(candidates,(size_t)count,sizeof *candidates,nx_tune_candidate_compare);
+    int deleted=0,remaining=count;
+    static const char *const owned[]={"tune.txt","table.d4lut","table-stock3d.d4lut"};
+    for(int i=0;i<count&&remaining>NX_TUNE_CACHE_MAX;i++) {
+        struct nx_tune_candidate *victim=&candidates[i];
+        if(victim->protected_entry||victim->fresh||victim->anomalous||victim->failed)continue;
+        char directory[832];
+        if(snprintf(directory,sizeof directory,"%.767s/%.31s",looks,victim->name)>=(int)sizeof directory){victim->failed=1;continue;}
+        /* O_NOFOLLOW refuses a directory swapped for a symlink after lstat. */
+        int fd=open(directory,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
+        if(fd<0){victim->failed=1;continue;}
+        DIR *inside=fdopendir(fd);
+        if(!inside){close(fd);victim->failed=1;continue;}
+        struct dirent *file;int unknown=0,unlink_failed=0;
+        while((file=readdir(inside))) {
+            if(!strcmp(file->d_name,".")||!strcmp(file->d_name,".."))continue;
+            int known=0;
+            for(unsigned k=0;k<sizeof owned/sizeof *owned;k++)if(!strcmp(file->d_name,owned[k]))known=1;
+            if(!known)unknown=1;
         }
-        if(oldest<0)break;
-        char victim[832];
-        if(snprintf(victim,sizeof victim,"%.767s/%.31s",looks,names[oldest])>=(int)sizeof victim)break;
-        for(int pass=0;pass<2;pass++) {
-            DIR *v=opendir(victim);if(!v)break;
-            struct dirent *ve;int entries=0;
-            while((ve=readdir(v))) {
-                if(!strcmp(ve->d_name,".")||!strcmp(ve->d_name,".."))continue;
-                char fp[1100];snprintf(fp,sizeof fp,"%.831s/%.255s",victim,ve->d_name);
-                unlink(fp);entries++;
+        rewinddir(inside);
+        if(!unknown) {
+            while((file=readdir(inside))) {
+                int known=0;
+                for(unsigned k=0;k<sizeof owned/sizeof *owned;k++)if(!strcmp(file->d_name,owned[k]))known=1;
+                if(!known)continue;
+                /* Keep deletion bound to the opened directory if its path
+                 * is renamed or replaced after the admission check. */
+                if(unlinkat(dirfd(inside),file->d_name,0)&&errno!=ENOENT)unlink_failed=1;
             }
-            closedir(v);
-            if(!entries)break;
         }
-        rmdir(victim);
-        names[oldest][0]=0;remaining--;
+        closedir(inside);
+        if(unknown) {victim->anomalous=1;continue;}   /* preserve non-generator content */
+        if(unlink_failed) {victim->failed=1;continue;} /* removal did not happen */
+        if(rmdir(directory)) {victim->failed=1;continue;} /* still referenced or busy */
+        deleted++;remaining--;
     }
+    int protected_count=0,fresh_count=0,anomalous_count=0,failed_count=0;
+    for(int i=0;i<count;i++) {
+        protected_count+=candidates[i].protected_entry!=0;
+        fresh_count+=candidates[i].fresh&&!candidates[i].protected_entry;
+        anomalous_count+=candidates[i].anomalous;
+        failed_count+=candidates[i].failed&&!candidates[i].anomalous;
+    }
+    /* One bounded control-event line; never a per-frame log. `after` above
+     * the target with victims exhausted means protected/fresh/anomalous
+     * directories are holding the total up: reported, not hidden. */
+    fprintf(stderr,"TUNE_CACHE_EVICT target=%d before=%d after=%d deleted=%d protected=%d fresh=%d anomalous=%d failed=%d links=%d truncated=%d invalid_names=%d\n",
+            NX_TUNE_CACHE_MAX,count,remaining,deleted,protected_count,fresh_count,anomalous_count,failed_count,links,truncated,invalid_names);
+    free(candidates);
+    return remaining;
 }
 /* The cache key includes both source tables and the output controls. A cache
  * hit is also compared byte for byte, so a hash collision cannot alias looks.

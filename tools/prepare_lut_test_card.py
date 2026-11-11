@@ -62,11 +62,19 @@ def build(custom_shortcut=False, pending_wifi=None, menu_shortcut=False, fn_shor
     for name in ('mfw-ram-stage.sh', 'gui_mfw.NX300M', 'gui_preview.NX300M', 'mfw-panel-actions.sh'):
         source = {'mfw-ram-stage.sh': 'ram-stage.sh', 'mfw-panel-actions.sh': 'panel-actions.sh'}.get(name, name)
         package['nx300m-mod/' + name] = (PROJECT/'mod/deployment/mfw'/source).read_bytes().replace(b'\r\n',b'\n')
+    package['nx300m-mod/start.sh'] = (PROJECT/'mod/deployment/start.sh').read_bytes()
+    package['nx300m-mod/bin/ram_asset_verify.arm'] = (PROJECT/'outputs/controls/ram-asset-verify/ram_asset_verify.arm').read_bytes()
+    retired = {'bin/nx-quickshare-armv7', 'web_root/js/quickshare.js', 'web_root/css/quickshare.css'}
+    for name in retired:
+        package.pop('nx300m-mod/' + name, None)
+    index = 'nx300m-mod/web_root/index.html'
+    package[index] = b''.join(line for line in package[index].splitlines(keepends=True)
+                             if b'css/quickshare.css' not in line and b'js/quickshare.js' not in line)
     # Check the full merged RAM manifest, including unchanged base service files.
     manifest = package['nx300m-mod/runtime-files.list'].decode('ascii').splitlines()
     if len(manifest) != len(set(manifest)):
         raise RuntimeError('Duplicate RAM runtime entries')
-    manifest = sorted(set(manifest) | {'gui_preview.NX300M'})
+    manifest = sorted((set(manifest) - retired) | {'gui_preview.NX300M', 'bin/ram_asset_verify.arm'})
     package['nx300m-mod/runtime-files.list'] = ('\n'.join(manifest) + '\n').encode('ascii')
     for name in manifest:
         if name.startswith('/') or '..' in name.split('/') or 'nx300m-mod/' + name not in package:

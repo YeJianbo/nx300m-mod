@@ -4,16 +4,24 @@ import re
 from PIL import Image
 
 ROOT=Path(__file__).resolve().parents[1]
+REFERENCE_SIZE=(144,84)
+REFERENCE_FILES=('lut-reference.png','lut-reference-street.png','lut-reference-landscape.png')
 
-def build():
+def export_references():
     assets=ROOT/'mod/metol/assets'
-    names=('lut-reference.png','lut-reference-landscape.png','lut-reference-night.png')
-    images=[Image.open(assets/name).convert('RGB').tobytes() for name in names]
-    if any(len(data)!=192*112*3 for data in images):raise ValueError('Reference dimensions')
-    header='/* Photographic references; source credits in README.md. */\n#define NX_REF_W 192\n#define NX_REF_H 112\n#define NX_REF_COUNT 3\nstatic const unsigned char nx_reference_rgb[NX_REF_COUNT][NX_REF_W*NX_REF_H*3] = {\n'
+    images=[]
+    for name in REFERENCE_FILES:
+        with Image.open(assets/name) as image:
+            if image.size!=REFERENCE_SIZE:raise ValueError('Reference dimensions: '+name)
+            images.append(image.convert('RGB').tobytes())
+    width,height=REFERENCE_SIZE
+    header=f'/* Photographic references; source credits in README.md. */\n#define NX_REF_W {width}\n#define NX_REF_H {height}\n#define NX_REF_COUNT {len(images)}\nstatic const unsigned char nx_reference_rgb[NX_REF_COUNT][NX_REF_W*NX_REF_H*3] = {{\n'
     for data in images:
         header+='{\n'+''.join(','.join(map(str,data[i:i+32]))+',\n' for i in range(0,len(data),32))+'},\n'
     (assets/'lut_reference_rgb.h').write_text(header+'};\n',encoding='ascii')
+
+def build():
+    export_references()
     source=(ROOT/'mod/nxconnect/NXConnect/app/src/main/java/com/nxwa/nxconnect/ui/LensPresets.kt').read_text(encoding='utf-8')
     records=re.findall(r'LensPreset\("([^"]+)", "[^"]+", "([^"]+)", ([\d.]+), ([\d.]+), [\d.]+, "[^"]+"\)',source)
     if not records:raise ValueError('No NXConnect lens presets')

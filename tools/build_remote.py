@@ -22,6 +22,8 @@ def client():
     output.mkdir(parents=True, exist_ok=True)
     web = output/'web_root'
     shutil.copytree(PROJECT/'work/reference/metol/scripts/nx-rc/web_root', web, dirs_exist_ok=True)
+    for retired in ('js/quickshare.js', 'css/quickshare.css'):
+        (web / retired).unlink(missing_ok=True)
     change(web/'index.html', '<i class="fa fa-camera-retro"></i> NX-KS2',
            '<i class="fa fa-camera-retro" aria-hidden="true"></i> NX300M')
     change(web/'index.html', '<a class="dropdown-toggle" data-toggle="dropdown" href="#" role="button">',
@@ -68,8 +70,6 @@ def client():
     change(web/'index.html', '</head>', '  <link rel="stylesheet" href="css/nx300m.css">\n</head>')
     shutil.copyfile(PROJECT/'mod/metol/remote/gallery.js', web/'js/nx-gallery.js')
     shutil.copyfile(PROJECT/'mod/metol/remote/gallery.css', web/'css/nx-gallery.css')
-    shutil.copyfile(PROJECT/'mod/metol/remote/quickshare.js', web/'js/quickshare.js')
-    shutil.copyfile(PROJECT/'mod/metol/remote/quickshare.css', web/'css/quickshare.css')
     shutil.copyfile(PROJECT/'mod/metol/remote/exposure.js', web/'js/exposure.js')
     shutil.copyfile(PROJECT/'mod/metol/remote/exposure.css', web/'css/exposure.css')
     shutil.copyfile(PROJECT/'mod/metol/remote/looks.js', web/'js/looks.js')
@@ -77,7 +77,6 @@ def client():
     shutil.copyfile(PROJECT/'mod/metol/remote/recipe.js', web/'js/recipe.js')
     shutil.copyfile(PROJECT/'mod/metol/remote/recipe.css', web/'css/recipe.css')
     change(web/'index.html', '</head>', '  <link rel="stylesheet" href="css/nx-gallery.css">\n  <script src="js/nx-gallery.js"></script>\n</head>')
-    change(web/'index.html', '</head>', '  <link rel="stylesheet" href="css/quickshare.css">\n  <script src="js/quickshare.js"></script>\n</head>')
     change(web/'index.html', '</head>', '  <link rel="stylesheet" href="css/exposure.css">\n  <script src="js/exposure.js"></script>\n</head>')
     change(web/'index.html', '</head>', '  <link rel="stylesheet" href="css/looks.css">\n  <script src="js/looks.js"></script>\n</head>')
     change(web/'index.html', '</head>', '  <link rel="stylesheet" href="css/recipe.css">\n  <script src="js/recipe.js"></script>\n</head>')

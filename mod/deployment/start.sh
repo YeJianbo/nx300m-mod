@@ -25,8 +25,12 @@ fi
 # An obsolete record is metadata only. No process is signalled during recovery.
 rm -f "$PIDFILE" "$PHASE" || fail 'cannot clear obsolete state'
 [ -x "$REMOTE" ] || fail 'remote binary is missing or SD execution is unavailable'
-[ -x "$QUICKSHARE" ] || fail 'Quick Share binary is missing or SD execution is unavailable'
-[ -r "$ROOT/web_root/index.html" ] || fail 'web assets are missing'
+if [ -s "$ROOT/.runtime-deferred.list" ] && [ ! -L "$ROOT/.runtime-deferred.list" ] &&
+   [ ! -e "$ROOT/.runtime-assets-ready" ]; then
+    [ -d "$ROOT/web_root" ] || fail 'deferred web resource directory is missing'
+else
+    [ -r "$ROOT/web_root/index.html" ] || fail 'web assets are missing'
+fi
 [ -r "$ROOT/service.sh" ] || fail 'service supervisor is missing'
 exec 8>"$STATE/service.lock" || fail 'cannot open service lock'
 lease_wait=0

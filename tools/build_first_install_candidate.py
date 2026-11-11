@@ -38,11 +38,14 @@ def main():
     # These two markers select ABI7 Session preview; they do not enable
     # continuous timing collection during normal preview.
     markers = {'IPCS_OPEN_DIAGNOSTIC', 'IPCS_SESSION_PREVIEW'}
-    runtime = sorted(set(runtime) | markers)
+    retired = {'bin/nx-quickshare-armv7', 'web_root/js/quickshare.js', 'web_root/css/quickshare.css'}
+    runtime = sorted((set(runtime) - retired) | markers | {'bin/ram_asset_verify.arm'})
     files = {'autoexec.sh': safe_path(source_root, 'autoexec.sh').read_bytes(),
              'nx300m-mod/mfw-service-entry.sh': safe_path(source_root, 'nx300m-mod/mfw-service-entry.sh').read_bytes()}
     for name in runtime:
-        if name in markers:
+        if 'nx300m-mod/' + name in overlay:
+            data = overlay['nx300m-mod/' + name]
+        elif name in markers:
             data = b'1\n'
         elif name == 'runtime-files.list':
             data = ('\n'.join(runtime) + '\n').encode('ascii')

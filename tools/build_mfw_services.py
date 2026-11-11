@@ -17,7 +17,7 @@ def main():
         "nx300m-mod/mfw-ram-stage.sh": ROOT / "mod/deployment/mfw/ram-stage.sh",
         "nx300m-mod/bin/nx-remote-controller.arm": ROOT / "outputs/metol/remote/nx-remote-controller.arm",
         "nx300m-mod/bin/nxui.arm": ROOT / "outputs/metol/nxui.arm",
-        "nx300m-mod/bin/nx-quickshare-armv7": ROOT / "outputs/quickshare/nx-quickshare-armv7",
+        "nx300m-mod/bin/ram_asset_verify.arm": ROOT / "outputs/controls/ram-asset-verify/ram_asset_verify.arm",
         "nx300m-mod/licenses/metol-AGPL-3.0.txt": ROOT / "mod/metol/LICENSE",
         "nx300m-mod/licenses/metol-ATTRIBUTION.md": ROOT / "mod/metol/ATTRIBUTION.md",
         "nx300m-mod/licenses/Nuklear-MIT.txt": ROOT / "work/reference/metol/test_server/nxui/vendor/LICENSE",

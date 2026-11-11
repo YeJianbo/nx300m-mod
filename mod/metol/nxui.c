@@ -571,7 +571,7 @@ static int load_lut_choices(const char *path) {
     memset(&lut_tune,0,sizeof lut_tune);
     nx_queue_init(&queue);
     snprintf(status, sizeof status, "当前选择：关 · 原厂拍摄");
-    char session[NXUI_PATH] = "", choice[NXUI_PATH];
+    char session[NXUI_PATH] = "";
     FILE *in = fopen("/var/run/nx300m-lut-selection-session", "r");
     int session_present=in!=NULL;
     if(in){if(!fgets(session,sizeof session,in))session[0]=0;fclose(in);}
@@ -579,38 +579,43 @@ static int load_lut_choices(const char *path) {
     int own_session=session_present&&!strcmp(session,root);
     FILE *selection = (!session_present||own_session)?fopen("/var/run/nx300m-lut-selection", "r"):NULL;
     int saved = 0;
-    if (!selection) {
-        if (!own_session) {
-            snprintf(choice, sizeof choice, "%s/.state/lut-choice", root);
-            selection = fopen(choice, "r");
-            if (!selection) {
-                snprintf(choice, sizeof choice, "%s/.state/lut-selection", root);
-                selection = fopen(choice, "r");
-            }
-            saved = 1;
-        }
+    /* The saved card record is read through the same dual-slot store as the
+     * engine, boot and cache protection: a damaged or empty record is not a
+     * selection at all, and a valid Off stays Off instead of matching a
+     * stale table path by accident. */
+    struct nx_lut_choice saved_choice; memset(&saved_choice,0,sizeof saved_choice);
+    int have_saved = 0;
+    if (!selection && !own_session) {
+        saved = 1;
+        have_saved = nx_lut_choice_read_root(root,&saved_choice);
     }
     int matched=0;
+    char table[256]=""; unsigned int strength=100;
     if (selection) {
-        unsigned int generation, strength = 100; char table[256], candidate[256], base_id[64]="";
-        if (fscanf(selection, "%u %255s %u", &generation, table, &strength) >= 2) {
-            char *slash=strrchr(table,'/');
-            if(!strncmp(table,root,strlen(root))&&table[strlen(root)]=='/'&&slash && !strcmp(slash,"/table.d4lut")) {
-                char meta[512];snprintf(meta,sizeof meta,"%.*s/tune.txt",(int)(slash-table),table);
-                nx_tune_read(meta,base_id,&lut_tune,NULL);
-            }
-            for (int i = 1; i < count; i++) {
-                int length = snprintf(candidate, sizeof candidate, "%s/looks/%.63s/table.d4lut", root, recipes[i].key);
-                if (length < 0 || length >= (int)sizeof candidate) continue;
-                if (!strcmp(table, candidate) || !strcmp(base_id,recipes[i].key)) {
-                    selected = i; matched=1; lut_strength = strength <= 100 ? (int)strength : 100;
-                    snprintf(status, sizeof status, "%s %s · 强度 %d%%%s", saved ? "上次选择" : "当前选择",
-                        recipes[i].label, lut_strength, saved ? " · 按 OK 应用" : "");
-                    break;
-                }
+        unsigned int generation;
+        if (fscanf(selection, "%u %255s %u", &generation, table, &strength) < 2) table[0]=0;
+        fclose(selection);
+    } else if (have_saved && saved_choice.valid && !saved_choice.off) {
+        snprintf(table, sizeof table, "%s", saved_choice.table);
+        strength = saved_choice.strength;
+    }
+    if (table[0]) {
+        char candidate[256], base_id[64]="";
+        char *slash=strrchr(table,'/');
+        if(!strncmp(table,root,strlen(root))&&table[strlen(root)]=='/'&&slash && !strcmp(slash,"/table.d4lut")) {
+            char meta[512];snprintf(meta,sizeof meta,"%.*s/tune.txt",(int)(slash-table),table);
+            nx_tune_read(meta,base_id,&lut_tune,NULL);
+        }
+        for (int i = 1; i < count; i++) {
+            int length = snprintf(candidate, sizeof candidate, "%s/looks/%.63s/table.d4lut", root, recipes[i].key);
+            if (length < 0 || length >= (int)sizeof candidate) continue;
+            if (!strcmp(table, candidate) || !strcmp(base_id,recipes[i].key)) {
+                selected = i; matched=1; lut_strength = strength <= 100 ? (int)strength : 100;
+                snprintf(status, sizeof status, "%s %s · 强度 %d%%%s", saved ? "上次选择" : "当前选择",
+                    recipes[i].label, lut_strength, saved ? " · 按 OK 应用" : "");
+                break;
             }
         }
-        fclose(selection);
     }
     /* Direct tables mean zero adjustments, including when a different preset
      * has since been saved with Fn. Never infer the active parameters from
@@ -646,13 +651,15 @@ static int load_lut_choices(const char *path) {
     lut_draft=lut_current_dirty();
     lut_leave_dialog=lut_submit_failed=0;lut_list_open=1;lut_saved_config=saved;
     lut_list_cursor=0;for(int i=1;i<selected;i++)if(lut_in_group(i))lut_list_cursor++;
-    if(!saved){char saved_file[NXUI_PATH],saved_path[256],runtime_path[256];unsigned sg,ss,rg,rs;
-        snprintf(saved_file,sizeof saved_file,"%s/.state/lut-choice",root);
-        FILE *sf=fopen(saved_file,"r"),*rf=fopen("/var/run/nx300m-lut-selection","r");
-        if(sf&&rf&&fscanf(sf,"%u %255s %u",&sg,saved_path,&ss)==3&&fscanf(rf,"%u %255s %u",&rg,runtime_path,&rs)==3)
-            lut_saved_config=sg==rg&&ss==rs&&!strcmp(saved_path,runtime_path);
-        if(sf)fclose(sf);
+    if(!saved){char runtime_path[256];unsigned rg,rs;
+        FILE *rf=fopen("/var/run/nx300m-lut-selection","r");
+        struct nx_lut_choice applied_choice;
+        int ram_ok=rf&&fscanf(rf,"%u %255s %u",&rg,runtime_path,&rs)==3;
         if(rf)fclose(rf);
+        lut_saved_config=ram_ok&&nx_lut_choice_read_root(root,&applied_choice)&&
+            applied_choice.valid&&!applied_choice.off&&
+            rg==applied_choice.generation&&rs==applied_choice.strength&&
+            !strcmp(runtime_path,applied_choice.table);
     }
     lut_reference_dirty=1;
     const char *notice = getenv("NXUI_LUT_NOTICE");
@@ -1794,7 +1801,7 @@ int main(int argc, char **argv) {
                 }
                 continue;
             }
-            if (event.type == KeyPress || event.type == KeyRelease)
+            if (trace_frames && (event.type == KeyPress || event.type == KeyRelease))
                 fprintf(stderr, "PANEL_KEY type=%d code=%u symbol=0x%lx\n", event.type, event.xkey.keycode, XLookupKeysym(&event.xkey, 0));
             if(lut_mode&&(event.type==KeyPress||event.type==KeyRelease)&&XLookupKeysym(&event.xkey,0)==XF86XK_HomePage){
                 /* X11 autorepeat emits a release/press pair with one timestamp.
@@ -1870,7 +1877,7 @@ int main(int argc, char **argv) {
             if(event.type==ButtonRelease&&lut_reference_press&&event.xbutton.button==1){
                 int dx=event.xbutton.x-touch_x;
                 if(dx>-30&&dx<30&&now_ms()-lut_reference_pressed_at<300)lut_reference_scene=(lut_reference_scene+1)%3;
-                lut_reference_press=lut_reference_original=0;lut_reference_dirty=dirty=1;
+                lut_reference_press=lut_reference_original=0;lut_reference_unmixed_dirty=1;lut_reference_dirty=dirty=1;
             }
             if (event.type == ButtonPress && !menu && !lut_edit &&
                 (!lut_mode || (!lut_list_open&&!lut_leave_dialog&&event.xbutton.x < 338 && event.xbutton.y >= 100 && event.xbutton.y < 288))) {

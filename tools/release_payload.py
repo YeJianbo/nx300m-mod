@@ -40,6 +40,11 @@ def deployed_overlay(root):
             for name, digest in expected_sources.items()):
         raise ValueError('最新菜单与通过的自定义分组 ARM 逻辑回归不一致。')
     sources = {
+        PREFIX + 'start.sh': 'mod/deployment/start.sh',
+        PREFIX + 'bin/ram_asset_verify.arm': 'outputs/controls/ram-asset-verify/ram_asset_verify.arm',
+        PREFIX + 'mfw-ram-stage.sh': 'mod/deployment/mfw/ram-stage.sh',
+        PREFIX + 'bin/nx-remote-controller.arm': 'outputs/metol/remote/nx-remote-controller.arm',
+        PREFIX + 'web_root/index.html': 'outputs/metol/remote/web_root/index.html',
         PREFIX + 'bin/nxui.arm': menu,
         PREFIX + 'fn-panel/bin/nxui.arm': menu,
         PREFIX + 'bin/lut_engine.arm': 'outputs/metol/lut_engine.arm',
@@ -66,7 +71,7 @@ def verify_complete(read, *, allow_stock_wifi=False, backend_files=None):
     runtime = read(PREFIX + 'runtime-files.list').decode('ascii').splitlines()
     required = {
         'bin/nxui.arm', 'fn-panel/bin/nxui.arm', 'bin/lut_engine.arm', 'bin/lut_live_loader.arm',
-        'bin/nx-remote-controller.arm', 'bin/nx-quickshare-armv7', 'lib/lut_ram_blob.bin',
+        'bin/nx-remote-controller.arm', 'bin/ram_asset_verify.arm', 'lib/lut_ram_blob.bin',
         'mfw-ram-stage.sh', 'mfw-services.sh', 'mfw-panel.sh', 'mfw-panel-actions.sh',
         'common.sh', 'start.sh', 'stop.sh', 'service.sh', 'lut-boot.sh', 'lut-load.sh',
         'lut-panel.sh', 'fonts/mfw-font.charset', 'gui_mfw.NX300M', 'web_root/index.html',

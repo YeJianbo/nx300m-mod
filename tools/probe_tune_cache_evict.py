@@ -17,7 +17,7 @@ import time
 import os
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / 'outputs/review/2026-11-07-zcode/tune-cache-evict-v8'
+OUT = ROOT / 'outputs/review/2026-11-11-idle/tune-cache-evict-v9'
 FIXTURE = '''#include "mod/metol/lut_engine_shared.h"
 #define nx_lut_hook_ready() 1
 #include "mod/metol/lut_engine.c"
@@ -69,7 +69,17 @@ def worker(out):
     dirs = cache_dirs()
     assert len(dirs) == 31, f'expected 31 composed dirs, got {len(dirs)}'
     runtime_selection = selected()[1]
-    persisted = (data/'.state/lut-choice').read_text().split()[1]
+    # The persisted choice now lives in the dual-slot store; read the best
+    # valid slot the same way the engine does (highest generation wins).
+    persisted = None
+    best = -1
+    for slot in (data/'.state').glob('lut-choice.[01]'):
+        fields = slot.read_text().split()
+        if len(fields) < 6 or fields[0] != 'NXCH1':
+            continue
+        if int(fields[1]) > best:
+            best = int(fields[1])
+            persisted = fields[4]
     assert Path(runtime_selection).parent in dirs
     assert Path(persisted).parent in dirs
 

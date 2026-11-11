@@ -10,9 +10,14 @@ case $fixture:$source_root in 0:/mnt/mmc/nx300m-mod|1:/perf) ;; *) exit 1 ;; esa
 source_id=$(stat -c '%d:%i' "$source_root") || exit 1
 export NX300M_MOD_SOURCE_ROOT="$source_root" NX300M_MOD_SOURCE_ID="$source_id"
 export NX300M_MOD_ROOT="$HERE" NX_MOD_ROOT="$HERE"
-saved=$source_root/.state/lut-choice
-[ -e "$saved" ] || saved=$source_root/.state/lut-selection
-[ -f "$saved" ] && [ ! -L "$saved" ] || exit 0
+# The engine reads the dual-slot choice store plus the legacy files; this
+# gate only decides whether there is any record to consider at all. A missing
+# record means nothing to restore; validation happens inside the engine.
+saved=
+for candidate in "$source_root/.state/lut-choice.0" "$source_root/.state/lut-choice.1"                  "$source_root/.state/lut-choice" "$source_root/.state/lut-selection"; do
+    if [ -f "$candidate" ] && [ ! -L "$candidate" ]; then saved=$candidate; break; fi
+done
+[ -n "$saved" ] || exit 0
 case $(stat -f -c '%T' "$HERE") in tmpfs|ramfs) ;; *) exit 1 ;; esac
 exec 5>"${NX_STATE_DIR:-/tmp/nx300m-mfw/state}/lut-boot.lock"
 flock -n 5 || exit 0

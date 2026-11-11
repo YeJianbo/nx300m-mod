@@ -1,4 +1,4 @@
-"""Package native remote, panels, catalogues and Quick Share for an NX300M SD card.
+"""Package native remote, panels and catalogues for an NX300M SD card.
 
 This does not install the start hook, modify firmware, or contact a camera.
 """
@@ -22,7 +22,7 @@ from elftools.elf.elffile import ELFFile
 
 PROJECT = Path(__file__).resolve().parents[1]
 OUTPUT = PROJECT / 'outputs/deployment/sd-bundle'
-SCRIPTS = ('common.sh', 'start.sh', 'stop.sh', 'service.sh', 'panel.sh', 'quickshare-panel.sh',
+SCRIPTS = ('common.sh', 'start.sh', 'stop.sh', 'service.sh', 'panel.sh',
            'ram-start.sh', 'mfw-ram-stage.sh', 'firmware-mod-restore.sh', 'mode-dial-restore.sh')
 RAM_SCRIPTS = {'ram-start.sh': 'mfw/autoexec-services.sh', 'mfw-ram-stage.sh': 'mfw/ram-stage.sh'}
 SWITCH_SCRIPTS = (
@@ -146,9 +146,8 @@ def bundle_panel_assets(root):
 
 def build(remote=None, *, lut_method=DEFAULT_METHOD):
     remote = remote or PROJECT / 'outputs/metol/remote/nx-remote-controller.arm'
-    quickshare = PROJECT / 'outputs/quickshare/nx-quickshare-armv7'
     web = PROJECT / 'outputs/metol/remote/web_root'
-    binaries = (remote, quickshare, PROJECT / 'outputs/quickshare/gallery/quickshare-panel.arm',
+    binaries = (remote, PROJECT / 'outputs/controls/ram-asset-verify/ram_asset_verify.arm',
                 PROJECT / 'outputs/controls/mode-dial-x11/mode_dial_x11.arm',
                 *(PROJECT / 'outputs/metol' / name for name in PANEL_BINARIES))
     native_dependencies = {binary.name: arm_elf(binary) for binary in binaries}
@@ -201,7 +200,7 @@ def build(remote=None, *, lut_method=DEFAULT_METHOD):
                 tar.addfile(info, io.BytesIO(data))
                 inventory.append({'path': relative, 'bytes': len(data), 'mode': oct(mode)})
     report = {'bundle': archive.relative_to(PROJECT).as_posix(), 'root': '/mnt/mmc/nx300m-mod',
-              'listen_default': '127.0.0.1:8781', 'services': ['remote (owns on-demand Quick Share children)'],
+              'listen_default': '127.0.0.1:8781', 'services': ['remote'],
               'looks': look_ids, 'lut_compiler_method': lut_method, 'panels': panels, 'native_dependencies': native_dependencies,
               'runtime': {'migrated': True, 'entry': 'ram-start.sh --service',
                           'stage_source': 'mod/deployment/mfw/ram-stage.sh',

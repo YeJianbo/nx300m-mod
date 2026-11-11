@@ -14,10 +14,20 @@ case $command in
     enable-s2|enable-s2-stock|test-monochrome|test-monochrome-timing|sync|stock|status|stop|restore|diag-export|pause) ;;
     *) fail 'use enable-s2, sync, stock, status, stop, restore, diag-export or probe-once' ;;
 esac
-[ "$(id -u)" = 0 ] || fail 'root required'
+uid=$(id -u)
+[ "$uid" = 0 ] || fail 'root required'
 [ "$(uname -m)" = armv7l ] || fail 'native ARMv7 required'
 unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH ENV BASH_ENV
-HERE=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+# Per-control-event stage timing (identity/job/table/launcher/output) so card
+# logs can attribute sync wait. One /proc/uptime read per stage via redirect;
+# printf is a builtin, so this never forks.
+sf_stage() {
+    IFS=' ' read -r sf_uptime sf_rest < /proc/uptime
+    printf 'SF_STAGE script=%s stage=%s uptime=%s\n' "${0##*/}" "$1" "$sf_uptime" >&2
+}
+sf_stage preamble
+case $0 in */*) here_dir=${0%/*};; *) here_dir=.;; esac
+HERE=$(CDPATH= cd -P "$here_dir" && pwd -P)
 case $HERE in *[!A-Za-z0-9_./-]*) fail 'unsupported runtime path' ;; esac
 open_diagnostic=0
 if [ -e "$HERE/IPCS_OPEN_DIAGNOSTIC" ]; then
@@ -53,7 +63,7 @@ backend_value() {
     [ ! -L "$backend" ] || fail 'backend marker is a symbolic link'
     value=
     if [ -e "$backend" ]; then
-        [ -f "$backend" ] && [ "$(stat -c '%u' "$backend")" = "$(id -u)" ] || fail 'invalid backend marker'
+        [ -f "$backend" ] && [ "$(stat -c '%u' "$backend")" = "$uid" ] || fail 'invalid backend marker'
         IFS= read -r value < "$backend" || fail 'invalid backend marker'
     fi
 }
@@ -72,6 +82,7 @@ set -- $camera_identity
 [ "$#" -eq 2 ] || fail 'camera identity unavailable'
 camera_pid=$1
 camera_start=$2
+sf_stage identity
 job=$(mktemp -d /tmp/nx300m-sf-job.XXXXXX) || fail 'cannot allocate private RAM job'
 case $(stat -f -c '%T' "$job") in tmpfs|ramfs) ;; *) rmdir "$job"; fail 'job must be RAM backed' ;; esac
 for pair in bin/smartfilter_probe_launcher.arm:launcher bin/smartfilter_loader.arm:loader.arm lib/smartfilter_ram.bin:blob.bin smartfilter-probe-collector.sh:collector.sh; do
@@ -80,10 +91,15 @@ for pair in bin/smartfilter_probe_launcher.arm:launcher bin/smartfilter_loader.a
         case ${pair%:*} in bin/*|lib/*) resource=$HERE/ipcs-diagnostic/${pair%:*} ;; esac
     fi
     [ -f "$resource" ] && [ ! -L "$resource" ] || fail "missing resource: $resource (RAM retained: $job)"
+    # A hard link would avoid the copy, but staging and /tmp are separate
+    # tmpfs mounts on the camera (EXDEV, verified 2026-11-11), so every link
+    # would fall back to cp anyway plus one extra stat per file. Keep the
+    # plain copy + byte comparison.
     cp "$resource" "$destination" && cmp -s "$resource" "$destination" || fail "private RAM copy differs ($job)"
 done
 chmod 500 "$job/launcher" "$job/loader.arm" "$job/collector.sh"
 chmod 400 "$job/blob.bin"
+sf_stage job-ready
 if [ "$command" = probe-once ]; then
     nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
     [ "${#nonce}" -eq 32 ] || fail 'cannot obtain probe nonce'
@@ -140,7 +156,7 @@ case $command in
         selection=/var/run/nx300m-lut-selection
         [ ! -L "$selection" ] || fail 'selection is a symbolic link'
         if [ -e "$selection" ]; then
-            [ -f "$selection" ] && [ "$(stat -c '%u' "$selection")" = "$(id -u)" ] || fail 'invalid current selection'
+            [ -f "$selection" ] && [ "$(stat -c '%u' "$selection")" = "$uid" ] || fail 'invalid current selection'
             read -r generation selected strength extra < "$selection" || fail 'invalid current selection'
             [ -z "${extra:-}" ] || fail 'unexpected selection fields'
             case $generation in ''|*[!0-9]*) fail 'invalid generation' ;; esac
@@ -163,6 +179,7 @@ if [ -n "$table" ]; then
     [ "$(stat -c '%d:%i:%s:%Y' "$table")" = "$before" ] &&
         [ "$(stat -c '%d:%i' "$source_root")" = "$source_id" ] || fail 'source changed while copying LUT'
     chmod 400 "$job/table.d4lut"
+    sf_stage table-ready
 fi
 set -- "$operation" --pid "$camera_pid" --blob "$job/blob.bin"
 case $command in
@@ -193,6 +210,7 @@ elif [ "$command" = restore ] && [ -n "${NX_FN_KEY_LOG:-}" ]; then
 fi
 rc=0
 "$job/launcher" --run 30 "$job/control.json" "$job/control.stderr" "$guard" "$job/loader.arm" "$@" || rc=$?
+sf_stage launcher
 [ ! -f "$job/control.json" ] || while IFS= read -r line; do printf '%s\n' "$line"; done < "$job/control.json"
 if [ "$rc" -ne 0 ]; then
     # The loader's stderr contains the actual rejection. Preserve it before
@@ -216,6 +234,7 @@ fi
 # Include the native admission/stop-window timings on successful controls too.
 # They were previously stranded in a private RAM job, hiding the cause of a
 # slow switch after power-off. This is control-event output, never frame I/O.
+sf_stage output
 if [ -f "$job/control.stderr" ]; then
     while IFS= read -r line; do
         case $line in 'Control admission:'*|'Target stop window:'*) printf '%s\n' "$line" >&2 ;; esac

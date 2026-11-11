@@ -1,20 +1,27 @@
-`lut-reference.png` is a 192 x 112 crop of NASA's public-domain portrait of
-astronaut Eileen Collins, distributed as `skimage/data/astronaut.png` in
-scikit-image v0.24.0. Source:
-https://raw.githubusercontent.com/scikit-image/scikit-image/v0.24.0/skimage/data/astronaut.png
+The references use the original, ungraded photos from the comparison sheets
+supplied in the user's NX300M conversation (01a1c341-9d88-7360-8348-6a393cbafbb6).
+They were packed as 144 x 84 RGB images on 2026-11-11, in this scene order:
 
-`lut_reference_rgb.h` contains the three PNGs decoded to row-major RGB bytes.
-The menu redraws the selected reference when the image, table or tuning
-changes. This is a software LUT reference, not a sensor or LCD measurement.
+- `lut-reference.png`: portrait holding a cake; source `34_09_before.jpg`
+  from LumixLutSearch's `app/src/main/assets/songying/` sample images.
+- `lut-reference-street.png`: daylight city buildings; source
+  `113_01_before.jpg` from the same sample collection.
+- `lut-reference-landscape.png`: blue car, person and clouds; Original panel
+  of CXO FilmPack's `docs/images/raw-landscape.jpg` (P1176257.RW2).
+  Crop `(0, 58, width/3, height)` removes the comparison header and graded panels.
 
-`lut-reference-landscape.png`: crop/resize of `china.jpg`, by danielbuechele,
-CC BY 2.0 (https://creativecommons.org/licenses/by/2.0/), distributed by
-scikit-learn 1.5.2. Original: https://www.flickr.com/photos/danielbuechele/6061409035/
-Source: https://raw.githubusercontent.com/scikit-learn/scikit-learn/1.5.2/sklearn/datasets/images/china.jpg
+Source repositories:
+https://github.com/MangDao/LumixLutSearch
+https://github.com/Macchen666816/CXO-FilmPack
 
-`lut-reference-night.png`: crop/resize of SpaceX's public-domain DSCOVR launch
-photo, distributed as scikit-image 0.18.3 `rocket.jpg`.
-Original: https://www.flickr.com/photos/spacexphotos/16511594820/
-Source: https://raw.githubusercontent.com/scikit-image/scikit-image/v0.18.3/skimage/data/rocket.jpg
+All three use a centered 12:7 crop and Lanczos downsampling, with no added
+LUT or color adjustment. They retain their source provenance; this asset
+replacement does not reclassify the photographs as project-owned originals.
+
+`lut_reference_rgb.h` contains the PNGs decoded to row-major RGB bytes.
+Three images now contain 108,864 RGB bytes, down from 193,536. The menu
+redraws the selected reference when the image, table or tuning changes.
+These are visual comparison sources, not color calibration targets.
 
 Run `tools/export_ui_assets.py` to rebuild the RGB header from these PNGs.
+That exporter also refreshes the camera lens list from NXConnect presets.

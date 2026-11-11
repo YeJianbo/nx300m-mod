@@ -19,7 +19,8 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
-HERE=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+case $0 in */*) here_dir=${0%/*};; *) here_dir=.;; esac
+HERE=$(CDPATH= cd -P "$here_dir" && pwd -P)
 SOURCE=${NX300M_MOD_SOURCE_ROOT:-$HERE}
 ROOT=$(CDPATH= cd -P "$SOURCE" && pwd -P) || fail 'LUT data directory unavailable'
 case $ROOT in *[!A-Za-z0-9_./-]*) fail 'unsupported LUT data path' ;; esac

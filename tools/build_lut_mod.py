@@ -54,6 +54,7 @@ def build(include_diagnostics=False):
     shutil.copyfile(engine, root / 'bin/lut_engine.arm')
     shutil.copyfile(ui, root / 'bin/nxui.arm')
     shutil.copyfile(remote, root / 'bin/nx-remote-controller.arm')
+    shutil.copyfile(PROJECT / 'outputs/controls/ram-asset-verify/ram_asset_verify.arm', root / 'bin/ram_asset_verify.arm')
     shutil.copyfile(live_loader, root / 'bin/lut_live_loader.arm')
     shutil.copyfile(blob, root / 'lib/lut_ram_blob.bin')
     compat = PROJECT / 'outputs/deployment/lut-live-loader/compat'
@@ -109,6 +110,7 @@ def build(include_diagnostics=False):
         if name.startswith('/') or '..' in name.split('/') or not (baseline_root / name).is_file():
             raise ValueError(f'Invalid or missing connected-service asset: {name}')
     runtime_files = set(baseline) | {'lut-panel.sh', 'lut-load.sh', 'lut-cycle.sh', 'gui_looks.NX300M', 'bin/lut_engine.arm', 'bin/lut_live_loader.arm', 'lib/lut_ram_blob.bin', 'fonts/mfw-font.charset'}
+    runtime_files.add('bin/ram_asset_verify.arm')
     runtime_files.update(compatibility_images)
     runtime_files.update(path.relative_to(root).as_posix() for path in (root / 'web_root').rglob('*') if path.is_file())
     (root / 'runtime-files.list').write_text(''.join(name + '\n' for name in sorted(runtime_files)), encoding='ascii', newline='\n')

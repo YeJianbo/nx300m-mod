@@ -59,7 +59,7 @@ def prepare():
                 payload['mnt/mmc/' + member.name] = (package.extractfile(member).read(), member.mode)
             elif not member.isdir():
                 raise ValueError('SD archive must not include links')
-    for name in (*lifecycle.SCRIPTS, 'bin/nx-remote-controller.arm', 'bin/nx-quickshare-armv7', 'web_root/index.html'):
+    for name in (*lifecycle.SCRIPTS, 'bin/nx-remote-controller.arm', 'web_root/index.html'):
         if SD.lstrip('/') + '/' + name not in payload:
             raise ValueError('Incomplete SD service bundle: ' + name)
     old_launch = ('LD_PRELOAD=/arm-vm/lib/gpio_preview.so:/arm-vm/lib/device_preview.so:/arm-vm/lib/capture_boot.so:/usr/lib/nx300m-mod/service-loader.so \\\n'

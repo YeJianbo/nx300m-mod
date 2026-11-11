@@ -62,7 +62,7 @@ static void mm_request(struct mg_connection *c,struct http_message *h,int plan) 
     if (mg_vcmp(&h->method,"GET")) { reply(c,405,"{\"ok\":false,\"error\":\"GET required\"}");return; }
     const char *root=nx_mod_root();
     if (!root) { reply(c,503,"{\"ok\":false,\"error\":\"invalid resource root\"}");return; }
-    const char *required[]={"start.sh","stop.sh","common.sh","service.sh","bin/nx-remote-controller.arm","bin/nx-quickshare-armv7","web_root/index.html"};
+    const char *required[]={"start.sh","stop.sh","common.sh","service.sh","bin/nx-remote-controller.arm","web_root/index.html"};
     int complete=1;char path[256];
     for (unsigned i=0;i<sizeof required/sizeof *required;i++) {
         snprintf(path,sizeof path,"%s/%s",root,required[i]);if (!mm_regular(path)) complete=0;

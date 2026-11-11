@@ -5,12 +5,15 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shlex
+import subprocess
 import time
 from zipfile import ZipFile
 
 import arm_vm
 import probe_menu_startup_vm as vm
 from probe_menu_entry_vm import collect
+from wsl_paths import wsl_path
 
 ROOT = Path(__file__).resolve().parents[1]
 TAP_DRIVER = r'''
@@ -41,7 +44,7 @@ TAP_DRIVER = r'''
 PROBE = r'''#!/bin/sh
 set -eu
 set -x
-export DISPLAY=:97 NX300M_MOD_ROOT=/perf/mod
+export DISPLAY=:97 NX300M_MOD_ROOT=/perf/mod FIXTURE_HOOK_READY=1 NX300M_LUT_SKIP_PREVIEW_SYNC=1
 attempt=0
 until /perf/close.arm ping; do
     attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
@@ -153,6 +156,7 @@ wait "$panel"
 # Real ARM staging engine, with only the camera-ready gate replaced. Validate
 # inline key adjustments, reference pixels, saved preferences and favourites.
 /perf/tune-engine.arm apply nx300-hard-mono 100 0 0 0 0 0 0 0 > /perf/tune-setup.log 2>&1
+cp /var/run/nx300m-lut-selection /perf/tune-active-before.txt
 NX_STATE_DIR=/tmp/select-tune /rescue/busybox timeout 20 /perf/mod/bin/nxui.arm --live --lut \
     --root /perf/mod --recipes /perf/mod/looks.txt --engine /perf/tune-engine.arm \
     --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
@@ -173,17 +177,21 @@ for key in XF86ScrollUp XF86ScrollDown; do /perf/close.arm key "$key"; done
 /rescue/busybox usleep 300000
 /perf/close.arm snapshot /perf/tune-inline.ppm
 /perf/close.arm key XF86HomePage
-wait_backend /perf/tune.log
+attempt=0
+until grep -q '^LUT_PRESET_SAVED key=nx300-hard-mono applied=0' /perf/tune.log; do
+    kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+done
+kill -0 "$panel"
+! grep -q '^LUT_SUBMIT\|^BACKEND kind=1' /perf/tune.log
+cmp /perf/tune-active-before.txt /var/run/nx300m-lut-selection
 grep -q '^LUT_VIEW list=0 key=nx300-hard-mono' /perf/tune.log
-grep -q '^LUT_VIEW list=1 key=nx300-hard-mono saving=1' /perf/tune.log
+grep -q '^LUT_VIEW list=1 key=nx300-hard-mono saving=0' /perf/tune.log
 /perf/close.arm key Menu
 wait "$panel"
-cp /perf/mod/.state/lut-tune-nx300-hard-mono /perf/tune-state.txt
-IFS= read -r saved_tune < /perf/tune-state.txt
-[ "$saved_tune" = '1 nx300-hard-mono 1 -1 0 0 0 0 0 100' ]
+grep -hE '^NXTP1 [0-9]+ [0-9a-f]{8} 1 nx300-hard-mono 1 -1 0 0 0 0 0 100$' \
+    /perf/mod/.state/lut-preset-nx300-hard-mono.[01] > /perf/tune-state.txt
 grep -q '^nx300-hard-mono$' /perf/mod/.state/lut-favorites
-grep -q '/looks/nx-tune-' /var/run/nx300m-lut-selection
-NX_STATE_DIR=/tmp/select-tune-reopen /rescue/busybox timeout 15 /perf/mod/bin/nxui.arm --dry-run --lut \
+NX_STATE_DIR=/tmp/select-tune-reopen /rescue/busybox timeout 20 /perf/mod/bin/nxui.arm --live --lut \
     --root /perf/mod --recipes /perf/mod/looks.txt --engine /perf/tune-engine.arm \
     --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
     --font-metadata /perf/mod/fonts/mfw-font.charset > /perf/tune-reopen.log 2>&1 &
@@ -198,8 +206,10 @@ grep -q 'LUT_TUNE key=nx300-hard-mono values=1,-1,0,0,0,0,0' /perf/tune-reopen.l
 /perf/close.arm key XF86HomePage
 /rescue/busybox usleep 300000
 /perf/close.arm snapshot /perf/tune-color.ppm
-/perf/close.arm key Menu
+/perf/close.arm key KP_Enter
+wait_backend /perf/tune-reopen.log exit
 wait "$panel"
+grep -q '/looks/nx-tune-' /var/run/nx300m-lut-selection
 gzip /perf/tune-inline.ppm /perf/tune-favorites.ppm /perf/tune-color.ppm
 # Without a film style, Fn enters the identity preset; its adjustments still
 # use the production ARM engine and are distinct from the red Off action.
@@ -215,8 +225,13 @@ until grep -q '^FIRST_FRAME ' /perf/original.log; do
     kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
 done
 for key in Up XF86HomePage XF86ScrollUp XF86HomePage; do /perf/close.arm key "$key"; done
-wait_backend /perf/original.log
-grep -q '^1 nx300-adjust-base 1 0 0 0 0 0 0 100$' /perf/mod/.state/lut-tune-nx300-adjust-base
+attempt=0
+until grep -q '^LUT_PRESET_SAVED key=nx300-adjust-base applied=0' /perf/original.log; do
+    kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
+done
+! grep -q '^LUT_SUBMIT\|^BACKEND kind=1' /perf/original.log
+grep -hE '^NXTP1 [0-9]+ [0-9a-f]{8} 1 nx300-adjust-base 1 0 0 0 0 0 0 100$' \
+    /perf/mod/.state/lut-preset-nx300-adjust-base.[01]
 /perf/close.arm key Menu
 wait "$panel"
 printf 'nx300-hard-mono\nnx300-fuji-classic-chrome\n' > /perf/mod/.state/lut-favorites
@@ -268,10 +283,11 @@ gzip /perf/groups-focus.ppm
 # is the SD-style data directory and an old Fn-menu service root is inherited.
 base=/tmp/lut-menu-service
 mkdir -p "$base/runtime" "$base/state"
+printf '1 /perf/mod/looks/nx300-fuji-classic-chrome/table.d4lut 100\n' > /perf/mod/.state/lut-choice
 cat > "$base/runtime/mfw-panel-actions.sh" <<'RAM_ACTION'
 #!/bin/sh
 set -eu
-[ "$1" = preview-toggle ]
+[ "$1" = preview-s2-enable ]
 [ "$NX300M_MOD_ROOT" = /tmp/lut-menu-service/runtime ]
 [ "$NX_MOD_ROOT" = "$NX300M_MOD_ROOT" ]
 [ "$NX_FN_SERVICE_ROOT" = "$NX300M_MOD_ROOT" ]
@@ -352,6 +368,8 @@ def main():
     archive = ROOT/'outputs/looks/lightroom-import/on-camera-test/nx300m-lut-color-test.zip'
     with ZipFile(archive) as package:
         catalogue = package.read('nx300m-mod/looks.txt').decode().rstrip()
+    if not any(row.startswith('nx300-adjust-base|') for row in catalogue.splitlines()):
+        catalogue += '\nnx300-adjust-base|原图调整|0|0|0|0|0|0|0'
     vm.OUT = out
     vm.PROBE = PROBE.replace('@CATALOGUE@', catalogue)
     if args.navigation_only:
@@ -370,7 +388,21 @@ def main():
         'perf/mod/lut-cycle.sh': (ROOT/'mod/deployment/mfw/lut-cycle.sh').read_bytes(),
         'perf/mod/bin/lut_engine.arm': b'#!/bin/sh\nprintf "%s\\n" "$*" >> /perf/actions.txt\nexit 0\n',
     }
-    vm.EXTRA_FILES['perf/tune-engine.arm']=(ROOT/'outputs/review/menu-toggle-width/tuning-arm/engine.arm').read_bytes()
+    from probe_lut_choice_store import FIXTURE
+    out.mkdir(parents=True,exist_ok=True)
+    (out/'tune-engine.c').write_text(FIXTURE,encoding='utf-8')
+    build=f'''set -eu
+cd {shlex.quote(wsl_path(ROOT))}
+tc=/opt/nx300m-toolchain/usr
+export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
+rf=/opt/nx300m-lab/stock-1.15
+"$tc/bin/arm-linux-gnueabi-gcc" -B"$tc/lib/gcc-cross/arm-linux-gnueabi/14/" -std=c99 -O1 -Wall -Wextra -Werror -D_GNU_SOURCE -include mod/metol/remote/compat.h -I. -U_TIME_BITS -D_TIME_BITS=32 -U_FILE_OFFSET_BITS -D_FILE_OFFSET_BITS=64 -mfloat-abi=soft -fno-pic -no-pie -fno-stack-protector -nostdlib -nostartfiles -Wl,-e,_start -Wl,--dynamic-linker=/lib/ld-linux.so.3 -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$rf/lib" {shlex.quote(wsl_path(out/'tune-engine.c'))} mod/metol/remote/compat.c work/reference/metol/test_server/filmlab/src/crt0_arm.S "$rf/lib/libc-2.13.so" -lgcc -o {shlex.quote(wsl_path(out/'tune-engine.arm'))}
+'''
+    compiled=subprocess.run(['wsl.exe','-u','root','-e','sh','-c',build],capture_output=True,text=True)
+    (out/'tune-engine-build.log').write_text(compiled.stdout+compiled.stderr,encoding='utf-8')
+    compiled.check_returncode()
+    vm.EXTRA_FILES['perf/tune-engine.arm']=(out/'tune-engine.arm').read_bytes()
+    vm.EXTRA_FILES['perf/mod/looks/nx300-adjust-base/table.d4lut']=(ROOT/'outputs/review/2026-11-05-agy/catalog/looks/nx300-adjust-base/table.d4lut').read_bytes()
     if args.render_baseline:
         vm.EXTRA_FILES['perf/released.arm']=args.render_baseline.read_bytes()
     with ZipFile(archive) as package:

@@ -167,14 +167,15 @@ static int action(int argc,char **argv) {
     if (argc<2) return 2;
     if(!strcmp(argv[1],"boot")) {
         if(argc!=2||setenv("NX300M_LUT_SKIP_PREVIEW_SYNC","1",1))return 2;
-        char saved[PATH_MAX],path[256],id[64];unsigned gen,strength;struct nx_lut_tune tune;
-        if(!nx_lut_saved_path(saved))return 4;
-        if(access(saved,F_OK)) {
-            if(errno!=ENOENT)return 4;
-            snprintf(saved,sizeof saved,"%s/.state/lut-selection",nx_lut_data_root());
-            if(access(saved,F_OK))return errno==ENOENT?0:4;
-        }
-        if(nx_lut_saved_stock(saved)) {
+        /* The boot CLI reads the same unified choice store as the UI, the
+         * restore path and the cache protection: one valid record, one
+         * meaning. Missing records and damaged records stay distinct. */
+        const char *boot_root=nx_lut_data_root();if(!boot_root)return 4;
+        struct nx_lut_choice boot_choice;int boot_recorded=0;
+        if(!nx_lut_choice_read_root_full(boot_root,&boot_choice,&boot_recorded))
+            return boot_recorded?5:0;
+        char path[256],id[64];unsigned gen,strength;struct nx_lut_tune tune;
+        if(boot_choice.off) {
             if(!access(NX_LUT_RAM_MARKER,F_OK)||!access("/var/run/nx300m-preview-backend",F_OK)||nx_lut_hook_ready()) {
                 char *off[]={argv[0],"disable",NULL};return action(2,off);
             }
@@ -183,7 +184,9 @@ static int action(int argc,char **argv) {
              * later apply restores preview per that preference. */
             return nx_lut_stock();
         }
-        if(!nx_lut_read_selection_with_strength(saved,&gen,path,&strength)||!nx_lut_selection_id(path,id,&tune))return 5;
+        snprintf(path,sizeof path,"%s",boot_choice.table);
+        strength=boot_choice.strength;gen=boot_choice.generation;(void)gen;
+        if(!nx_lut_selection_id(path,id,&tune))return 5;
         struct nx_lut_look looks[NX_LUT_MAX_LOOKS];int count=0,result=nx_lut_catalog_index(looks,&count);
         if(result)return result;
         for(int i=0;i<count;i++)if(!strcmp(id,looks[i].id)) {
@@ -226,6 +229,18 @@ static int action(int argc,char **argv) {
     if (!strcmp(argv[1],"persist-status")) {
         if (argc!=2) return 2;
         puts(nx_lut_selection_persisted()?"PERSISTED":"NOT_SAVED");return 0;
+    }
+    if (!strcmp(argv[1],"choice-status")) {
+        if (argc!=2) return 2;
+        /* Diagnostic view of the unified choice store: the same reader the
+         * UI, boot, restore and cache protection share. */
+        struct nx_lut_choice status;int recorded=0;
+        int valid=nx_lut_choice_read_root_full(nx_lut_data_root(),&status,&recorded);
+        printf("CHOICE valid=%d recorded=%d off=%d generation=%u strength=%u table=%s%s\n",
+               valid,recorded,valid?status.off:0,valid?status.generation:0,
+               valid?status.strength:0,valid&&!status.off?status.table:"(none)",
+               valid&&status.slot_generation?" slot":" legacy");
+        return 0;
     }
     if (!strcmp(argv[1],"disable")) {
         if(argc!=2) return 2;
