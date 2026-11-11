@@ -59,6 +59,10 @@ static void panel_launch_script(long long triggered_at,const char *script,int lu
          * Check PPID after prctl to close the fork/parent-exit race. */
         signal(SIGINT,SIG_DFL);signal(SIGTERM,SIG_DFL);signal(SIGCHLD,SIG_DFL);
         if (prctl(PR_SET_PDEATHSIG,SIGTERM) || getppid()!=parent) _exit(125);
+        /* The daemon runs at nice 19. Restore interactive priority before
+         * the shell's preparation, not only after nxui reaches main(). */
+        if (setpriority(PRIO_PROCESS,0,0))
+            fprintf(stderr,"NX_PANEL_PRIORITY failed errno=%d\n",errno);
         close_inherited_fds();
         char trigger_value[32],fork_value[32];
         snprintf(trigger_value,sizeof trigger_value,"%lld",triggered_at);
@@ -83,8 +87,8 @@ static void panel_launch_script(long long triggered_at,const char *script,int lu
             } else { unsetenv("NX300M_MOD_SOURCE_ROOT"); unsetenv("NX300M_MOD_SOURCE_ID"); }
         }
         long long exec_at=now_ms();
-        fprintf(stderr,"NX_PANEL_EXEC pid=%ld trigger_ms=%lld fork_ms=%lld exec_ms=%lld elapsed_ms=%lld script=%s\n",
-                (long)getpid(),triggered_at,fork_started,exec_at,exec_at-triggered_at,script);
+        fprintf(stderr,"NX_PANEL_EXEC pid=%ld trigger_ms=%lld fork_ms=%lld exec_ms=%lld elapsed_ms=%lld nice=%d script=%s\n",
+                (long)getpid(),triggered_at,fork_started,exec_at,exec_at-triggered_at,getpriority(PRIO_PROCESS,0),script);
         fn_log("panel exec pid=%ld elapsed_ms=%lld script=%s",(long)getpid(),exec_at-triggered_at,script);
         execl("/bin/sh","sh",script,(char *)NULL);
         fprintf(stderr,"NX_PANEL_EXEC failed errno=%d\n",errno);

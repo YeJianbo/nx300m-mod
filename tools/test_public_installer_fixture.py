@@ -19,7 +19,7 @@ def main():
         with patch.object(app,'BASE',root/'program'),patch.object(app,'FIRST',PACKAGE/'first-install'),patch.object(app,'volume',return_value=IDENTITY):
             app.install_first(card,IDENTITY)
             assert app.verify_backend(lambda name:(card/name).read_bytes())['session']==1
-            _,rows=app.catalog(card);assert len(rows)==6
+            _,rows=app.catalog(card);assert len(rows)==5
             assert not list(card.rglob('table-stock3d.d4lut'))
             for row in rows:
                 folder=card/'nx300m-mod/looks'/row[0]
@@ -34,7 +34,7 @@ def main():
                 shutil.copytree(card/'nx300m-mod/looks'/row[0],older/'nx300m-mod/looks'/row[0])
             photo=older/'photo.jpg';photo.write_bytes(b'keep')
             count,backup=app.add_builtin_looks(older,IDENTITY)
-            assert count==4 and backup.is_dir() and photo.read_bytes()==b'keep'
+            assert count==3 and backup.is_dir() and photo.read_bytes()==b'keep'
             assert app.catalog(older)[1][0][1]=='用户原名称'
             assert app.add_builtin_looks(older,IDENTITY)==(0,None)
             cube=root/'identity.cube'
@@ -42,7 +42,7 @@ def main():
             key,_=app.import_cube(older,IDENTITY,cube,'导入测试')
             assert (older/'nx300m-mod/looks'/key/'table.d4lut').stat().st_size==4380
             assert not (older/'nx300m-mod/looks'/key/'table-stock3d.d4lut').exists()
-    print('public fixture passed: ABI7 first install, six CC0 tables, four additions, preserved user data, import without factory data')
+    print('public fixture passed: ABI7 first install, five CC0 menu looks, three additions, preserved user data, import without factory data')
 
 
 if __name__=='__main__':main()

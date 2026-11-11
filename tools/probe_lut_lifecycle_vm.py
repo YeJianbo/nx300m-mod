@@ -41,6 +41,7 @@ cp /mnt/mmc/smartfilter-probe-collector.sh "$RUNTIME/"
 cp /mnt/mmc/bin/smartfilter_loader.arm "$RUNTIME/ipcs-diagnostic/bin/"
 cp /mnt/mmc/bin/smartfilter_probe_launcher.arm "$RUNTIME/ipcs-diagnostic/bin/"
 cp /mnt/mmc/bin/smartfilter_probe_launcher.arm "$RUNTIME/bin/"
+cp /mnt/mmc/bin/ram_asset_verify.arm "$RUNTIME/bin/"
 cp /mnt/mmc/bin/lut_engine_switch_fixture.arm "$RUNTIME/bin/lut_engine.arm"
 cp /mnt/mmc/bin/lut_live_loader.arm "$RUNTIME/bin/"
 cp /mnt/mmc/lut_ram_blob.bin "$RUNTIME/lib/"
@@ -66,7 +67,8 @@ grep -q smartfilter /var/run/nx300m-preview-backend
 [ "$(cat /perf/.state/lut-preview)" = 1 ]
 NX300M_MOD_ROOT=/perf "$ENGINE" disable > off-1.json 2> off-1.stderr
 [ ! -e /var/run/nx300m-preview-backend ]
-[ "$(cat /perf/.state/lut-choice)" = 0 ]
+NX300M_MOD_ROOT=/perf "$ENGINE" choice-status > off-choice.txt
+grep -q '^CHOICE valid=1 recorded=1 off=1 .* slot$' off-choice.txt
 # Rule: suspending with the LUT must NOT clear the user's preview preference.
 [ "$(cat /perf/.state/lut-preview)" = 1 ]
 grep -q 'operation=pause phase=end rc=0' off-1.json off-1.stderr
@@ -122,7 +124,8 @@ NX300M_MOD_ROOT=/perf "$ENGINE" apply current-mono 100 > on-pref0.json 2> on-pre
 pref0_rc=$?
 set -e
 [ "$pref0_rc" = 0 ]
-[ "$(cat /perf/.state/lut-choice)" != 0 ]
+NX300M_MOD_ROOT=/perf "$ENGINE" choice-status > on-choice.txt
+grep -q '^CHOICE valid=1 recorded=1 off=0 .*current-mono/table.d4lut slot$' on-choice.txt
 i=0
 while [ $i -lt 100 ]; do
     grep -q smartfilter /var/run/nx300m-preview-backend 2>/dev/null && exit 91
@@ -137,7 +140,8 @@ echo LUT_LIFECYCLE_ARM_PASSED
 
 def call(action, command='', vm_timeout=180):
     args = ['wsl.exe', '-d', 'Debian', '-u', 'root', '-e', 'python3',
-            arm_vm.wsl_path(__file__), '--linux', action, base64.b64encode(command.encode()).decode()]
+            arm_vm.wsl_path(__file__), '--output-dir', arm_vm.wsl_path(OUT),
+            '--linux', action, base64.b64encode(command.encode()).decode()]
     r = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', timeout=vm_timeout+30)
     if r.returncode:
         raise RuntimeError(r.stderr or r.stdout)
@@ -167,9 +171,16 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
         raise RuntimeError(r.stderr.decode(errors='replace'))
     overlay = io.BytesIO()
     updates = {'arm-vm/mfw-probe.sh': PROBE.encode(),
+               'arm-vm/mfw-source/lut-load.sh': (ROOT/'mod/deployment/mfw/lut-load.sh').read_bytes(),
+               'arm-vm/mfw-source/lut-boot.sh': (ROOT/'mod/deployment/mfw/lut-boot.sh').read_bytes(),
+               'arm-vm/mfw-source/bin/ram_asset_verify.arm': (ROOT/'outputs/controls/ram-asset-verify/ram_asset_verify.arm').read_bytes(),
                'arm-vm/mfw-source/smartfilter-live-preview.sh': (ROOT/'mod/deployment/mfw/smartfilter-live-preview.sh').read_bytes(),
                'arm-vm/mfw-source/bin/lut_engine_switch_fixture.arm': (OUT/'lut_engine_switch_fixture.arm').read_bytes(),
-               'arm-vm/mfw-source/bin/lut_live_loader.arm': (ROOT/'outputs/deployment/lut-live-loader/lut_live_loader.arm').read_bytes()}
+               'arm-vm/mfw-source/bin/lut_live_loader.arm': (ROOT/'outputs/deployment/lut-live-loader/lut_live_loader.arm').read_bytes(),
+               'arm-vm/mfw-source/lut_ram_blob.bin': (ROOT/'outputs/deployment/lut-live-loader/lut_ram_blob.bin').read_bytes(),
+               'arm-vm/mfw-source/bin/smartfilter_loader.arm': (ROOT/'outputs/deployment/smartfilter-session/smartfilter_loader.arm').read_bytes(),
+               'arm-vm/mfw-source/bin/smartfilter_probe_launcher.arm': (ROOT/'outputs/deployment/smartfilter-session/smartfilter_probe_launcher.arm').read_bytes(),
+               'arm-vm/mfw-source/smartfilter_ram.bin': (ROOT/'outputs/deployment/smartfilter-session/smartfilter_ram.bin').read_bytes()}
     for inode, (name, data) in enumerate(updates.items(), 9000):
         arm_vm.cpio_add(overlay, name, 0o100755, data, inode)
     arm_vm.cpio_add(overlay, 'TRAILER!!!', 0)
@@ -211,7 +222,7 @@ def run():
             raise RuntimeError('Lifecycle probe failed; see execution.json and guest evidence')
         off1 = (guest/'off-1.json').read_text()+(guest/'off-1.stderr').read_text()
         assert 'operation=pause phase=end rc=0' in off1
-        assert re.search(r'TracerPid:\s+0\b', (guest/'target-final.status').read_text()) if False else True
+        assert re.search(r'TracerPid:\s+0\b', (guest/'target-final.status').read_text())
         report.update(passed=True,
                       pause_preserves_preference=True,
                       stock_boot_preserves_preference=True,
@@ -230,6 +241,12 @@ def run():
 
 if __name__ == '__main__':
     import re
+    import argparse
+    parser=argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--output-dir',type=Path,default=OUT)
+    args,remaining=parser.parse_known_args()
+    OUT=args.output_dir.resolve()
+    sys.argv=[sys.argv[0],*remaining]
     vm.OUT = OUT
     vm.SOCKET = SOCKET
     if len(sys.argv) > 1 and sys.argv[1] == '--linux':

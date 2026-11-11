@@ -90,6 +90,7 @@ static int lut_edit, lut_field, lut_category, lut_category_focus, lut_reference_
 static int lut_toolbar_focus=-1;
 static int lut_preview_shown=-1;
 static long long lut_preview_due,lut_preview_until;
+static unsigned lut_preview_reads;
 static int lut_brand[NXUI_MAX_RECIPES],lut_favorite[NXUI_MAX_RECIPES];
 static const char *lut_categories[]={"全部","收藏","富士","奥巴","宾得","松下","理光","索尼","自制","胶片模拟"};
 enum { NX_LUT_BUILTIN_CATEGORY_COUNT=sizeof lut_categories/sizeof *lut_categories,
@@ -304,6 +305,20 @@ static long long now_ms(void) {
 }
 static void panel_stage(const char *stage) {
     fprintf(stderr, "PANEL_STAGE pid=%ld name=%s at_ms=%lld\n", (long)getpid(), stage, now_ms());
+}
+/* Reuse a short-lived snapshot during input bursts. Only an active boot
+ * transition schedules wakeups; settled menus stay idle between inputs. */
+static int lut_refresh_preview(void) {
+    long long tick=now_ms();
+    if(lut_preview_shown>=0&&tick<lut_preview_due)return 0;
+    int observed=nx_preview_state(root),changed=observed!=lut_preview_shown;
+    lut_preview_reads++;
+    if(changed)fprintf(stderr,"LUT_PREVIEW_STATE state=%d label=%s\n",observed,nx_preview_label(observed));
+    lut_preview_shown=observed;lut_preview_due=tick+500;
+    if(live&&(observed==NX_PREVIEW_WAIT||observed==NX_PREVIEW_BUSY)) {
+        if(!lut_preview_until)lut_preview_until=tick+60000;
+    } else lut_preview_until=0;
+    return changed;
 }
 static void panel_visibility_event(const XEvent *event) {
     panel_visibility = event->xvisibility.state;
@@ -1063,6 +1078,7 @@ static void poll_child(void) {
     if (busy_kind == 5 && mfw_child_readonly && mfw_cancel_started)
         kill(-child, SIGKILL); /* Reap/stop descendants even if their shell exited first. */
     read_output(); close(child_fd); child_fd = -1; child = 0;
+    if(lut_mode&&(busy_kind==1||(busy_kind==5&&mfw_child_preview)))lut_preview_due=0;
     success = result > 0 && !child_timed_out && WIFEXITED(code) && WEXITSTATUS(code) == 0 &&
         !strstr(output, "VERIFY-FAIL") && !strstr(output, "REJECT");
     fprintf(stderr, "BACKEND kind=%d ok=%d elapsed_ms=%lld output=%s\n", busy_kind, success, now_ms()-child_started, output);
@@ -1488,13 +1504,6 @@ static void snapshot(const char *path) {
     }
     fclose(f);
 }
-/* The MFW menu uses one original font, rasterized entirely in this process.
- * Retain the metadata argument for compatibility with deployed launchers. */
-static XFont *panel_font_file(const char *path, const char *metadata) {
-    (void)metadata;
-    return nx_cpu_font(path);
-}
-
 int main(int argc, char **argv) {
     const char *recipe_path = NULL, *initial_menu = NULL, *shot = NULL;
     char default_recipes[NXUI_PATH], default_engine[NXUI_PATH];
@@ -1528,7 +1537,8 @@ int main(int argc, char **argv) {
         else { fprintf(stderr, "Usage: nxui [--live|--dry-run] [--root dir] [--recipes file] [--menu gui_file] [--engine file] [--arm-runner qemu] [--snapshot ppm] [--lifetime-ms n]\n"); return 2; }
     }
     if (!root) root = nx_mod_root();
-    if (!!font_file != !!font_metadata) { fprintf(stderr, "font file and coverage metadata must be supplied together\n"); return 2; }
+    /* Older launchers still supply unused fontconfig coverage metadata. */
+    if (font_metadata && !font_file) { fprintf(stderr, "font metadata requires a font file\n"); return 2; }
     if (!nx_mod_root_valid(root)) { fprintf(stderr, "Invalid mod root directory\n"); return 2; }
     if (setenv("NX300M_MOD_ROOT", root, 1)) return 2;
     if (mfw_services) {
@@ -1626,7 +1636,7 @@ int main(int argc, char **argv) {
     wm_delete = XInternAtom(display, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(display, window, &wm_delete, 1);
     window_ready = now_ms();
-    font = font_file ? panel_font_file(font_file, font_metadata) : nk_xfont_create(display, font_name);
+    font = font_file ? nx_cpu_font(font_file) : nk_xfont_create(display, font_name);
     if (!font || !font->ft) { fprintf(stderr, "font unavailable\n"); return 5; }
     hint_font=nx_cpu_font_sized(font_file?font_file:"/usr/share/fonts/SDIC_GP_US_20120720.ttf",22);
     font_ready = now_ms();
@@ -1661,6 +1671,7 @@ int main(int argc, char **argv) {
      * visible. Mapping an empty black window before this work obscures it. */
     first_draw_started = now_ms();
     panel_stage("first-draw-begin");
+    if(lut_mode)lut_refresh_preview();
     draw();
     if (xlib.surf->present_failed) {
         fprintf(stderr, "Panel image unavailable; stock focus was not changed\n");
@@ -1723,10 +1734,7 @@ int main(int argc, char **argv) {
         /* Observe only a finite boot transition. Idle, restored panels retain
          * their event-driven sleep; an external completion redraws once. */
         if(lut_mode&&live&&tick>=lut_preview_due&&tick<lut_preview_until){
-            int observed=nx_preview_state(root);
-            if(observed!=lut_preview_shown)dirty=1;
-            lut_preview_due=tick+500;
-            if(observed!=NX_PREVIEW_WAIT&&observed!=NX_PREVIEW_BUSY)lut_preview_until=0;
+            if(lut_refresh_preview())dirty=1;
         }
         if (interrupted || (lifetime > 0 && now_ms()-started >= lifetime)) queue.close_requested = 1;
         /* 半按快门 S1：/dev/input/event0 code 125 (KEY_LEFTMETA) press ⇒ 关闭 */
@@ -1937,6 +1945,7 @@ int main(int argc, char **argv) {
             if (dirty && tick >= lut_paint_hold) {
                 long long draw_started = now_ms(), elapsed;
                 if(refresh)xlib.surf->force_full=1;
+                if(lut_mode&&!child&&!queue.commit_requested)lut_refresh_preview();
                 dirty = 0; draw(); render_count++; painted = 1;
                 /* Paint first, then re-arm: sustained input keeps rasterizing
                  * periodically instead of pushing the deadline forward. */
@@ -2005,6 +2014,7 @@ int main(int argc, char **argv) {
         }
         wakeups++;
     }
+    if (trace_frames && lut_mode)fprintf(stderr,"LUT_PREVIEW_READS count=%u\n",lut_preview_reads);
     if (trace_frames && lut_mode)
         fprintf(stderr,"PANEL_FINAL selected=%d field=%d strength=%d tune=%d,%d,%d,%d,%d,%d,%d\n",
             selected,lut_field,lut_strength,lut_tune.value[0],lut_tune.value[1],lut_tune.value[2],

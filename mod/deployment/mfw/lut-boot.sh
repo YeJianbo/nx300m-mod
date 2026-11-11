@@ -53,6 +53,14 @@ while [ "$attempt" -lt 30 ]; do
     camera=
     count=0
     for process in /proc/[0-9]*; do
+        # comm is a cheap built-in read and Linux truncates it to 15 bytes.
+        # It only narrows candidates; the executable remains the identity gate.
+        IFS= read -r camera_comm 2>/dev/null < "$process/comm" || continue
+        if [ "$fixture" = 1 ]; then
+            [ "$camera_comm" = smartfilter_fix ] || continue
+        else
+            [ "$camera_comm" = di-camera-app-n ] || continue
+        fi
         executable=$(readlink "$process/exe" 2>/dev/null) || continue
         if [ "$fixture" = 1 ]; then
             [ "$executable" = /mnt/mmc/bin/smartfilter_fixture.arm ] || continue
@@ -61,8 +69,11 @@ while [ "$attempt" -lt 30 ]; do
         fi
         count=$((count+1)); camera=$process
     done
-    if [ "$count" = 1 ] && grep -q '/libiq-fw-slpcam.so' "$camera/maps" &&
-        grep -q '/libudd.so.3.1' "$camera/maps"; then break; fi
+    if [ "$count" = 1 ] && awk '
+        index($0,"/libiq-fw-slpcam.so") { iq=1 }
+        index($0,"/libudd.so.3.1") { udd=1 }
+        END { exit !(iq && udd) }
+    ' "$camera/maps"; then break; fi
     attempt=$((attempt+1)); sleep 1
 done
 [ "$attempt" -lt 30 ] || { printf 'LUT_BOOT camera readiness timeout\n' >&2; exit 1; }

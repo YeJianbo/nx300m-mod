@@ -60,6 +60,30 @@ static long long now_ms(void) {
     struct timespec value; clock_gettime(CLOCK_MONOTONIC, &value);
     return (long long)value.tv_sec*1000+value.tv_nsec/1000000;
 }
+static int publish_ready(void) {
+    const char *path=getenv("NX_REMOTE_READY_FILE");
+    if (!path || !*path) return 0;
+    char temporary[PATH_MAX];
+    if (*path!='/' || snprintf(temporary,sizeof temporary,"%s.XXXXXX",path)>=(int)sizeof temporary) {
+        errno=EINVAL;return -1;
+    }
+    int fd=mkstemp(temporary);
+    if (fd<0) return -1;
+    const char ready[]="ready\n";
+    size_t offset=0;
+    while (offset<sizeof ready-1) {
+        ssize_t count=write(fd,ready+offset,sizeof ready-1-offset);
+        if (count<0 && errno==EINTR) continue;
+        if (count<=0) {
+            int error=count<0?errno:EIO;close(fd);unlink(temporary);errno=error;return -1;
+        }
+        offset+=(size_t)count;
+    }
+    if (close(fd)<0 || rename(temporary,path)<0) {
+        int error=errno;unlink(temporary);errno=error;return -1;
+    }
+    return 0;
+}
 static void stop(int signal_number) { (void)signal_number; stopping = 1; }
 static void reply(struct mg_connection *c, int code, const char *json) {
     mg_send_head(c, code, strlen(json), "Content-Type: application/json; charset=utf-8\r\nCache-Control: no-store");
@@ -538,6 +562,11 @@ int main(int argc,char **argv) {
     custom_key_init();
     menu_key_init();
     input_alive=now_ms();
+    /* The supervisor creates "starting" before fork. Publish only after the
+     * HTTP listener and key helpers are initialized; readers still verify the
+     * exact daemon identity before accepting this RAM-only notification. */
+    int result=0;
+    if (publish_ready()<0) { perror("NX REMOTE: readiness notification");stopping=1;result=6; }
     unsigned int traced_polls=0;
     while (!stopping) {
         int trace_poll=trace_http && traced_polls<3;
@@ -548,5 +577,5 @@ int main(int argc,char **argv) {
         nx_discovery_poll(media_paused);
         xw_input_watchdog();
     }
-    usb_storage_shutdown();custom_key_shutdown();menu_key_shutdown();ex_release();if (rp_task.active) rp_release();qs_shutdown();gp_clear();mg_mgr_free(&manager);xw_shutdown();return 0;
+    usb_storage_shutdown();custom_key_shutdown();menu_key_shutdown();ex_release();if (rp_task.active) rp_release();qs_shutdown();gp_clear();mg_mgr_free(&manager);xw_shutdown();return result;
 }

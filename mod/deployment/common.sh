@@ -31,13 +31,21 @@ case $START_TIMEOUT:$STOP_TIMEOUT in *[!0-9:]*|:*|*:) fail 'timeouts must be int
 [ "$START_TIMEOUT" -ge 1 ] && [ "$START_TIMEOUT" -le 60 ] || fail 'start timeout must be 1..60'
 [ "$STOP_TIMEOUT" -ge 1 ] && [ "$STOP_TIMEOUT" -le 30 ] || fail 'stop timeout must be 1..30'
 
+# Linux exposes uptime with two decimal places. Read it without spawning date
+# so short lock/readiness waits keep a monotonic deadline, including probe work.
+monotonic_cs() {
+    IFS='. ' read -r monotonic_seconds monotonic_fraction monotonic_rest < /proc/uptime || return 1
+    printf '%s\n' "$((monotonic_seconds*100 + 1$monotonic_fraction - 100))"
+}
+
 operation_lock() {
     exec 9>"$STATE/operation.lock" || return 1
-    attempt=0
+    lock_deadline=$(monotonic_cs) || return 1
+    lock_deadline=$((lock_deadline+900))
     while ! flock -n 9; do
-        attempt=$((attempt+1))
-        [ "$attempt" -lt 10 ] || return 1
-        sleep 1
+        lock_now=$(monotonic_cs) || return 1
+        [ "$lock_now" -lt "$lock_deadline" ] || return 1
+        sleep 0.05
     done
 }
 
@@ -97,10 +105,11 @@ stop_identity() {
     stop_pid=$1; stop_start=$2; stop_boot=$3; stop_exe=$4; stop_exe_id=$5
     identity_alive "$stop_pid" "$stop_start" "$stop_boot" "$stop_exe" "$stop_exe_id" || return 0
     kill -TERM "$stop_pid" 2>/dev/null || return 1
-    stopped_wait=0
+    stop_deadline=$(monotonic_cs) || return 1
+    stop_deadline=$((stop_deadline+STOP_TIMEOUT*100))
     while identity_alive "$stop_pid" "$stop_start" "$stop_boot" "$stop_exe" "$stop_exe_id"; do
-        [ "$stopped_wait" -lt "$STOP_TIMEOUT" ] || return 1
-        sleep 1
-        stopped_wait=$((stopped_wait+1))
+        stop_now=$(monotonic_cs) || return 1
+        [ "$stop_now" -lt "$stop_deadline" ] || return 1
+        sleep 0.05
     done
 }

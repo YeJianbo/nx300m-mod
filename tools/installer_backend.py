@@ -9,10 +9,14 @@ BACKEND_FILES = {
     'ipcs-diagnostic/lib/smartfilter_ram.bin': '61e8fc1f8d8d9a25bdccb1e42e3a3d5297c1ee6c43be84e7c692eee64458254d',
     'ipcs-diagnostic/bin/smartfilter_loader.arm': '6cce90e62c596d11ca3a2e0c532bd7f7bcb4045dbfec4d4dda136fac45fe57a9',
     'ipcs-diagnostic/bin/smartfilter_probe_launcher.arm': '19c9b2d8150baa29f4d2b287331b0450ff5d429364d5f2e2a973eb9fecb4e632',
-    'smartfilter-preview.sh': '22848bb1f34c48d14111facaf0812049879c355491f0e8129dfdd7beb2042bf8',
+    'smartfilter-preview.sh': '6fc627df3ef2bd8579db9163c825ddfd9cb873f54914eb7914742447e37f9e2c',
 }
 BACKEND_PROFILES = {
     'abi7-live-preview': BACKEND_FILES,
+    'v0.1.0-preview.5': {
+        **BACKEND_FILES,
+        'smartfilter-preview.sh': '22848bb1f34c48d14111facaf0812049879c355491f0e8129dfdd7beb2042bf8',
+    },
     # The public preview.4 first-install candidate was built before the zcode
     # wrapper/engine update and must be validated against its own release set.
     'v0.1.0-preview.4': {

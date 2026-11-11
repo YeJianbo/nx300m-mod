@@ -34,13 +34,11 @@ if [ "$mode" = --mfw-quick-preview ]; then
 fi
 [ -r "$PANEL/mfw-panel-actions.sh" ] || fail 'action script missing'
 [ -s /usr/share/fonts/SDIC_GP_US_20120720.ttf ] || fail 'original firmware font missing'
-[ -s "$ROOT/fonts/mfw-font.charset" ] || fail 'font coverage metadata missing'
 # Actions use the service root while menu files live in its panel directory.
 export NX_FN_SERVICE_ROOT="$ROOT" NX300M_MOD_ROOT="$PANEL" NX_MOD_ROOT="$PANEL"
 export NX_STATE_DIR="$STATE" DISPLAY=${DISPLAY:-:0}
 unset LD_PRELOAD LD_AUDIT
 printf 'NX_FN_PANEL maintained-nxui bytes=%s root=%s\n' \
-    "$(wc -c <"$ROOT/bin/nxui.arm")" "$PANEL"
+    "$(stat -c '%s' "$ROOT/bin/nxui.arm")" "$PANEL"
 exec "$ROOT/bin/nxui.arm" "$mode" --root "$PANEL" \
-    --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
-    --font-metadata "$ROOT/fonts/mfw-font.charset"
+    --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf

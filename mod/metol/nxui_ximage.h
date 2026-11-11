@@ -13,6 +13,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 struct nx_cpu_glyph {
     nk_rune rune;
@@ -24,12 +29,18 @@ struct nx_cpu_glyph {
 typedef struct XFont {
     FT_Library library;
     FT_Face ft;
+    void *mapping;
+    size_t mapping_size;
     int ascent, height;
     struct nk_user_font handle;
     /* Four-way bounded cache, shared by measurement and rasterization. */
     unsigned clock;
     struct nx_cpu_glyph glyphs[128][4];
 } XFont;
+/* Faces and glyph caches keep their own sizes; the UI thread shares only the
+ * FreeType library, which stays alive until the last font is released. */
+static FT_Library nx_cpu_library;
+static unsigned nx_cpu_library_users;
 struct nx_cpu_box { int left,top,right,bottom; };
 struct nx_cpu_frame { unsigned char *data; size_t size,capacity; };
 struct nx_cpu_record {
@@ -95,10 +106,27 @@ static float nx_cpu_text_width(nk_handle handle, float height, const char *text,
 static XFont *nx_cpu_font_sized(const char *path, unsigned pixels) {
     XFont *font = calloc(1, sizeof *font);
     if (!font) return NULL;
-    if (FT_Init_FreeType(&font->library) || FT_New_Face(font->library, path, 0, &font->ft) ||
+    /* FreeType's file stream seeks and reads for individual glyphs. A private
+     * read-only mapping shares cached font pages across sizes and panel opens
+     * without copying the complete font into each process. */
+    int fd=open(path,O_RDONLY|O_CLOEXEC);
+    if(fd<0){free(font);return NULL;}
+    off_t bytes=lseek(fd,0,SEEK_END);
+    if(bytes<=0||bytes>LONG_MAX){close(fd);free(font);return NULL;}
+    font->mapping_size=(size_t)bytes;
+    font->mapping=mmap(NULL,font->mapping_size,PROT_READ,MAP_PRIVATE,fd,0);
+    close(fd);
+    if(font->mapping==MAP_FAILED){free(font);return NULL;}
+    if (!nx_cpu_library && FT_Init_FreeType(&nx_cpu_library)) {
+        munmap(font->mapping,font->mapping_size);free(font);return NULL;
+    }
+    font->library=nx_cpu_library;
+    ++nx_cpu_library_users;
+    if (FT_New_Memory_Face(font->library, font->mapping, (FT_Long)bytes, 0, &font->ft) ||
         FT_Set_Pixel_Sizes(font->ft, 0, pixels)) {
         if (font->ft) FT_Done_Face(font->ft);
-        if (font->library) FT_Done_FreeType(font->library);
+        munmap(font->mapping,font->mapping_size);
+        if (!--nx_cpu_library_users) { FT_Done_FreeType(nx_cpu_library);nx_cpu_library=NULL; }
         free(font); return NULL;
     }
     font->ascent = (font->ft->size->metrics.ascender + 63) >> 6;
@@ -117,7 +145,10 @@ static void nk_xfont_del(Display *dpy, XFont *font) {
     (void)dpy;
     if (!font) return;
     for(unsigned i=0;i<128;i++)for(unsigned j=0;j<4;j++)free(font->glyphs[i][j].coverage);
-    FT_Done_Face(font->ft); FT_Done_FreeType(font->library); free(font);
+    FT_Done_Face(font->ft);
+    munmap(font->mapping,font->mapping_size);
+    if (!--nx_cpu_library_users) { FT_Done_FreeType(nx_cpu_library);nx_cpu_library=NULL; }
+    free(font);
 }
 static void nk_xsurf_resize(XSurface *s, unsigned int w, unsigned int h) {
     if (s->w == w && s->h == h && s->image) return;

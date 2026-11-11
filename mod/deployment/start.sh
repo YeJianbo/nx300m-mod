@@ -33,19 +33,21 @@ else
 fi
 [ -r "$ROOT/service.sh" ] || fail 'service supervisor is missing'
 exec 8>"$STATE/service.lock" || fail 'cannot open service lock'
-lease_wait=0
+lease_deadline=$(monotonic_cs) || fail 'monotonic clock unavailable'
+lease_deadline=$((lease_deadline+400))
 while ! flock -n 8; do
-    lease_wait=$((lease_wait+1))
-    [ "$lease_wait" -lt 5 ] || fail 'previous supervisor has not exited'
-    sleep 1
+    lease_now=$(monotonic_cs) || fail 'monotonic clock unavailable'
+    [ "$lease_now" -lt "$lease_deadline" ] || fail 'previous supervisor has not exited'
+    sleep 0.05
 done
 exec 8>&-
 
 export NX300M_MOD_ROOT="$ROOT" NX_MOD_ROOT="$ROOT" NX_STATE_DIR="$STATE"
 /bin/sh "$ROOT/service.sh" </dev/null >>"$STATE/supervisor.log" 2>&1 8>&- 9>&- &
 supervisor_pid=$!
-started_wait=0
-while [ "$started_wait" -lt "$START_TIMEOUT" ]; do
+started_deadline=$(monotonic_cs) || fail 'monotonic clock unavailable'
+started_deadline=$((started_deadline+START_TIMEOUT*100))
+while :; do
     if [ -r "$PHASE" ]; then
         IFS= read -r phase < "$PHASE" || phase=
         if [ "$phase" = ready ] && record_alive; then
@@ -56,7 +58,8 @@ while [ "$started_wait" -lt "$START_TIMEOUT" ]; do
         [ "$phase" != failed ] || fail "remote startup failed; see $LOG"
     fi
     kill -0 "$supervisor_pid" 2>/dev/null || fail "supervisor exited; see $STATE/supervisor.log"
-    sleep 1
-    started_wait=$((started_wait+1))
+    started_now=$(monotonic_cs) || fail 'monotonic clock unavailable'
+    [ "$started_now" -lt "$started_deadline" ] || break
+    sleep 0.05
 done
 fail "startup deadline reached; inspect $LOG and run stop.sh before retrying"

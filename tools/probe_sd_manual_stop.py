@@ -24,8 +24,10 @@ def worker():
         (root/'web_root').mkdir()
         (root/'web_root/index.html').write_text('fixture')
         source = root/'fixture.c'
-        source.write_text('#include <stdio.h>\n#include <unistd.h>\n'
-                          'int main(void){puts("NX_REMOTE_READY fixture");'
+        source.write_text('#include <stdio.h>\n#include <unistd.h>\n#include <stdlib.h>\n'
+                          'int main(void){FILE *ready=fopen(getenv("NX_REMOTE_READY_FILE"),"w");'
+                          'if(!ready)return 6;fputs("ready\\n",ready);if(fclose(ready))return 6;'
+                          'puts("NX_REMOTE_READY fixture");'
                           'fflush(stdout);for(;;)pause();}\n')
         subprocess.run(['gcc', str(source), '-o', str(root/'bin/nx-remote-controller.arm')], check=True)
         shutil.copyfile('/bin/true', root/'bin/nx-quickshare-armv7')

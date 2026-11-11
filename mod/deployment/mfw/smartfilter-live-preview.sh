@@ -52,8 +52,12 @@ esac
 case $source_id in ''|*[!0-9:]*|:*|*:|*:*:*) fail 'verified source identity is required from RAM staging' ;; esac
 case $state in /*) ;; *) fail 'state directory must be absolute' ;; esac
 [ ! -L "$state" ] && [ -d "$state" ] || fail 'RAM state directory unavailable'
-case $(stat -f -c '%T' "$HERE") in tmpfs|ramfs) ;; *) fail 'run the verified RAM-staged preview wrapper, not the SD copy' ;; esac
-case $(stat -f -c '%T' "$state") in tmpfs|ramfs) ;; *) fail 'state directory must be RAM backed' ;; esac
+filesystems=$(stat -f -c '%T' "$HERE" "$state") || fail 'cannot inspect runtime filesystems'
+set -- $filesystems
+[ "$#" -eq 2 ] || fail 'incomplete runtime filesystems'
+for filesystem do
+    case $filesystem in tmpfs|ramfs) ;; *) fail 'runtime and state must be RAM backed' ;; esac
+done
 guard=/tmp/nx300m-smartfilter-preview.uncertain
 backend=/var/run/nx300m-preview-backend
 if [ -e "$guard" ] || [ -L "$guard" ]; then
@@ -84,21 +88,24 @@ camera_pid=$1
 camera_start=$2
 sf_stage identity
 job=$(mktemp -d /tmp/nx300m-sf-job.XXXXXX) || fail 'cannot allocate private RAM job'
-case $(stat -f -c '%T' "$job") in tmpfs|ramfs) ;; *) rmdir "$job"; fail 'job must be RAM backed' ;; esac
+# The native copy verifier checks this private destination's RAM filesystem
+# before it creates any executable; no second stat process is needed here.
+copy_tool=$HERE/bin/ram_asset_verify.arm
+[ -f "$copy_tool" ] && [ ! -L "$copy_tool" ] && [ -x "$copy_tool" ] || fail 'RAM asset copy verifier unavailable'
+set -- --copy "$HERE" "$job"
 for pair in bin/smartfilter_probe_launcher.arm:launcher bin/smartfilter_loader.arm:loader.arm lib/smartfilter_ram.bin:blob.bin smartfilter-probe-collector.sh:collector.sh; do
-    resource=$HERE/${pair%:*}; destination=$job/${pair#*:}
+    resource=${pair%:*}; destination=${pair#*:}
     if [ "$open_diagnostic" = 1 ]; then
-        case ${pair%:*} in bin/*|lib/*) resource=$HERE/ipcs-diagnostic/${pair%:*} ;; esac
+        case $resource in bin/*|lib/*) resource=ipcs-diagnostic/$resource ;; esac
     fi
-    [ -f "$resource" ] && [ ! -L "$resource" ] || fail "missing resource: $resource (RAM retained: $job)"
-    # A hard link would avoid the copy, but staging and /tmp are separate
-    # tmpfs mounts on the camera (EXDEV, verified 2026-11-11), so every link
-    # would fall back to cp anyway plus one extra stat per file. Keep the
-    # plain copy + byte comparison.
-    cp "$resource" "$destination" && cmp -s "$resource" "$destination" || fail "private RAM copy differs ($job)"
+    permission=500
+    [ "$destination" != blob.bin ] || permission=400
+    set -- "$@" "$permission" any "$resource" "$destination"
 done
-chmod 500 "$job/launcher" "$job/loader.arm" "$job/collector.sh"
-chmod 400 "$job/blob.bin"
+# Staging and /tmp are separate mounts on the camera. One finite native copy
+# preserves private job ownership, byte readback and modes across EXDEV,
+# without starting cp/cmp/chmod separately for every resource.
+"$copy_tool" "$@" || fail "private RAM batch copy differs ($job)"
 sf_stage job-ready
 if [ "$command" = probe-once ]; then
     nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
@@ -174,11 +181,14 @@ esac
 if [ -n "$table" ]; then
     [ -f "$table" ] && [ ! -L "$table" ] || fail 'compiled LUT table is missing or linked; preview was not updated'
     before=$(stat -c '%d:%i:%s:%Y' "$table") || fail 'cannot inspect LUT table'
-    [ "$(stat -c '%s' "$table")" = 4380 ] || fail 'invalid LUT table size'
-    cp "$table" "$job/table.d4lut" && cmp -s "$table" "$job/table.d4lut" || fail 'RAM table copy differs'
-    [ "$(stat -c '%d:%i:%s:%Y' "$table")" = "$before" ] &&
-        [ "$(stat -c '%d:%i' "$source_root")" = "$source_id" ] || fail 'source changed while copying LUT'
-    chmod 400 "$job/table.d4lut"
+    table_root=$source_root
+    case $command in test-monochrome|test-monochrome-timing) table_root=$HERE ;; esac
+    "$copy_tool" --copy "$table_root" "$job" 400 4380 "${table#"$table_root"/}" table.d4lut || fail 'RAM table copy differs or LUT size is invalid'
+    copied_identity=$(stat -c '%d:%i:%s:%Y' "$table" "$source_root") || fail 'cannot inspect copied LUT source'
+    set -- $copied_identity
+    [ "$#" -eq 2 ] || fail 'incomplete copied LUT identity'
+    copied_source_id=${2%:*}; copied_source_id=${copied_source_id%:*}
+    [ "$1" = "$before" ] && [ "$copied_source_id" = "$source_id" ] || fail 'source changed while copying LUT'
     sf_stage table-ready
 fi
 set -- "$operation" --pid "$camera_pid" --blob "$job/blob.bin"

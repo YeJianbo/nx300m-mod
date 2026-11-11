@@ -30,42 +30,53 @@ trap 'exit 0' HUP INT TERM
 printf 'starting\n' > "$PHASE" || exit 1
 export DISPLAY=${DISPLAY:-:0}
 fn_note "supervisor: spawning daemon exe=$REMOTE display=${DISPLAY:-:0}"
-"$REMOTE" --listen "${NX_REMOTE_LISTEN:-127.0.0.1:8781}" \
+NX_REMOTE_READY_FILE="$PHASE" "$REMOTE" --listen "${NX_REMOTE_LISTEN:-127.0.0.1:8781}" \
     --web-root "$ROOT/web_root" --media-root "${NX_MEDIA_ROOT:-/mnt/mmc/DCIM}" \
     --quickshare-binary "$QUICKSHARE" </dev/null >"$LOG" 2>&1 8>&- 9>&- &
 OWN_PID=$!
 fn_note "supervisor: daemon forked pid=$OWN_PID"
-identity_wait=0
-while [ "$identity_wait" -lt "$START_TIMEOUT" ]; do
+identity_deadline=$(monotonic_cs) || exit 1
+identity_deadline=$((identity_deadline+START_TIMEOUT*100))
+while :; do
     OWN_START=$(process_start "$OWN_PID") || break
     if identity_alive "$OWN_PID" "$OWN_START" "$BOOT_ID" "$REMOTE" "$OWN_EXE_ID"; then
         printf '%s\n%s\n%s\n%s\n%s\n' "$OWN_PID" "$OWN_START" "$BOOT_ID" "$REMOTE" "$OWN_EXE_ID" > "$PIDFILE.tmp" || exit 1
         mv "$PIDFILE.tmp" "$PIDFILE" || exit 1
         break
     fi
-    sleep 1
-    identity_wait=$((identity_wait+1))
+    identity_now=$(monotonic_cs) || exit 1
+    [ "$identity_now" -lt "$identity_deadline" ] || break
+    sleep 0.05
 done
 if [ -z "$OWN_EXE_ID" ] || ! identity_alive "$OWN_PID" "$OWN_START" "$BOOT_ID" "$REMOTE" "$OWN_EXE_ID"; then
     fn_note "supervisor: daemon died before identity record pid=$OWN_PID"
     printf 'failed\n' > "$PHASE"
     exit 1
 fi
-ready_wait=0
-while identity_alive "$OWN_PID" "$OWN_START" "$BOOT_ID" "$REMOTE" "$OWN_EXE_ID"; do
-    root_present || break
-    if grep -q '^NX_REMOTE_READY ' "$LOG"; then
+ready_deadline=$(monotonic_cs) || exit 1
+ready_check=$ready_deadline
+ready_deadline=$((ready_deadline+START_TIMEOUT*100))
+while kill -0 "$OWN_PID" 2>/dev/null; do
+    phase=
+    IFS= read -r phase < "$PHASE" || :
+    if [ "$phase" = ready ]; then
+        root_present && identity_alive "$OWN_PID" "$OWN_START" "$BOOT_ID" "$REMOTE" "$OWN_EXE_ID" || break
         fn_note "supervisor: daemon ready pid=$OWN_PID"
-        printf 'ready\n' > "$PHASE" || exit 1
         break
     fi
-    ready_wait=$((ready_wait+1))
-    if [ "$ready_wait" -ge "$START_TIMEOUT" ]; then
+    ready_now=$(monotonic_cs) || exit 1
+    if [ "$ready_now" -ge "$ready_deadline" ]; then
         fn_note "supervisor: daemon not ready within ${START_TIMEOUT}s pid=$OWN_PID"
         printf 'failed\n' > "$PHASE"
         exit 1
     fi
-    sleep 1
+    # Poll the RAM notification quickly; expensive root/executable checks stay
+    # at one-second intervals and run again before readiness is accepted.
+    if [ "$ready_now" -ge "$ready_check" ]; then
+        root_present && identity_alive "$OWN_PID" "$OWN_START" "$BOOT_ID" "$REMOTE" "$OWN_EXE_ID" || break
+        ready_check=$((ready_now+100))
+    fi
+    sleep 0.05
 done
 while identity_alive "$OWN_PID" "$OWN_START" "$BOOT_ID" "$REMOTE" "$OWN_EXE_ID"; do
     root_present || break

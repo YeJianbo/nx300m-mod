@@ -24,7 +24,7 @@ case $ROOT:$STATE in *[!A-Za-z0-9_./:-]*) fail 'unsupported resource path charac
 UI=$ROOT/bin/nxui.arm
 [ -x "$UI" ] && [ -r "$ROOT/mfw-panel-actions.sh" ] && [ -s "$ROOT/gui_mfw.NX300M" ] || fail 'panel files are missing'
 stock_font=/usr/share/fonts/SDIC_GP_US_20120720.ttf
-[ -s "$stock_font" ] && [ -s "$ROOT/fonts/mfw-font.charset" ] || fail 'stock panel font/coverage is missing'
+[ -s "$stock_font" ] || fail 'stock panel font is missing'
 # nxui acquires the launcher and UI locks before opening X11. No preparation
 # writes require a separate shell lock now that the font is opened by file.
 panel_stage resources
@@ -32,4 +32,4 @@ export NX300M_MOD_ROOT="$ROOT" NX_STATE_DIR="$STATE" DISPLAY=${DISPLAY:-:0}
 unset LD_PRELOAD LD_AUDIT
 IFS=' ' read -r NX_PANEL_PREP_UPTIME ignored < /proc/uptime
 export NX_PANEL_PREP_UPTIME
-exec "$UI" --mfw-services --root "$ROOT" --font-file "$stock_font" --font-metadata "$ROOT/fonts/mfw-font.charset"
+exec "$UI" --mfw-services --root "$ROOT" --font-file "$stock_font"

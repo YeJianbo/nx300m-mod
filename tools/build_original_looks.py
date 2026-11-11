@@ -59,7 +59,8 @@ def build():
                               'tables':{'table.d4lut':hashlib.sha256(table).hexdigest()}},
                   'calibration':{'camera':'NX300M','status':'unmeasured'}}
         (folder/'look.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
-        rows.append(key+'|'+label+'|0|0|0|0|0|0|0\n')
+        if key != 'nx300-adjust-base':
+            rows.append(key+'|'+label+'|0|0|0|0|0|0|0\n')
         report.append({'id':key,'label':label,'sha256':hashlib.sha256(table).hexdigest()})
     (OUT/'looks.txt').write_text(''.join(rows),encoding='utf-8',newline='\n')
     (OUT/'LICENSE.txt').write_text('Original procedural LUT recipes and generated LUT data are dedicated to the public domain under CC0 1.0.\nhttps://creativecommons.org/publicdomain/zero/1.0/\n',encoding='utf-8')

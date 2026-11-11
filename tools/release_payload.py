@@ -22,25 +22,26 @@ def deployed_overlay(root):
     lut_build_contract.require(root / 'outputs/deployment/lut-live-loader/lut_live_loader.arm',
                                root / 'outputs/deployment/lut-live-loader/lut-build-report.json')
     menu = root / 'outputs/metol/nxui.arm'
-    probe = json.loads((root / 'outputs/review/lut-client-ui/camera-group-panel-regression-vm/report.json').read_text(encoding='utf-8'))
-    group_render = json.loads((root / 'outputs/review/lut-client-ui/camera-group-x11-vm/report.json').read_text(encoding='utf-8'))
-    group_logic = json.loads((root / 'outputs/review/lut-client-ui/camera-group-arm-probe/report.json').read_text(encoding='utf-8'))
-    menu_hash = hashlib.sha256(menu.read_bytes()).hexdigest()
-    if not probe.get('passed') or probe.get('menu_sha256') != menu_hash:
-        raise ValueError('最新菜单与通过的私有 VM 回归不一致。')
-    if (not group_render.get('passed') or group_render.get('nxui_sha256') != menu_hash
-            or not group_render.get('visual_pixels_differ')):
-        raise ValueError('最新菜单与通过的自定义分组 X11 回归不一致。')
-    expected_sources = {
-        name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-        for name in ('mod/metol/nxui.c', 'mod/metol/nxui_lut_panel.h')
-    }
-    if not group_logic.get('passed') or any(
-            group_logic.get('source_sha256', {}).get(name) != digest
-            for name, digest in expected_sources.items()):
-        raise ValueError('最新菜单与通过的自定义分组 ARM 逻辑回归不一致。')
+    probe = json.loads((root / 'outputs/performance/panel-control-prep/report.json').read_text(encoding='utf-8'))
+    if not probe.get('passed') or not probe.get('private_vms_stopped'):
+        raise ValueError('启动与面板 ARM 回归未完成。')
+    checked = probe['source_sha256']
+    for name, expected in checked.items():
+        if hashlib.sha256((root / name).read_bytes()).hexdigest() != expected:
+            raise ValueError('发布文件与本轮 ARM 回归不一致：' + name)
+    if checked.get('outputs/metol/nxui.arm') != hashlib.sha256(menu.read_bytes()).hexdigest():
+        raise ValueError('菜单缺少本轮 ARM 验证记录。')
     sources = {
         PREFIX + 'start.sh': 'mod/deployment/start.sh',
+        PREFIX + 'common.sh': 'mod/deployment/common.sh',
+        PREFIX + 'stop.sh': 'mod/deployment/stop.sh',
+        PREFIX + 'service.sh': 'mod/deployment/service.sh',
+        PREFIX + 'lut-boot.sh': 'mod/deployment/mfw/lut-boot.sh',
+        PREFIX + 'lut-load.sh': 'mod/deployment/mfw/lut-load.sh',
+        PREFIX + 'lut-cycle.sh': 'mod/deployment/mfw/lut-cycle.sh',
+        PREFIX + 'lut-with-preview.sh': 'mod/deployment/mfw/lut-with-preview.sh',
+        PREFIX + 'lut-panel.sh': 'mod/deployment/mfw/lut-panel.sh',
+        PREFIX + 'mfw-panel.sh': 'mod/deployment/mfw/fn-panel.sh',
         PREFIX + 'bin/ram_asset_verify.arm': 'outputs/controls/ram-asset-verify/ram_asset_verify.arm',
         PREFIX + 'mfw-ram-stage.sh': 'mod/deployment/mfw/ram-stage.sh',
         PREFIX + 'bin/nx-remote-controller.arm': 'outputs/metol/remote/nx-remote-controller.arm',

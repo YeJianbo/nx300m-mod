@@ -1,6 +1,6 @@
 # NX300M Mod / NXConnect
 
-为三星 NX300M 增加机内 LUT、手机相册与遥控、拍摄参数扩展和 Quick Share 分享。相机端通过 NX300M 1.15 / MFW 的脚本入口加载，手机端基于 NXConnectForNX500 适配。
+为三星 NX300M 增加机内 LUT、手机相册与遥控、拍摄参数扩展。相机端通过 NX300M 1.15 / MFW 的脚本入口加载，手机端基于 NXConnectForNX500 适配。
 
 **开始使用：**[中文使用指南](docs/USER_GUIDE.md) · [下载测试版](https://github.com/YeJianbo/nx300m-mod/releases) · [安装与回退](docs/INSTALL.md)。当前 Release 提供 Windows 安装工具、原创 LUT 包，以及 [NXConnect 0.20.35 APK](https://github.com/YeJianbo/nx300m-mod/releases/download/v0.1.0-preview.3/NXConnect-NX300M-v0.20.35.apk)。
 
@@ -15,9 +15,8 @@
 - **LUT 转换**：标准 `.cube` 转为 NX300M 的 9³、10 bit D4 表，并为 sRGB 风格生成原厂组合表；保留源文件、色彩空间及来源信息。
 - **拍摄设置**：接入 ISO 步长、扩展 ISO、Auto ISO 上限、最快快门限制、拨盘锁，以及 Picture Wizard、RGB 和配方参数接口。
 - **相册服务**：同名 RAW＋JPEG 合并显示，提取内嵌缩略图和预览，提供原文件下载与分享入口。
-- **Quick Share**：接入 rquickshare 核心，增加相册文件交接、设备选择、PIN、进度和取消；当前通过已有 IP 网络传输。
-- **启动与菜单**：整合 SD 启动、RAM 服务运行、按键入口和分段计时。短按 Custom 选 LUT，长按打开 MOD 主菜单；调试集中到独立页面。字体直接加载，隐藏菜单等待后台任务时使用事件等待。
-- **LUT 面板**：800×480 风格列表与八项微调，支持品牌分类、收藏、参考图和独立关闭 LUT。转盘选项或调值，OK 确认，Fn 保存微调并回列表，MENU 返回；“原图微调”可保存不带胶片风格的调整。外层五个入口和各功能列表也支持转盘。操作与功能可用范围见 [LUT 面板](docs/LUT_PANEL.md)。
+- **启动与菜单**：整合 SD 启动、RAM 服务运行、按键入口和分段计时。短按 Custom 打开 LUT 面板，长按打开 MOD 主菜单；调试集中到独立页面。字体直接加载，隐藏菜单等待后台任务时使用事件等待。
+- **LUT 面板**：800×480 风格列表与八项微调，支持品牌分类、收藏、参考图和独立关闭 LUT。转盘选项或调值，OK 确认，Fn 保存微调并回列表，MENU 返回。外层五个入口和各功能列表也支持转盘。操作与功能可用范围见 [LUT 面板](docs/LUT_PANEL.md)。
 - **手动镜头**：增加无线入口镜头检查的 RAM 补丁，以及电子镜头状态和镜头校正更新链的诊断工具。
 
 ### Android App

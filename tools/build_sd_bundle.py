@@ -70,7 +70,8 @@ def bundle_looks(root, *, method=DEFAULT_METHOD, complete=False, include_ids=Non
     (base/'look.json').write_text(json.dumps(dict(id=key,label='原图微调',source_kind='builtin-identity',
         input_space='native',native_table='table.d4lut',native_stock_3d_table='table-stock3d.d4lut',
         native_format=dict(grid=9,channels=3,bits=10,bytes=4380)),ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
-    rows.append(key+'|原图微调|0|0|0|0|0|0|0\n');ids.add(key)
+    # Keep the factory composition table for imports, outside the menu list.
+    ids.add(key)
     for look in looks:
         key = look['id']
         if method is not None:
@@ -98,7 +99,7 @@ def bundle_looks(root, *, method=DEFAULT_METHOD, complete=False, include_ids=Non
         if not selected:
             raise ValueError('Short LUT cycle has no deployed entries')
         (root/'looks-cycle.txt').write_text(''.join(selected),encoding='utf-8',newline='\n')
-    return sorted(ids)
+    return sorted(ids - {'nx300-adjust-base'})
 
 
 def arm_elf(path):

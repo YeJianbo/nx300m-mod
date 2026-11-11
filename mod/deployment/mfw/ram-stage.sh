@@ -389,20 +389,19 @@ owned_remote_process() {
     set -- $helper_fields
     [ "$#" -ge 2 ] && [ "$2" = "$REC_PID" ]
 }
-for entry in /proc/[0-9]*/exe; do
-    executable=$(readlink "$entry" 2>/dev/null) || continue
-    pid=${entry#/proc/}; pid=${pid%/exe}
-    case $executable in
-        */nx-remote-controller.arm|*/nx-remote-controller.arm\ \(deleted\))
+processes=$("$verified/bin/ram_asset_verify.arm" --process-scan "$SOURCE") || fail 'cannot audit existing service processes'
+while read -r kind pid; do
+    case $kind in
+        remote)
+            executable=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
             if ! owned_remote_process "$pid" "$executable"; then
                 fail "existing remote pid=$pid is not this verified RAM instance; old SD or unknown service was not stopped"
             fi ;;
-        */sh|*/bash|*/busybox)
-            if tr '\000' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -F -x -e "$SOURCE/mfw-services.sh" -e "$SOURCE/start.sh" -e "$SOURCE/service.sh" >/dev/null; then
-                fail "old SD service shell pid=$pid remains active; no process was stopped"
-            fi ;;
+        shell) fail "old SD service shell pid=$pid remains active; no process was stopped" ;;
     esac
-done
+done <<EOF
+$processes
+EOF
 
 restart=0
 if marker_new RESTART_SERVICE; then snapshot_marker RESTART_SERVICE; restart=1; fi

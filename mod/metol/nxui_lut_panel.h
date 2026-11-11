@@ -483,12 +483,6 @@ static void draw_lut_panel(void) {
         ctx->style.button.normal=ctx->style.button.hover=nk_style_item_color(nk_rgb(116,48,48));
         if(lut_toolbar_button(selected?"关闭 LUT":"LUT 已关",0,0))lut_toolbar_activate(0);
         ctx->style.button=danger;
-        int preview_observed=nx_preview_state(root);
-        if(preview_observed!=lut_preview_shown)fprintf(stderr,"LUT_PREVIEW_STATE state=%d label=%s\n",preview_observed,nx_preview_label(preview_observed));
-        lut_preview_shown=preview_observed;
-        if(live&&(lut_preview_shown==NX_PREVIEW_WAIT||lut_preview_shown==NX_PREVIEW_BUSY)&&!lut_preview_until){
-            lut_preview_until=now_ms()+60000;lut_preview_due=now_ms()+500;
-        }
         snprintf(line,sizeof line,"%s",nx_preview_label(lut_preview_shown));
         lut_place(248,0,130,42);if(lut_toolbar_button(line,1,0))lut_toolbar_activate(1);
         lut_place(390,0,140,42);nk_label_colored(ctx,lut_submit_failed?"保存失败":lut_has_changes()?"已修改":!lut_matches_applied()?"待应用":lut_saved_config?"已保存":"当前会话",NK_TEXT_LEFT,nk_rgb(140,180,221));

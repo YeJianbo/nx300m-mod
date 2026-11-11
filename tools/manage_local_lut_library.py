@@ -236,6 +236,9 @@ def _verify_camera_stage(library: LookLibrary) -> dict:
     rows = [line.split('|') for line in catalog_path.read_text(encoding='utf-8').splitlines() if line]
     keys = [row[0] for row in rows]
     directories = {path.name for path in looks_root.iterdir() if path.is_dir()}
+    # The importer's factory composition asset is not a selectable style.
+    if 'nx300-adjust-base' not in keys:
+        directories.discard('nx300-adjust-base')
     if any(len(row) != 9 for row in rows):
         errors.append('looks.txt 存在字段数不为 9 的行')
     if len(keys) != len(set(keys)):

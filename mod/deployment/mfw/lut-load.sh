@@ -59,12 +59,6 @@ for name in bin/lut_live_loader.arm lib/lut_ram_blob.bin bin/lut_engine.arm; do
     cp "$CODE_ROOT/$name" "$destination" || fail "copy failed: $name"
     cmp -s "$CODE_ROOT/$name" "$destination" || fail "copy mismatch: $name"
 done
-mkdir "$runtime/compat"
-for saved in "$CODE_ROOT"/lib/lut-compat/*.bin; do
-    [ -f "$saved" ] && [ ! -L "$saved" ] || continue
-    target=$runtime/compat/${saved##*/}
-    cp "$saved" "$target" && cmp -s "$saved" "$target" || fail 'compatibility image copy differs'
-done
 chmod 700 "$runtime/lut_live_loader.arm" "$runtime/lut_engine.arm"
 printf 'loader_runtime=%s\nlut_data_root=%s\n' "$runtime" "$ROOT"
 run_loader() {
@@ -91,6 +85,14 @@ if [ "$operation" = apply ] && { [ "$loader_exit" -eq 3 ] || [ "$loader_exit" -e
         esac
     fi
     if [ "$recovered" -eq 0 ]; then
+        # Saved code images are only consulted during known-hook recovery.
+        # A normal status/apply must not copy and reread every legacy image.
+        mkdir "$runtime/compat"
+        for saved in "$CODE_ROOT"/lib/lut-compat/*.bin; do
+            [ -f "$saved" ] && [ ! -L "$saved" ] || continue
+            target=$runtime/compat/${saved##*/}
+            cp "$saved" "$target" && cmp -s "$saved" "$target" || fail 'compatibility image copy differs'
+        done
         for saved in "$runtime/lut_ram_blob.bin" "$runtime"/compat/*.bin; do
             [ -f "$saved" ] || continue
             restore_exit=0

@@ -135,7 +135,7 @@ def main(public=False, version='v0.1.0-preview.6', backend_profile='auto', reuse
         note.write('\nWindows LUT 工作台使用 LGPL-3.0-only 的 PySide6/Qt，并改编 MIT 许可的 hestela/lut-previewer 与 OwenWhw/CUBE-to-XMP；许可见 LICENSES/LUT-Client-NOTICES.txt。\n')
     if public:
         with (package/'NOTICE.md').open('a',encoding='utf-8') as note:
-            note.write('\n本完整安装包另含 GPL-3.0 Quick Share 核心；来源与修改见 LICENSES/QuickShare-NOTICE.md。Web 字体及库许可保存在 LICENSES。六款原创风格使用 CC0-1.0，配方见 source/build_original_looks.py。完整对应源码见同一 Release 的源码压缩包。\n')
+            note.write('\nWeb 字体及库许可保存在 LICENSES。五款原创风格及中性辅助表使用 CC0-1.0，配方见 source/build_original_looks.py。完整对应源码见同一 Release 的源码压缩包。\n')
     from importlib.metadata import distribution
     for project in ('pyinstaller', 'altgraph', 'numpy'):
         dist = distribution(project)

@@ -30,6 +30,7 @@ cp /mnt/mmc/smartfilter-probe-collector.sh "$RUNTIME/"
 cp /mnt/mmc/bin/smartfilter_loader.arm "$RUNTIME/ipcs-diagnostic/bin/"
 cp /mnt/mmc/bin/smartfilter_probe_launcher.arm "$RUNTIME/ipcs-diagnostic/bin/"
 cp /mnt/mmc/bin/smartfilter_probe_launcher.arm "$RUNTIME/bin/"
+cp /mnt/mmc/bin/ram_asset_verify.arm "$RUNTIME/bin/"
 cp /mnt/mmc/bin/lut_engine_switch_fixture.arm "$RUNTIME/bin/lut_engine.arm"
 cp /mnt/mmc/bin/lut_live_loader.arm "$RUNTIME/bin/"
 cp /mnt/mmc/lut_ram_blob.bin "$RUNTIME/lib/"
@@ -45,7 +46,9 @@ export NX300M_MOD_SOURCE_ROOT=/perf NX300M_MOD_SOURCE_ID=$(stat -c '%d:%i' /perf
 export NX_LUT_VM_PID="$pid"
 ENGINE=$RUNTIME/bin/lut_engine.arm
 for cycle in 1 2; do
-    NX300M_MOD_ROOT=/perf "$ENGINE" apply current-mono 100 > "on-$cycle.json" 2> "on-$cycle.stderr"
+    # Preview is explicitly enabled below; automatic boot restoration is
+    # exercised separately by probe_lut_lifecycle_vm.py.
+    NX300M_LUT_SKIP_PREVIEW_SYNC=1 NX300M_MOD_ROOT=/perf "$ENGINE" apply current-mono 100 > "on-$cycle.json" 2> "on-$cycle.stderr"
     /bin/sh "$RUNTIME/smartfilter-preview.sh" enable-s2 > "preview-$cycle.json" 2> "preview-$cycle.stderr"
     request "render-$cycle" 100
     request "stream-$cycle" 116
@@ -53,8 +56,9 @@ for cycle in 1 2; do
     request "stream-stopped-$cycle" 117
     [ ! -e /var/run/nx300m-preview-backend ]
     [ ! -e /var/run/nx300m-lut-selection ]
-    [ "$(cat /perf/.state/lut-choice)" = 0 ]
-    [ "$(cat /perf/.state/lut-preview)" = 0 ]
+    NX300M_MOD_ROOT=/perf "$ENGINE" choice-status > "choice-$cycle.txt"
+    grep -q '^CHOICE valid=1 recorded=1 off=1 .* slot$' "choice-$cycle.txt"
+    [ "$(cat /perf/.state/lut-preview)" = 1 ]
     [ ! -e /tmp/nx300m-smartfilter-preview.uncertain ]
     grep -q 'LUT_DISABLED native_still_restored=true preview_processing=false' "off-$cycle.json"
     ! grep -q '"command":"open-export"' "off-$cycle.json"
@@ -74,7 +78,8 @@ echo LUT_OFF_ARM_PASSED
 
 def call(action, command='', vm_timeout=180):
     args = ['wsl.exe', '-d', 'Debian', '-u', 'root', '-e', 'python3',
-            arm_vm.wsl_path(__file__), '--linux', action, base64.b64encode(command.encode()).decode()]
+            arm_vm.wsl_path(__file__), '--output-dir', arm_vm.wsl_path(OUT),
+            '--linux', action, base64.b64encode(command.encode()).decode()]
     r = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', timeout=vm_timeout+30)
     if r.returncode:
         raise RuntimeError(r.stderr or r.stdout)
@@ -105,8 +110,15 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
         raise RuntimeError(r.stderr.decode(errors='replace'))
     overlay = io.BytesIO()
     updates = {'arm-vm/mfw-probe.sh': PROBE.encode(),
+               'arm-vm/mfw-source/smartfilter-live-preview.sh': (ROOT/'mod/deployment/mfw/smartfilter-live-preview.sh').read_bytes(),
+               'arm-vm/mfw-source/lut-load.sh': (ROOT/'mod/deployment/mfw/lut-load.sh').read_bytes(),
+               'arm-vm/mfw-source/bin/ram_asset_verify.arm': (ROOT/'outputs/controls/ram-asset-verify/ram_asset_verify.arm').read_bytes(),
                'arm-vm/mfw-source/bin/lut_engine_switch_fixture.arm': (OUT/'lut_engine_switch_fixture.arm').read_bytes(),
-               'arm-vm/mfw-source/bin/lut_live_loader.arm': (ROOT/'outputs/deployment/lut-live-loader/lut_live_loader.arm').read_bytes()}
+               'arm-vm/mfw-source/bin/lut_live_loader.arm': (ROOT/'outputs/deployment/lut-live-loader/lut_live_loader.arm').read_bytes(),
+               'arm-vm/mfw-source/lut_ram_blob.bin': (ROOT/'outputs/deployment/lut-live-loader/lut_ram_blob.bin').read_bytes(),
+               'arm-vm/mfw-source/bin/smartfilter_loader.arm': (ROOT/'outputs/deployment/smartfilter-session/smartfilter_loader.arm').read_bytes(),
+               'arm-vm/mfw-source/bin/smartfilter_probe_launcher.arm': (ROOT/'outputs/deployment/smartfilter-session/smartfilter_probe_launcher.arm').read_bytes(),
+               'arm-vm/mfw-source/smartfilter_ram.bin': (ROOT/'outputs/deployment/smartfilter-session/smartfilter_ram.bin').read_bytes()}
     for inode, (name, data) in enumerate(updates.items(), 9000):
         arm_vm.cpio_add(overlay, name, 0o100755, data, inode)
     arm_vm.cpio_add(overlay, 'TRAILER!!!', 0)
@@ -137,7 +149,7 @@ def run():
         windows=[]
         for cycle in (1, 2):
             text=(guest/f'off-{cycle}.json').read_text()+(guest/f'off-{cycle}.stderr').read_text()
-            assert 'operation=stop phase=end rc=0' in text
+            assert 'operation=pause phase=end rc=0' in text
             assert 'operation=restore phase=end rc=0' in text
             assert 'Still control admission:' in text and 'camera running' in text
             windows += [int(v) for v in re.findall(r'Still target stop window: (\d+) ms', text)]
@@ -158,6 +170,12 @@ def run():
 
 
 if __name__ == '__main__':
+    import argparse
+    parser=argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--output-dir',type=Path,default=OUT)
+    args,remaining=parser.parse_known_args()
+    OUT=args.output_dir.resolve()
+    sys.argv=[sys.argv[0],*remaining]
     vm.OUT=OUT
     vm.SOCKET=SOCKET
     if len(sys.argv)>1 and sys.argv[1]=='--linux':

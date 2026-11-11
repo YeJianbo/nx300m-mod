@@ -135,6 +135,8 @@ cp /mnt/mmc/ipcs-kdd-collector.sh "$RUNTIME/ipcs-kdd-collector.sh"
 cp /mnt/mmc/bin/smartfilter_loader.arm "$RUNTIME/ipcs-diagnostic/bin/"
 cp /mnt/mmc/bin/smartfilter_probe_launcher.arm "$RUNTIME/ipcs-diagnostic/bin/"
 cp /mnt/mmc/bin/smartfilter_probe_launcher.arm "$RUNTIME/bin/"
+cp /mnt/mmc/bin/ram_asset_verify.arm "$RUNTIME/bin/"
+chmod 500 "$RUNTIME/bin/ram_asset_verify.arm"
 chmod 500 "$RUNTIME/bin/smartfilter_probe_launcher.arm"
 # Match ram-stage.sh: nested diagnostic assets are read-only until copied to
 # the private job; only the normal bin scanner is resident-executable.
@@ -203,6 +205,20 @@ for look in nx300-hard-mono nx300-fuji-classic-chrome; do
     printf '%s|%s|0|0|0|0|0|0|0\n' "$look" "$look" >> /perf/looks.txt
 done
 NX300M_MOD_ROOT=/perf "$ENGINE" ready > still-engine-ready.json 2> still-engine-ready.stderr
+snapshot_choice() {
+    prefix=$1
+    : > "$prefix.saved-inode"
+    for slot in 0 1; do
+        choice=/perf/.state/lut-choice.$slot
+        if [ -f "$choice" ]; then
+            cp "$choice" "$prefix.saved.$slot"
+            printf '%s ' "$slot" >> "$prefix.saved-inode"
+            stat -c '%d:%i' "$choice" >> "$prefix.saved-inode"
+        fi
+    done
+    [ -s "$prefix.saved-inode" ]
+    [ ! -e /perf/.state/lut-choice ]
+}
 switch=0
 for look in nx300-hard-mono nx300-fuji-classic-chrome nx300-hard-mono; do
     switch=$((switch+1)); tag=switch-$switch
@@ -212,7 +228,7 @@ for look in nx300-hard-mono nx300-fuji-classic-chrome nx300-hard-mono; do
     cp /tmp/lut-switch-still.bin "$tag.stream-capture.bin"
     request "$tag.stream-stop" 117
     cp /var/run/nx300m-lut-selection "$tag.selection"
-    stat -c '%d:%i' /perf/.state/lut-choice > "$tag.saved-inode"
+    snapshot_choice "$tag"
     request "$tag.still" 113
     cp /tmp/lut-switch-still.bin "$tag.still.bin"
     request "$tag.preview" 100
@@ -226,11 +242,17 @@ done
 # Stop only the preview through the actual menu route. Keep the current
 # selection, saved choice and Still hooks; changing a look must stay photo-only.
 cp /var/run/nx300m-lut-selection preview-only.selection
-cp /perf/.state/lut-choice preview-only.saved
+snapshot_choice preview-only
 /bin/sh "$RUNTIME/fn-panel-actions.sh" preview-stop > preview-only-stop.json 2> preview-only-stop.stderr
 [ ! -e /var/run/nx300m-preview-backend ]
 cmp -s preview-only.selection /var/run/nx300m-lut-selection
-cmp -s preview-only.saved /perf/.state/lut-choice
+for slot in 0 1; do
+    if [ -f "preview-only.saved.$slot" ]; then
+        cmp -s "preview-only.saved.$slot" "/perf/.state/lut-choice.$slot"
+    else
+        [ ! -e "/perf/.state/lut-choice.$slot" ]
+    fi
+done
 NX300M_MOD_ROOT=/perf "$ENGINE" ready > preview-only-ready.json
 request preview-only-still 113
 cp /tmp/lut-switch-still.bin preview-only.still.bin
@@ -257,7 +279,7 @@ NX300M_MOD_ROOT=/perf NX_STATE_DIR=/tmp/lut-panel-state "$ENGINE" disable > swit
 request switch-off-stream-stop 117
 [ ! -e /var/run/nx300m-preview-backend ]
 [ ! -e /var/run/nx300m-lut-selection ]
-cp /perf/.state/lut-choice switch-off.saved
+snapshot_choice switch-off
 set +e
 "$STILL" status --pid "$pid" > switch-off-native.json
 off_status_rc=$?
@@ -325,6 +347,8 @@ unset NX_LUT_VM_PID
 # Match the panel's SD root/private UI state. The existing RAM-base binding
 # must route synchronization to the actual service without reentering engine.
 rm -f /var/run/nx300m-lut-selection /var/run/nx300m-lut-selection-session
+# Exercise migration from an old card, without newer slots shadowing it.
+rm -f /perf/.state/lut-choice.0 /perf/.state/lut-choice.1
 printf '2 /perf/looks/current-color/table.d4lut 37\n' > /perf/.state/lut-choice
 NX300M_MOD_ROOT=/perf NX_STATE_DIR=/tmp/lut-panel-state "$RUNTIME/bin/lut_engine.arm" restore-selection > wrapper-selection-sync.json 2> wrapper-selection-sync.stderr
 operation wrapper-selection-status status
@@ -333,6 +357,7 @@ request wrapper-fast-capture 101
 request wrapper-fast-resume 100
 NX300M_MOD_ROOT=/perf NX_STATE_DIR=/tmp/lut-panel-state "$RUNTIME/bin/lut_engine.arm" stock > wrapper-selection-stock.json 2> wrapper-selection-stock.stderr
 # An explicit stock choice in this session must not revive an older saved LUT.
+rm -f /perf/.state/lut-choice.0 /perf/.state/lut-choice.1
 printf '3 /perf/looks/current-mono/table.d4lut 100\n' > /perf/.state/lut-choice
 set +e
 /bin/sh "$RUNTIME/smartfilter-preview.sh" enable-s2 > wrapper-selection-stock-refused.txt 2> wrapper-selection-stock-enable.stderr
@@ -546,6 +571,7 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
     for name,source in [('bin/smartfilter_fixture.arm',fixture),('bin/ipcs_session_failure_fixture.arm',failure),('bin/smartfilter_loader.arm',BUILD/'smartfilter_loader.arm'),
                         ('bin/lut_engine_switch_fixture.arm',still_fixture),
                         ('bin/lut_live_loader.arm',ROOT/'outputs/deployment/lut-live-loader/lut_live_loader.arm'),
+                        ('bin/ram_asset_verify.arm',ROOT/'outputs/controls/ram-asset-verify/ram_asset_verify.arm'),
                         ('lut_ram_blob.bin',ROOT/'outputs/deployment/lut-live-loader/lut_ram_blob.bin'),
                         ('bin/ipcs_calltrace_fixture.arm',trace),
                         ('bin/smartfilter_probe_launcher.arm',BUILD/'smartfilter_probe_launcher.arm'),
@@ -655,7 +681,27 @@ def verify(guest):
     assert 'LUT_BOOT restored preview=1' in (guest/'boot-preview.txt').read_text()
     assert (guest/'boot-still.bin').read_bytes()==(OUT/'source-files/monochrome.d4lut').read_bytes()
     assert rows('boot-preview-status')[0]['look_id']=='current-mono'
-    assert len({(guest/f'switch-{i}.saved-inode').read_text(encoding='utf-8') for i in (1,2,3)})==1
+    def saved_choice(prefix):
+        records=[]
+        for slot in (0,1):
+            path=guest/f'{prefix}.saved.{slot}'
+            if not path.exists():
+                continue
+            magic,generation,checksum,body=path.read_bytes().split(b' ',3)
+            assert magic==b'NXCH1' and int(generation)>0,path
+            value=2166136261
+            for byte in body:
+                value=((value^byte)*16777619)&0xffffffff
+            assert value==int(checksum,16),(path,body)
+            records.append((int(generation),body.decode('utf-8')))
+        assert records,prefix
+        return max(records)[1]
+    inodes={}
+    for i in (1,2,3):
+        current=dict(line.split() for line in (guest/f'switch-{i}.saved-inode').read_text().splitlines())
+        for slot,inode in current.items():
+            assert slot not in inodes or inodes[slot]==inode,(i,slot,inodes,current)
+        inodes.update(current)
     for i,look in enumerate(('nx300-hard-mono','nx300-fuji-classic-chrome','nx300-hard-mono'),1):
         tag=f'switch-{i}'
         table=OUT/'source-files/looks'/look/'table-stock3d.d4lut'
@@ -665,6 +711,7 @@ def verify(guest):
         assert (guest/(tag+'.after-capture.bin')).read_bytes()==expected,tag
         assert (guest/(tag+'.stream-capture.bin')).read_bytes()==expected,tag
         selected=(guest/(tag+'.selection')).read_text(encoding='utf-8').split()
+        assert saved_choice(tag).split()==selected,tag
         assert selected[1]==f'/perf/looks/{look}/table.d4lut' and selected[2]=='100',selected
         status=rows(tag+'.status')[0]
         assert status['look_id']==look and status['applied_generation']==status['requested_generation'],status
@@ -677,7 +724,7 @@ def verify(guest):
     expected_stock=struct.pack('<2190H',*factory_3d_lut())
     assert (guest/'switch-stock.still.bin').read_bytes()==expected_stock
     assert 'LUT_DISABLED' in (guest/'switch-off.json').read_text(encoding='utf-8')
-    assert (guest/'switch-off.saved').read_text(encoding='utf-8')=='0\n'
+    assert saved_choice('switch-off')=='0\n'
     off_native=rows('switch-off-native')[0]
     assert off_native['rw_slots_original'] and not off_native['ram_hooks_installed'],off_native
     before_off,after_off=rows('switch-off-before')[0],rows('switch-off-after')[0]

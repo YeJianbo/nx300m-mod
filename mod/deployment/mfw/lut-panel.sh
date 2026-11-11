@@ -3,6 +3,13 @@
 set -eu
 set -f
 umask 077
+IFS=' ' read -r NX_PANEL_SCRIPT_UPTIME ignored < /proc/uptime
+export NX_PANEL_SCRIPT_UPTIME
+panel_stage() {
+    IFS=' ' read -r stage_uptime ignored < /proc/uptime
+    printf 'PANEL_STAGE pid=%s name=%s uptime=%s\n' "$$" "$1" "$stage_uptime" >&2
+}
+panel_stage script-entry
 PATH=/bin:/usr/bin:/sbin:/usr/sbin
 export PATH
 fail() { printf 'NX300M LUT panel: %s\n' "$*" >&2; exit 1; }
@@ -32,12 +39,13 @@ if [ "${NX300M_MOD_SOURCE_ROOT+x}${NX300M_MOD_SOURCE_ID+x}" != '' ]; then
 fi
 # A staged service may call this script from its verified RAM asset directory.
 CODE=$HERE
-for asset in bin/nxui.arm bin/lut_engine.arm fonts/mfw-font.charset; do
+for asset in bin/nxui.arm bin/lut_engine.arm; do
     [ -s "$CODE/$asset" ] && [ ! -L "$CODE/$asset" ] || fail "panel asset unavailable: $asset"
 done
 [ -s "$ROOT/looks.txt" ] || fail 'LUT catalogue unavailable'
 stock_font=/usr/share/fonts/SDIC_GP_US_20120720.ttf
 [ -s "$stock_font" ] || fail 'original firmware font unavailable'
+panel_stage resources
 ram_tmp=$(CDPATH= cd -P /tmp && pwd -P) || fail '/tmp unavailable'
 awk -v path="$ram_tmp" '
     $2=="/" || path==$2 || index(path,$2 "/")==1 {
@@ -65,12 +73,7 @@ for asset in nxui.arm lut_engine.arm; do
         chmod 500 "$runtime/$asset"
     fi
 done
-if [ "$ram_assets" = 1 ] && ln "$CODE/fonts/mfw-font.charset" "$runtime/mfw-font.charset"; then
-    :
-else
-    cp "$CODE/fonts/mfw-font.charset" "$runtime/mfw-font.charset" && \
-        cmp -s "$CODE/fonts/mfw-font.charset" "$runtime/mfw-font.charset" || fail 'RAM font coverage copy differs'
-fi
+panel_stage pinned
 export DISPLAY=${DISPLAY:-:0}
 export NX300M_MOD_ROOT="$ROOT" NX300M_MOD_SOURCE_ROOT="$ROOT" NX300M_MOD_SOURCE_ID="$source_id"
 export NX_STATE_DIR="$runtime"
@@ -82,6 +85,9 @@ if [ "$force_dry" -eq 0 ]; then set -- --live; else set -- --dry-run; fi
 printf 'panel_runtime=%s\nlut_data_root=%s\n' "$runtime" "$ROOT"
 cd "$runtime"
 set -- "$@" --lut --root "$ROOT" --recipes "$ROOT/looks.txt" \
-    --engine "$runtime/lut_engine.arm" --font-file "$stock_font" --font-metadata "$runtime/mfw-font.charset"
+    --engine "$runtime/lut_engine.arm" --font-file "$stock_font"
 [ -z "$lifetime" ] || set -- "$@" --lifetime-ms "$lifetime"
+IFS=' ' read -r NX_PANEL_PREP_UPTIME ignored < /proc/uptime
+export NX_PANEL_PREP_UPTIME
+panel_stage exec
 exec "$runtime/nxui.arm" "$@"
