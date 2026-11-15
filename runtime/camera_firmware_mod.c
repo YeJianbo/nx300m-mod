@@ -35,6 +35,10 @@ extern int dup2(int, int);
 extern char **environ;
 #include "camera_firmware_mod_stock.h"
 #include "manual_lens_wifi_patch.h"
+/* Freestanding fork child: no libc headers here, open()/close() are declared
+ * above; the header drops to raw ARM EABI getdents64 in this mode. */
+#define NX_CLOSE_INHERITED_FDS_FREESTANDING
+#include "close_inherited_fds.h"
 
 #define READY "/var/run/nx300m-firmware-mod-ready"
 #define REQUEST "/var/run/nx300m-firmware-mod-request"
@@ -169,7 +173,12 @@ static int launch_settings(void) {
         char *args[] = {"/bin/sh", launcher.path, "settings", (char *)0};
         int input = open("/dev/null", 0);
         if (input >= 0) dup2(input, 0);
-        for (int fd = 3; fd < 4096; fd++) close(fd);
+        /* Close only what this fork child actually inherited (getdents64
+         * enumeration, no allocator/stdio locks): FDs 0-2 and the descriptor
+         * the enumerator itself opened stay, and anything above the old
+         * 4095 ceiling is closed too. Failure follows the existing child
+         * pattern: no exec with unknown descriptors, child exits 126. */
+        if (nx_close_inherited_fds()) _exit(126);
         execve("/bin/sh", args, environment);
         _exit(127);
     }

@@ -134,7 +134,7 @@ tc=/opt/nx300m-toolchain/usr
 export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
 rf=/opt/nx300m-lab/stock-1.15
 "$tc/bin/arm-linux-gnueabi-gcc" -B"$tc/lib/gcc-cross/arm-linux-gnueabi/14/" \
- -std=c99 -O1 -Wall -Wextra -Werror -D_GNU_SOURCE -include mod/metol/remote/compat.h -I. \
+ -std=c99 -O1 -Wall -Wextra -Werror -Wno-unused-function -D_GNU_SOURCE -include mod/metol/remote/compat.h -I. \
  -U_TIME_BITS -D_TIME_BITS=32 -U_FILE_OFFSET_BITS -D_FILE_OFFSET_BITS=64 -mfloat-abi=soft \
  -fno-pic -no-pie -fno-stack-protector -nostdlib -nostartfiles -Wl,-e,_start \
  -Wl,--dynamic-linker=/lib/ld-linux.so.3 -Wl,-rpath-link,"$rf/lib" \

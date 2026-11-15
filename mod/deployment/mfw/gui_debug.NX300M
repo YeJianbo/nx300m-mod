@@ -1,4 +1,6 @@
 button|预览状态|preview-status
+button|开启/关闭 Telnet|telnet-toggle
+button|显示 Telnet 密码|telnet-password
 button|同步当前 LUT|preview-sync
 button|保存预览诊断|preview-diag-export
 button|关闭预览并保存诊断|preview-restore

@@ -294,6 +294,79 @@ static void *ram_frame_thread(void *unused) {
     return NULL;
 }
 static void *ram_capture_thread(void *unused) { (void)unused; REQUIRE(!ram_prepare()); return NULL; }
+#ifdef NX_SFR_SESSION
+static volatile unsigned ram_overlap_started,ram_overlap_opened,ram_overlap_done;
+static void *ram_overlap_capture(void *unused) {
+    (void)unused;
+    __atomic_store_n(&ram_overlap_started,1,__ATOMIC_RELEASE);
+    REQUIRE(!ram_b2y_open_call());
+    __atomic_store_n(&ram_overlap_opened,1,__ATOMIC_RELEASE);
+    REQUIRE(!ram_prepare());
+    REQUIRE(ram_finish()==1); ram_b2y_close_call();
+    __atomic_store_n(&ram_overlap_done,1,__ATOMIC_RELEASE);
+    return NULL;
+}
+static void ram_overlap_test(void) {
+    pthread_t second;
+    ram_overlap_started=ram_overlap_opened=ram_overlap_done=0;
+    REQUIRE(!ram_b2y_open_call()); REQUIRE(!ram_prepare());
+    REQUIRE(!pthread_create(&second,NULL,ram_overlap_capture,NULL));
+    for(unsigned tries=0;!__atomic_load_n(&ram_overlap_started,__ATOMIC_ACQUIRE);++tries) {
+        REQUIRE(tries<1000); usleep(1000);
+    }
+    usleep(900000);
+    REQUIRE(!ram_overlap_opened&&!ram_overlap_done);
+    /* Main/screen/thumbnail stages may have separate Prepare/Finish pairs
+     * under the same native Open; preview must not run in between them. */
+    REQUIRE(ram_finish()==1);
+    ram_off_prepare(1); ram_off_worker(); REQUIRE(!operations);
+    REQUIRE(!ram_prepare()); REQUIRE(ram_finish()==1);
+    ram_b2y_close_call();
+    REQUIRE(!pthread_join(second,NULL));
+    REQUIRE(ram_overlap_done&&!ram_runtime->captures&&!ram_runtime->b2y_leases&&
+            !ram_runtime->session.blockers[NX_IPS_CAPTURE]);
+    printf("{\"type\":\"fixture_capture_overlap\",\"two_captures\":true,\"multistage\":true,\"balanced\":true}\n");
+}
+static void *ram_late_frame_release(void *unused) {
+    (void)unused; usleep(1000000);
+    REQUIRE(!pthread_mutex_lock(&render_mutex)); render_continue=1;
+    REQUIRE(!pthread_cond_signal(&render_condition)); REQUIRE(!pthread_mutex_unlock(&render_mutex));
+    return NULL;
+}
+static void ram_capture_timeout_test(unsigned stage) {
+    pthread_t release;
+    ram_pending_stage=(int)stage;
+    ram_block=1; render_entered=render_continue=0;
+    REQUIRE(!pthread_create(&ram_async_frame,NULL,ram_frame_thread,NULL));
+    REQUIRE(!pthread_mutex_lock(&render_mutex));
+    while(!render_entered) REQUIRE(!pthread_cond_wait(&render_condition,&render_mutex));
+    REQUIRE(!pthread_mutex_unlock(&render_mutex));
+    REQUIRE(!pthread_create(&release,NULL,ram_late_frame_release,NULL));
+    /* Stock CCpoIpc ignores Open's return and proceeds to Prepare/Operate.
+     * Returning a synthetic error here must not skip the native lease. */
+    ram_b2y_open_call();
+    REQUIRE(ram_runtime->b2y_leases==1);
+    REQUIRE(!ram_prepare()); REQUIRE(!ram_runtime->backend_active);
+    REQUIRE(ram_finish()==1); ram_b2y_close_call();
+    REQUIRE(!pthread_join(release,NULL)); REQUIRE(!pthread_join(ram_async_frame,NULL)); ram_block=ram_pending_stage=0;
+    int v=0; REQUIRE(!sem_getvalue((void *)((unsigned char *)ram_b2y+0x44),&v)&&v==1);
+    REQUIRE(!ram_runtime->captures&&!ram_runtime->b2y_leases&&!ram_runtime->session.blockers[NX_IPS_CAPTURE]);
+    printf("{\"type\":\"fixture_capture_slow_handoff\",\"stage\":%u,\"native_open_preserved\":true,\"balanced\":true}\n",stage);
+}
+static void ram_capture_retained_test(void) {
+    /* Another client holds a channel, so the owner cannot relinquish its
+     * power reference. Native Open can still acquire the free lifecycle.
+     * Release the channel before native Prepare, as that client completes. */
+    REQUIRE(ram_runtime->session.held==1);
+    REQUIRE(!sem_trywait(&native_semaphore[2]));
+    ram_b2y_open_call();
+    REQUIRE(ram_runtime->b2y_leases==1&&ram_runtime->session.held==1);
+    REQUIRE(!sem_post(&native_semaphore[2]));
+    REQUIRE(!ram_prepare()); REQUIRE(ram_finish()==1); ram_b2y_close_call();
+    REQUIRE(!ram_runtime->captures&&!ram_runtime->b2y_leases&&!ram_runtime->session.blockers[NX_IPS_CAPTURE]);
+    printf("{\"type\":\"fixture_capture_retained_reference\",\"native_prepare_preserved\":true,\"balanced\":true}\n");
+}
+#endif
 static void *ram_release_on_control(void *unused) {
     (void)unused; unsigned tries=0;
     while(!__atomic_load_n(&ram_runtime->control_pause,__ATOMIC_ACQUIRE)) { REQUIRE(++tries<30000); usleep(1000); }
@@ -477,6 +550,71 @@ int main(void) {
             else
 #endif
             if(command==120) ram_refresh();
+            else if(command==125) {
+                filter_mode=15;
+                unsigned before=ram_runtime->refresh_requests,unsafe=0;
+                const unsigned states[]={0,1,8,9,11,14,15,18,20};
+                for(unsigned i=0;i<sizeof states/sizeof states[0];++i) {
+                    ram_liveview[0x34/4]=states[i]; ram_liveview[0x38/4]=0;
+                    ram_refresh_callback();
+                    if(ram_runtime->refresh_queued) {
+                        unsigned packet[4]; REQUIRE(msgrcv(ram_capture_queue,packet,12,0,IPC_NOWAIT)==12);
+                        ram_runtime->refresh_queued=0; ++unsafe;
+                    }
+                }
+                ram_liveview[0x34/4]=7; ram_liveview[0x38/4]=9;
+                ram_refresh_callback();
+                if(ram_runtime->refresh_queued) {
+                    unsigned packet[4]; REQUIRE(msgrcv(ram_capture_queue,packet,12,0,IPC_NOWAIT)==12);
+                    ram_runtime->refresh_queued=0; ++unsafe;
+                }
+                ram_liveview[0x38/4]=0;
+                printf("{\"type\":\"fixture_refresh_inactive\",\"unsafe_requests\":%u,\"requests\":%u}\n",
+                       unsafe,ram_runtime->refresh_requests-before);
+            }
+            else if(command==126) {
+                filter_mode=15;
+                /* A valid frame queued its request just before stock entered
+                 * a stopped/memory-wait state. Dispatch must not restart it. */
+                ram_liveview[0x34/4]=7; ram_liveview[0x38/4]=0;
+                ram_refresh_callback(); REQUIRE(ram_runtime->refresh_queued);
+                ram_liveview[0x34/4]=20;
+                unsigned before=ram_topology_rebuilds;
+                pthread_t controller; REQUIRE(!pthread_create(&controller,NULL,ram_refresh_controller,NULL));
+                REQUIRE(!pthread_join(controller,NULL));
+                printf("{\"type\":\"fixture_refresh_stale_dispatch\",\"rebuilds\":%u,\"state\":%u,\"pending\":%u}\n",
+                       ram_topology_rebuilds-before,ram_liveview[0x34/4],ram_runtime->refresh_pending);
+            }
+            else if(command==127) {
+                struct nx_sfr_config *cfg=(void *)((unsigned)h+h->config_offset);
+                unsigned stop=cfg->original[NX_SFR_STOP];
+                cfg->original[NX_SFR_STOP]=(unsigned)ram_stop_double;
+                ram_runtime->refresh_pending=1;ram_runtime->refresh_queued=1;
+                ram_runtime->refresh_attempt=(cfg->generation<<1)|1;
+                int (*call)(void *,unsigned,unsigned)=(void *)*ram_slots[NX_SFR_STOP];
+                REQUIRE(call(ram_b2y,17,1)==41);
+                cfg->original[NX_SFR_STOP]=stop;
+                printf("{\"type\":\"fixture_refresh_stock_stop\",\"pending\":%u,\"queued\":%u,\"stopped\":%u}\n",
+                       ram_runtime->refresh_pending,ram_runtime->refresh_queued,ram_runtime->stream_stopped);
+            }
+            else if(command==128) {
+                struct nx_sfr_config *cfg=(void *)((unsigned)h+h->config_offset);
+                /* Native return creates its path from the current selection;
+                 * synchronize the native cached mode through its own checker,
+                 * then execute Create's prefix through the installed hook. */
+                (void)cfg->liveview_changed(ram_liveview,0x39);
+                ram_path_probe(NX_SFR_CREATE);
+                unsigned before=ram_topology_rebuilds;
+                unsigned start=cfg->original[NX_SFR_START];
+                cfg->original[NX_SFR_START]=(unsigned)ram_start_double;
+                int (*call)(void *,int,unsigned)=(void *)*ram_slots[NX_SFR_START];
+                REQUIRE(call(ram_b2y,17,60)==1);
+                cfg->original[NX_SFR_START]=start;
+                ram_liveview[0x34/4]=7;ram_liveview[0x38/4]=0;
+                ram_refresh();
+                printf("{\"type\":\"fixture_refresh_return\",\"stopped\":%u,\"pending\":%u,\"s2_path\":%u,\"extra_rebuilds\":%u,\"generation\":%u,\"look\":\"%s\"}\n",
+                       ram_runtime->stream_stopped,ram_runtime->refresh_pending,ram_runtime->s2_path,ram_topology_rebuilds-before,cfg->generation,cfg->look_id);
+            }
             else if(command==124) {
                 unsigned message[4]; errno=0;
                 REQUIRE(msgrcv(ram_capture_queue,message,12,0,IPC_NOWAIT)==-1&&errno==ENOMSG);
@@ -547,6 +685,9 @@ int main(void) {
                 int v=0; REQUIRE(!sem_getvalue((void *)((unsigned char *)ram_b2y+0x44),&v)&&v==1);
                 save("/tmp/smartfilter-ram.frame",output,FRAME);
             }
+            else if(command==129) ram_overlap_test();
+            else if(command>=130&&command<=133) ram_capture_timeout_test(command-130);
+            else if(command==134) ram_capture_retained_test();
             else if(command==101) {
                 for(unsigned tries=0;!native_opened;++tries) {
                     REQUIRE(tries<100); ram_off_prepare(1); ram_off_worker(); usleep(10000);
@@ -627,7 +768,7 @@ int main(void) {
                 cfg->original[NX_SFR_START]=(unsigned)ram_start_double;
                 int (*stop_call)(void *,unsigned,unsigned)=(void *)*ram_slots[NX_SFR_STOP];
                 int (*start_call)(void *,int,unsigned)=(void *)*ram_slots[NX_SFR_START];
-                unsigned before=ram_native_stops;
+                unsigned before=ram_native_stops,starts_before=ram_native_starts;
                 if(command==108) {
                     REQUIRE(ram_runtime->session.held==2);
                     REQUIRE(stop_call(ram_b2y,17,1)==NX_IPS_UNCERTAIN);
@@ -637,7 +778,7 @@ int main(void) {
                     REQUIRE(stop_call(ram_b2y,17,1)==41);
                     REQUIRE(ram_native_stops==before+1&&!ram_runtime->session.held&&!native_opened);
                     REQUIRE(ram_runtime->stream_stopped==1);
-                    REQUIRE(start_call(ram_b2y,17,60)==1&&ram_native_starts==1);
+                    REQUIRE(start_call(ram_b2y,17,60)==1&&ram_native_starts==starts_before+1);
                     REQUIRE(!ram_runtime->stream_stopped&&!native_opened);
                     REQUIRE(!ram_runtime->session.blockers[NX_IPS_STREAM]);
                 }

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include "lut_tune.h"
 #include "lut_choice_store.h"
+#include "lut_table_cache.h"
 /* Issue 11 + 2026-11-11 acceptance: bounded eviction of composed per-look
  * cache directories. Control events only, never per frame.
  *
@@ -162,8 +163,10 @@ static inline int nx_tune_cache(const char *id,const struct nx_lut_tune *t,unsig
     uint64_t hash=1469598103934665603ULL;
     for(int k=0;k<=composed;k++) {
         char file[512];snprintf(file,sizeof file,"%s/looks/%s/%s",nx_lut_data_root(),id,names[k]);
-        FILE *in=fopen(file,"rb");if(!in)return 4;
-        int ok=fread(original[k],1,4380,in)==4380 && fgetc(in)==EOF && !ferror(in);fclose(in);if(!ok)return 5;
+        /* LOOK-CACHE: served from the bounded 4-table session cache when the
+         * file identity is unchanged, so browsing A -> B -> A does not re-read
+         * the same bytes from the card. */
+        if(nx_table_cache_load(file,original[k],4380)<0)return 4;
         nx_tune_table(original[k],tables[k],t);
         for(unsigned j=0;j<4380;j++){hash^=((unsigned char *)original[k])[j];hash*=1099511628211ULL;}
     }

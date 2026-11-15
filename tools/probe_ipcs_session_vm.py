@@ -14,6 +14,101 @@ from mfw_runtime import firmware_profile
 ROOT=Path(__file__).resolve().parents[1]
 BUILD=ROOT/'outputs/deployment/smartfilter-session'
 OUT=BUILD/'arm-vm'
+# Panel-asset pin contract: the launcher hard-links the two staged binaries
+# into a private runtime dir and must keep that generation usable after the
+# resident pathname is replaced. The firmware font is a hard dependency and
+# is passed as --font-file; the retired charset asset is not pinned.
+PANEL_PIN_CONTRACT = r'''# Exercise the actual panel launcher with a non-UI executable: a private link
+# must keep the old generation available after the resident pathname changes.
+# The launcher pins only the two binaries and always runs on the stock firmware
+# font, so the contract checked here is a hard link per binary, the pinned
+# generation surviving replacement, and the real --engine/--font-file arguments.
+# The retired charset asset is not pinned and is not a launcher dependency.
+pin_base=/tmp/panel-asset-pin
+pin_source=/perf/panel-source
+mkdir -p "$pin_base/runtime/bin" "$pin_source"
+cp /mnt/mmc/lut-panel.sh "$pin_base/runtime/lut-panel.sh"
+check_eq() { # name expected actual
+    if [ "$2" = "$3" ]; then
+        printf 'pin_check=%s ok\n' "$1" >> panel-asset-pin.log
+    else
+        printf 'pin_check=%s failed expected=[%s] actual=[%s]\n' "$1" "$2" "$3" >> panel-asset-pin.log
+        return 1
+    fi
+}
+# The stub records the argv it is exec'd with, so the launcher's real engine and
+# font arguments are asserted instead of an assumption about its assets.
+printf '%s\n' '#!/bin/sh' > "$pin_base/runtime/bin/nxui.arm"
+cat >> "$pin_base/runtime/bin/nxui.arm" <<'STUB'
+for arg in "$@"; do printf '%s\n' "$arg"; done > /tmp/panel-asset-argv.txt
+exit 0
+STUB
+cp "$pin_base/runtime/bin/nxui.arm" "$pin_base/runtime/bin/lut_engine.arm"
+chmod 500 "$pin_base/runtime/bin/nxui.arm" "$pin_base/runtime/bin/lut_engine.arm"
+printf 'fixture\n' > "$pin_source/looks.txt"
+rm -f /tmp/panel-asset-argv.txt
+NX300M_MFW_RAM_BASE="$pin_base" NX300M_MOD_SOURCE_ROOT="$pin_source" \
+  NX300M_MOD_SOURCE_ID=$(stat -c '%d:%i' "$pin_source") \
+  /bin/sh "$pin_base/runtime/lut-panel.sh" --dry-run > panel-asset-pin.log 2>&1
+pin_runtime=$(sed -n 's/^panel_runtime=//p' panel-asset-pin.log)
+[ -n "$pin_runtime" ] || { printf 'pin_check=runtime_line failed\n' >> panel-asset-pin.log; exit 1; }
+# 1. Both staged binaries are hard links to the private runtime copies: same inode.
+for asset in nxui.arm lut_engine.arm; do
+    check_eq "inode_$asset" "$(stat -c '%d:%i' "$pin_base/runtime/bin/$asset")" \
+        "$(stat -c '%d:%i' "$pin_runtime/$asset")"
+done
+# 2. The launcher runs the pinned engine on the original firmware font.
+[ -s /tmp/panel-asset-argv.txt ] || { printf 'pin_check=argv_recorded failed\n' >> panel-asset-pin.log; exit 1; }
+cp /tmp/panel-asset-argv.txt panel-asset-argv.txt 2>/dev/null || :
+check_eq argv_font /usr/share/fonts/SDIC_GP_US_20120720.ttf \
+    "$(sed -n '/^--font-file$/{n;p;q;}' /tmp/panel-asset-argv.txt)"
+check_eq argv_engine "$pin_runtime/lut_engine.arm" \
+    "$(sed -n '/^--engine$/{n;p;q;}' /tmp/panel-asset-argv.txt)"
+check_eq argv_recipes "$pin_source/looks.txt" \
+    "$(sed -n '/^--recipes$/{n;p;q;}' /tmp/panel-asset-argv.txt)"
+check_eq argv_dry_run '--dry-run' "$(sed -n '1p' /tmp/panel-asset-argv.txt)"
+# The retired charset asset must not be a launcher argument any more.
+check_eq argv_no_charset '' "$(sed -n '/^--font-metadata$/p' /tmp/panel-asset-argv.txt)"
+# 3. Replacing the resident pathname must leave the pinned generation usable.
+mv "$pin_base/runtime/bin/nxui.arm" "$pin_base/runtime/bin/nxui.old"
+printf 'replacement\n' > "$pin_base/runtime/bin/nxui.arm"
+if cmp -s "$pin_runtime/nxui.arm" "$pin_base/runtime/bin/nxui.old"; then
+    printf 'pin_check=pinned_generation_survives ok\n' >> panel-asset-pin.log
+else
+    printf 'pin_check=pinned_generation_survives failed\n' >> panel-asset-pin.log
+    exit 1
+fi
+printf 'private_ram_inodes_pinned_across_replacement\n' >> panel-asset-pin.log
+# 4. The firmware font is a dependency, not decoration: with the file masked the
+#    launcher must refuse to start. The mask is restored in the same block.
+font_state=unknown
+: > /tmp/panel-asset-empty-font
+if mount --bind /tmp/panel-asset-empty-font /usr/share/fonts/SDIC_GP_US_20120720.ttf 2>/dev/null; then
+    if [ -s /usr/share/fonts/SDIC_GP_US_20120720.ttf ]; then
+        font_state=mask_ineffective
+    else
+        set +e
+        NX300M_MFW_RAM_BASE="$pin_base" NX300M_MOD_SOURCE_ROOT="$pin_source" \
+          NX300M_MOD_SOURCE_ID=$(stat -c '%d:%i' "$pin_source") \
+          /bin/sh "$pin_base/runtime/lut-panel.sh" --dry-run > panel-asset-font-required.log 2>&1
+        font_rc=$?
+        set -e
+        if [ "$font_rc" -ne 0 ] && grep -q 'original firmware font unavailable' panel-asset-font-required.log; then
+            font_state=enforced
+        else
+            font_state="not_enforced rc=$font_rc"
+        fi
+    fi
+    umount /usr/share/fonts/SDIC_GP_US_20120720.ttf
+    [ -s /usr/share/fonts/SDIC_GP_US_20120720.ttf ] || font_state="$font_state restore_failed"
+else
+    font_state=bind_mount_unavailable
+fi
+printf 'font_dependency=%s\n' "$font_state" >> panel-asset-pin.log
+[ "$font_state" = enforced ] || { printf 'pin_check=font_dependency failed expected=[enforced] actual=[%s]\n' "$font_state" >> panel-asset-pin.log; exit 1; }
+printf 'pin_check=font_dependency ok\n' >> panel-asset-pin.log
+'''
+
 PROBE=ram.PROBE[:ram.PROBE.index('request original-mode 2')]+r'''
 set -x
 # The new scanner preserves exact PID/starttime and rejects a missing stock
@@ -105,28 +200,7 @@ cp /mnt/mmc/lut-boot.sh "$RUNTIME/lut-boot.sh"
 /bin/sh -n /mnt/mmc/mfw-services.sh
 /bin/sh -n /mnt/mmc/lut-load.sh
 /bin/sh -n /mnt/mmc/lut-panel.sh
-# Exercise the actual panel launcher with a non-UI executable: a private link
-# must keep the old generation available after the resident pathname changes.
-pin_base=/tmp/panel-asset-pin
-pin_source=/perf/panel-source
-mkdir -p "$pin_base/runtime/bin" "$pin_base/runtime/fonts" "$pin_source"
-cp /mnt/mmc/lut-panel.sh "$pin_base/runtime/lut-panel.sh"
-printf '#!/bin/sh\nexit 0\n' > "$pin_base/runtime/bin/nxui.arm"
-cp "$pin_base/runtime/bin/nxui.arm" "$pin_base/runtime/bin/lut_engine.arm"
-chmod 500 "$pin_base/runtime/bin/nxui.arm" "$pin_base/runtime/bin/lut_engine.arm"
-printf 'coverage\n' > "$pin_base/runtime/fonts/mfw-font.charset"
-printf 'fixture\n' > "$pin_source/looks.txt"
-NX300M_MFW_RAM_BASE="$pin_base" NX300M_MOD_SOURCE_ROOT="$pin_source" \
-  NX300M_MOD_SOURCE_ID=$(stat -c '%d:%i' "$pin_source") \
-  /bin/sh "$pin_base/runtime/lut-panel.sh" --dry-run > panel-asset-pin.log 2>&1
-pin_runtime=$(sed -n 's/^panel_runtime=//p' panel-asset-pin.log)
-for pair in bin/nxui.arm:nxui.arm bin/lut_engine.arm:lut_engine.arm fonts/mfw-font.charset:mfw-font.charset; do
-    [ "$(stat -c '%d:%i' "$pin_base/runtime/${pair%:*}")" = "$(stat -c '%d:%i' "$pin_runtime/${pair#*:}")" ]
-done
-mv "$pin_base/runtime/bin/nxui.arm" "$pin_base/runtime/bin/nxui.old"
-printf 'replacement\n' > "$pin_base/runtime/bin/nxui.arm"
-cmp -s "$pin_runtime/nxui.arm" "$pin_base/runtime/bin/nxui.old"
-printf 'private_ram_inodes_pinned_across_replacement\n' >> panel-asset-pin.log
+@PANEL_PIN_CONTRACT@
 /bin/sh -n /mnt/mmc/lut-cycle.sh
 /bin/sh -n /mnt/mmc/fn-panel.sh
 ! grep -q 'preview-softstop.sh.*--auto' /mnt/mmc/fn-panel.sh
@@ -474,6 +548,7 @@ operation uncertain-trace open-export
 operation uncertain-status status
 request final-references 105
 '''+ram.PROBE[ram.PROBE.index('cat /proc/$pid/maps > after.maps'):]
+PROBE=PROBE.replace('@PANEL_PIN_CONTRACT@', PANEL_PIN_CONTRACT)
 PROBE=PROBE.replace('case $cmd in 1|5|7|9)', 'case $cmd in 1|5|7|9|100|104)')
 PROBE=PROBE.replace('code=$?; trap - EXIT; set +e',
     'code=$?; trap - EXIT; set +e\n'

@@ -390,8 +390,8 @@ class NxCamera(
 
     data class GalleryEditStatus(val backupAvailable: Boolean, val size: Long)
 
-    suspend fun requireGalleryWriteback() {
-        galleryWritebackCapabilities()
+    suspend fun requireGalleryWriteback(): Map<String, Any?> {
+        return galleryWritebackCapabilities()
     }
 
     private suspend fun galleryWritebackCapabilities(): Map<String, Any?> {
@@ -421,7 +421,14 @@ class NxCamera(
         onProgress: (Long, Long) -> Unit = { _, _ -> },
     ): Boolean = withContext(Dispatchers.IO) {
         require(entry.ext in setOf("jpg", "jpeg") && file.length() > 0) { "只支持非空 JPEG 文件" }
-        requireGalleryWriteback()
+        // Enforce the receiver's own receive limit before sending: uploads are
+        // buffered whole on the camera, and the limit comes from the same
+        // capabilities query that confirms the backup contract.
+        val capabilities = requireGalleryWriteback()
+        val maxBytes = (capabilities["max_bytes"] as? Number)?.toLong() ?: -1L
+        if (maxBytes > 0 && file.length() > maxBytes) {
+            throw NxException("文件超出相机接收上限（${maxBytes / (1024 * 1024)} MiB），请在相机端整理后重试")
+        }
         val query = "p=" + urlEncode(entry.relPath) + "&require_backup=1"
         val url = "$baseUrl/api/v1/gallery/upload?$query"
         val response = MiniJson.parseObject(NxHttp.uploadFileStrict(url, file, 120_000, binder,

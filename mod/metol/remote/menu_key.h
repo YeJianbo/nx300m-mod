@@ -14,7 +14,11 @@ static struct {
     pid_t pid, cycle_pid;
     unsigned int reason, code, triggers, cycles, failures;
     long long heartbeat, retry;
-} menu_key_service = {.fd = -1, .mode = 'f'};
+    /* IDLE-CHECK: cached resource answer plus probe counters. */
+    int resources;
+    long long resource_at;
+    unsigned int resource_checks, resource_probes;
+} menu_key_service = {.fd = -1, .mode = 'f', .resource_at = -1};
 
 static int menu_key_bit(const unsigned char *bits, unsigned code) {
     return !!(bits[code/8] & (1u << (code%8)));
@@ -166,9 +170,24 @@ failed:
     message.type='F';send(channel,&message,sizeof message,MSG_DONTWAIT|MSG_NOSIGNAL);
     close(channel);_exit(0);
 }
-static int menu_key_allowed(void) {
+static int menu_key_allowed_probe(void) {
+    menu_key_service.resource_probes+=2;
     return menu_key_service.enabled && !media_paused && !stopping && panel_shortcut.launcher[0] &&
         access(panel_shortcut.disabled,F_OK) && access(panel_shortcut.no_shortcut,F_OK);
+}
+/* Same 50 ms poll as the Custom key: cache the two metadata lookups for one
+ * second, but re-probe before launching anything so a newly created DISABLED
+ * or NO_PANEL_SHORTCUT takes effect on the very next key. */
+#define NX_MENU_KEY_RESOURCE_TTL_MS 1000
+static int menu_key_allowed(int force) {
+    long long now=now_ms();
+    menu_key_service.resource_checks++;
+    if(force || menu_key_service.resource_at<0 ||
+       now-menu_key_service.resource_at>=NX_MENU_KEY_RESOURCE_TTL_MS) {
+        menu_key_service.resources=menu_key_allowed_probe();
+        menu_key_service.resource_at=now;
+    }
+    return menu_key_service.resources;
 }
 static void menu_key_shutdown(void) {
     if(menu_key_service.fd>=0){close(menu_key_service.fd);menu_key_service.fd=-1;}
@@ -232,7 +251,7 @@ static void menu_key_poll(void) {
             fn_log("helper exited pid=%ld status=%d failures=%u retry_ms=%lld",(long)reaped,status,menu_key_service.failures,menu_key_service.retry);
         }
     }
-    if(!menu_key_allowed()){menu_key_shutdown();return;}
+    if(!menu_key_allowed(0)){menu_key_shutdown();return;}
     if(menu_key_service.pid && !menu_key_service.terminating) {
         for(unsigned i=0;i<16;i++) {
             struct menu_key_message message;
@@ -275,14 +294,15 @@ static void menu_key_poll(void) {
 static void hold_key_status(char *json,size_t size,int want_menu) {
     int enabled=menu_key_service.enabled &&
         (want_menu ? menu_key_service.mode=='m' : menu_key_service.mode!='m');
-    const char *state=!enabled?"disabled":!menu_key_allowed()?"paused":
+    const char *state=!enabled?"disabled":!menu_key_allowed(1)?"paused":
         menu_key_service.terminating?"terminating":!menu_key_service.pid?"unavailable":menu_key_service.code?"ready":"starting";
     const char *entry=menu_key_service.mode=='c'?"tap-custom-lut-or-hold-panel":
                      want_menu?"hold-menu-release":"hold-fn-release";
-    snprintf(json,size,"{\"enabled\":%s,\"state\":\"%s\",\"entry\":\"%s\",\"hold_ms\":1200,\"linux_keycode\":%u,\"helper_pid\":%ld,\"triggers\":%u,\"failures\":%u,\"reason\":%u}",
+    snprintf(json,size,"{\"enabled\":%s,\"state\":\"%s\",\"entry\":\"%s\",\"hold_ms\":1200,\"linux_keycode\":%u,\"helper_pid\":%ld,\"triggers\":%u,\"failures\":%u,\"reason\":%u,\"resource_checks\":%u,\"resource_probes\":%u}",
         enabled?"true":"false",state,entry,enabled?menu_key_service.code:0,
         enabled?(long)menu_key_service.pid:0,enabled?menu_key_service.triggers:0,enabled?menu_key_service.failures:0,
-        enabled?menu_key_service.reason:0);
+        enabled?menu_key_service.reason:0,
+        menu_key_service.resource_checks,menu_key_service.resource_probes);
 }
 static void menu_key_status(char *json,size_t size) {hold_key_status(json,size,0);}
 /* The primary non-menu entry (Fn or Custom, by NX_REMOTE_PANEL_KEY). */

@@ -23,7 +23,7 @@ MODULE = 'nx300m-mod'
 
 def _card_paths(card: Path) -> dict[str, Path]:
     module = safe_path(card, MODULE)
-    return {
+    paths = {
         'module': module,
         'looks': safe_path(card, MODULE + '/looks'),
         'looks_txt': safe_path(card, MODULE + '/looks.txt'),
@@ -33,6 +33,11 @@ def _card_paths(card: Path) -> dict[str, Path]:
         'groups_txt': safe_path(card, MODULE + '/.state/lut-groups.txt'),
         'favorites': safe_path(card, MODULE + '/.state/lut-favorites'),
     }
+    # Favorites live in the dual-slot store; back the slots up alongside the
+    # legacy mirror so a rollback covers every record the menu can read.
+    for slot in (0, 1):
+        paths[f'favorites.{slot}'] = safe_path(card, MODULE + f'/.state/lut-favorites.{slot}')
+    return paths
 
 
 def _backup(card: Path, stamp: str) -> Path:
@@ -43,7 +48,8 @@ def _backup(card: Path, stamp: str) -> Path:
         shutil.copytree(paths['looks'], target / 'looks')
     for key, name in (('looks_txt', 'looks.txt'), ('cycle', 'looks-cycle.txt'),
                       ('groups', 'lut-groups.json'), ('groups_txt', 'lut-groups.txt'),
-                      ('favorites', 'lut-favorites')):
+                      ('favorites', 'lut-favorites'),
+                      ('favorites.0', 'lut-favorites.0'), ('favorites.1', 'lut-favorites.1')):
         if paths[key].is_file():
             shutil.copy2(paths[key], target / name)
     return target

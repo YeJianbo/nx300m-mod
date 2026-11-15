@@ -23,8 +23,8 @@ SKIP_NAMES = {'local.properties', 'keystore.properties', 'project.local.json',
               '.DS_Store', 'Thumbs.db', 'desktop.ini'}
 SKIP_TOOLS = {'inspect_codex_sessions.py', 'parse_transcript.py',
               'filter_prompts.py', 'search_iso_keywords.py',
-              'inspect_lr_favorites.py'}
-TEXT_EXTS = {'.py', '.c', '.h', '.cc', '.cpp', '.cxx', '.hpp', '.cmake', '.ld', '.sh', '.ps1', '.md', '.txt', '.json',
+              'inspect_lr_favorites.py', 'render_botanical_garden_rain.py'}
+TEXT_EXTS = {'.py', '.c', '.h', '.inc', '.cc', '.cpp', '.cxx', '.hpp', '.cmake', '.ld', '.sh', '.ps1', '.md', '.txt', '.json',
              '.xml', '.kt', '.java', '.kts', '.properties', '.toml', '.lock',
              '.yaml', '.yml', '.html', '.css', '.js', '.ts', '.proto', '.in',
              '.bat', '.pro', '.nx300m', '.cube', '.d4lut', '.rs'}

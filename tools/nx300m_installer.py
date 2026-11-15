@@ -219,6 +219,163 @@ def write_checked(path, data):
         temp.unlink(missing_ok=True)
 
 
+# Favorites use the same dual-slot store as the camera menu (see
+# mod/metol/nx_favorites_store.h): "NXFAV1 <slot-generation> <checksum> <body>"
+# with a newline-separated key body, verified read-back before the previous
+# record is disturbed, and the legacy single file kept only as a fallback.
+FAVORITES_KEY_MAX = 64
+FAVORITES_MAX_KEYS = 256
+FAVORITES_RECORD = re.compile(rb'NXFAV1 (\d{1,19}) ([0-9a-fA-F]{8}) (.*)', re.S)
+
+
+def favorites_fnv1a(data):
+    value = 2166136261
+    for byte in data:
+        value ^= byte
+        value = (value * 16777619) & 0xFFFFFFFF
+    return value
+
+
+def favorites_body_valid(data):
+    keys = data.split(b'\n')
+    if keys and keys[-1] == b'':
+        keys.pop()
+    else:
+        return False
+    return len(keys) <= FAVORITES_MAX_KEYS and all(
+        0 < len(key) < FAVORITES_KEY_MAX and all(32 < byte < 127 for byte in key)
+        for key in keys)
+
+
+def favorites_slot_path(card, slot):
+    return safe_path(card, 'nx300m-mod/.state/lut-favorites.%d' % slot)
+
+
+def favorites_parse_slot(record):
+    match = FAVORITES_RECORD.fullmatch(record)
+    if not match:
+        return None
+    generation = int(match.group(1))
+    body = match.group(3)
+    if not generation or favorites_fnv1a(body) != int(match.group(2), 16):
+        return None
+    if not favorites_body_valid(body):
+        return None
+    return generation, body
+
+
+def favorites_read_body(card):
+    best = None
+    best_generation = 0
+    for slot in (0, 1):
+        path = favorites_slot_path(card, slot)
+        if not path.is_file():
+            continue
+        try:
+            parsed = favorites_parse_slot(path.read_bytes())
+        except OSError:
+            continue
+        if parsed and parsed[0] > best_generation:
+            best_generation, best = parsed
+    if best is None:
+        legacy = safe_path(card, 'nx300m-mod/.state/lut-favorites')
+        if legacy.is_file():
+            body = legacy.read_bytes()
+            if favorites_body_valid(body):
+                best = body
+    return best
+
+
+def favorites_snapshot(card):
+    state = {'slots': {}, 'legacy': None}
+    for slot in (0, 1):
+        path = favorites_slot_path(card, slot)
+        state['slots'][slot] = path.read_bytes() if path.is_file() else None
+    legacy = safe_path(card, 'nx300m-mod/.state/lut-favorites')
+    state['legacy'] = legacy.read_bytes() if legacy.is_file() else None
+    return state
+
+
+# The camera's FAT driver duplicates directory entries when a file is renamed
+# over an existing one (see mod/metol/nx_favorites_store.h), so favorites
+# slots are rewritten in place like the production C store: truncate, write,
+# fsync, and the caller reads back through the same parser before the
+# previous record is disturbed. No temp file, no os.replace().
+_FAVORITES_O_NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
+_FAVORITES_O_BINARY = getattr(os, 'O_BINARY', 0)
+
+
+def favorites_write_slot_direct(path, data):
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
+                 _FAVORITES_O_NOFOLLOW | _FAVORITES_O_BINARY, 0o600)
+    try:
+        os.ftruncate(fd, 0)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def favorites_fsync_directory(path):
+    if not hasattr(os, 'O_DIRECTORY'):
+        return  # Windows: no directory fsync; POSIX-only durability step.
+    fd = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def favorites_restore(card, state):
+    state_dir = safe_path(card, 'nx300m-mod/.state')
+    state_dir.mkdir(parents=True, exist_ok=True)
+    for slot in (0, 1):
+        path = favorites_slot_path(card, slot)
+        data = state['slots'][slot]
+        if data is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            favorites_write_slot_direct(path, data)
+            if path.read_bytes() != data:
+                raise OSError('收藏回滚回读失败：' + str(path))
+    legacy = safe_path(card, 'nx300m-mod/.state/lut-favorites')
+    if state['legacy'] is None:
+        legacy.unlink(missing_ok=True)
+    else:
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        favorites_write_slot_direct(legacy, state['legacy'])
+        if legacy.read_bytes() != state['legacy']:
+            raise OSError('收藏旧镜像回滚回读失败。')
+    favorites_fsync_directory(state_dir)
+
+
+def favorites_write_body(card, body):
+    if not favorites_body_valid(body):
+        raise ValueError('收藏列表内容无效。')
+    state_dir = safe_path(card, 'nx300m-mod/.state')
+    state_dir.mkdir(parents=True, exist_ok=True)
+    generations = []
+    for slot in (0, 1):
+        path = favorites_slot_path(card, slot)
+        parsed = favorites_parse_slot(path.read_bytes()) if path.is_file() else None
+        generations.append(parsed[0] if parsed else 0)
+    slot = 0 if generations[0] <= generations[1] else 1
+    record = b'NXFAV1 %d %08x %s' % (max(generations) + 1, favorites_fnv1a(body), body)
+    target = favorites_slot_path(card, slot)
+    favorites_write_slot_direct(target, record)
+    parsed = favorites_parse_slot(target.read_bytes())
+    if not parsed or parsed[1] != body:
+        raise OSError('收藏写入回读不一致。')
+    favorites_fsync_directory(state_dir)
+    legacy = safe_path(card, 'nx300m-mod/.state/lut-favorites')
+    if legacy.is_file():
+        legacy.unlink()
+        favorites_fsync_directory(state_dir)
+
+
 def apply(card, identity):
     writes = prepare(card)
     if volume(str(card))['serial'] != identity['serial']:
@@ -437,10 +594,10 @@ def look_metadata(card, key):
 
 
 def favorite_keys(card):
-    path = safe_path(card, 'nx300m-mod/.state/lut-favorites')
-    if not path.is_file():
+    body = favorites_read_body(card)
+    if not body:
         return set()
-    return {token for token in path.read_text(encoding='utf-8').split() if token}
+    return {token.decode('ascii') for token in body.split(b'\n') if token}
 
 
 def set_favorite(card, identity, key, favorite):
@@ -453,7 +610,6 @@ def set_favorites(card, identity, keys, favorite):
     requested = list(dict.fromkeys(keys))
     if not requested or any(key not in {row[0] for row in rows} for key in requested):
         raise ValueError('风格已不存在，请刷新列表。')
-    path = safe_path(card, 'nx300m-mod/.state/lut-favorites')
     selected = favorite_keys(card)
     if favorite:
         selected.update(requested)
@@ -463,8 +619,7 @@ def set_favorites(card, identity, keys, favorite):
     data = ''.join(item + '\n' for item in ordered).encode('ascii')
     if volume(str(card)) != identity:
         raise ValueError('存储卡信息已变化。')
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_checked(path, data)
+    favorites_write_body(card, data)
     actual = favorite_keys(card)
     if any((key not in actual) if favorite else (key in actual) for key in requested):
         raise OSError('收藏状态回读不一致。')
@@ -1291,9 +1446,8 @@ def delete_look(card, identity, key):
     if volume(str(card)) != identity or catalog(card)[0] != original:
         raise ValueError('存储卡或风格目录发生变化，请重新操作。')
     favorites = favorite_keys(card)
-    favorite_path = safe_path(card, 'nx300m-mod/.state/lut-favorites')
-    favorite_original = favorite_path.read_bytes() if favorite_path.is_file() else None
-    favorite_written = False
+    favorites_before = favorites_snapshot(card)
+    favorites_changed = False
     catalog_written = False
     groups_written = False
     camera_groups_written = False
@@ -1317,11 +1471,10 @@ def delete_look(card, identity, key):
                 raise OSError('相机端 LUT 分组回读不一致。')
         if key in favorites:
             favorites.discard(key)
-            favorite_path.parent.mkdir(parents=True, exist_ok=True)
-            write_checked(favorite_path,
-                          ''.join(row[0] + '\n' for row in remaining
-                                  if row[0] in favorites).encode('ascii'))
-            favorite_written = True
+            favorites_write_body(card,
+                                 ''.join(row[0] + '\n' for row in remaining
+                                         if row[0] in favorites).encode('ascii'))
+            favorites_changed = True
             if key in favorite_keys(card):
                 raise OSError('收藏状态回读不一致。')
     except Exception:
@@ -1334,8 +1487,8 @@ def delete_look(card, identity, key):
                 camera_group_path.unlink(missing_ok=True)
             else:
                 write_checked(camera_group_path, camera_groups_original)
-        if favorite_written:
-            write_checked(favorite_path, favorite_original or b'')
+        if favorites_changed:
+            favorites_restore(card, favorites_before)
         raise
     try:
         shutil.rmtree(lookdir)

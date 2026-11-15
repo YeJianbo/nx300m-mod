@@ -370,9 +370,13 @@ int nx_sfr_prepare(void *self,void (*callback)(void)) {
     struct nx_sft_record *r=reserve_trace(NX_SFT_CAPTURE_PREPARE,(unsigned)self);
     struct nx_sfr_runtime *s=&nx_sfr_runtime;
 #ifdef NX_SFR_SESSION
-    /* Unknown/direct callers may already hold +0x44. Never wait for the owner
-     * here: a normal session capture must have drained in B2Y Open first. */
+    /* B2Y Open's native lifecycle wait also handles a preview slower than the
+     * bounded owner drain. Its caller already owns +0x44 at this point; a
+     * retained power reference is not an active preview transaction.
+     * Unknown/direct callers still must not wait for the owner here. */
+    struct nx_sfr_capture_owner *capture=capture_owner(0);
     if(nx_sfr_config.session_mode&&get(&s->session_initialized)==2&&
+       !(capture&&capture->native)&&
        (get(&s->session.held)||get(&s->session.state)==NX_IPS_OPENING||
         get(&s->session.state)==NX_IPS_DRAINING)) {
         nx_ips_fault(&s->session,-123); leave(); return -16;
@@ -467,6 +471,15 @@ static unsigned refresh_goal(void) {
     struct nx_sfr_runtime *s=&nx_sfr_runtime;
     return c->enabled&&c->strength&&c->insert_enabled&&!get(&s->s2_fault)&&!get(&s->bridge.fault);
 }
+static int refresh_running(void) {
+    unsigned *liveview=nx_sfr_config.liveview_instance();
+    /* SmartFilter Off (15) persists in playback: it says nothing about the
+     * stream's lifecycle. Only a running, unqueued native liveview may start
+     * our changeProcess. Native Start/Create consumes selections made while
+     * stopped; the LUT choice itself remains available in playback. */
+    return !get(&nx_sfr_runtime.stream_stopped)&&get(liveview+0x34/4)==7&&
+        !get(liveview+0x38/4);
+}
 /* Queue at the completed IPCM callback, before any SmartFilter node exists.
  * The frame thread never calls a stop/restart routine or waits for a rebuild. */
 void nx_sfr_frame_callback(void *self,int which,void *image,void *data,unsigned tag) {
@@ -478,7 +491,7 @@ void nx_sfr_frame_callback(void *self,int which,void *image,void *data,unsigned 
     if(which==1&&c->profile==NX_SFR_S2&&!c->probe_once&&!get(&s->control_pause)&&
        !get(&s->captures)&&!get(&s->b2y_leases)&&!get(&s->refresh_pending)) {
         unsigned wanted=refresh_goal(),key=(c->generation<<1)|wanted;
-        if(wanted!=get(&s->s2_path)&&get(&s->refresh_attempt)!=key&&real_mode()==15&&
+        if(wanted!=get(&s->s2_path)&&get(&s->refresh_attempt)!=key&&real_mode()==15&&refresh_running()&&
            __sync_bool_compare_and_swap(&s->refresh_queued,0,1)) {
             /* Same 12-byte payload as ChangeUserInfo(0x39), with IPC_NOWAIT.
              * Stock Send uses blocking msgsnd; a full controller queue must
@@ -501,8 +514,9 @@ void nx_sfr_change_stop_callback(void *self,int value) {
     struct nx_sfr_runtime *s=&nx_sfr_runtime;
     void (*original)(void *,int)=(void *)c->original[NX_SFR_CHANGE_STOP_CALLBACK];
     original(self,value);
-    if(get(&s->refresh_pending)&&self==c->liveview_instance()&&
+    if(get(&s->refresh_pending)&&!get(&s->stream_stopped)&&self==c->liveview_instance()&&
        get((volatile unsigned *)((char *)self+0x34))==20&&
+       !get((volatile unsigned *)((char *)self+0x38))&&
        __sync_bool_compare_and_swap(&s->refresh_queued,0,1)) {
         unsigned message[4]={1,0x02010034,0x39,0};
         int rc=c->queue_send(*c->capture_queue,message,12,0x800);
@@ -528,7 +542,7 @@ int nx_sfr_message_handle(void *self) {
     struct nx_sfr_runtime *s=&nx_sfr_runtime;
     if(__sync_bool_compare_and_swap(&s->refresh_queued,1,2)) {
         if(!get(&s->refresh_pending)&&!get(&s->captures)&&!get(&s->b2y_leases)&&!get(&s->control_pause)&&
-           c->profile==NX_SFR_S2&&!c->probe_once&&real_mode()==15) {
+           c->profile==NX_SFR_S2&&!c->probe_once&&real_mode()==15&&refresh_running()) {
             unsigned wanted=refresh_goal();
             put(&s->refresh_attempt,(c->generation<<1)|wanted);
             if(wanted!=get(&s->s2_path)) {
@@ -549,14 +563,19 @@ int nx_sfr_message_handle(void *self) {
          * UserData against the current buffer memory state before rebuilding. */
         unsigned *liveview=c->liveview_instance();
         unsigned state=get(liveview+0x34/4);
-        if(real_mode()!=15) put(&s->refresh_pending,0);
+        unsigned next=get(liveview+0x38/4);
+        if(real_mode()!=15||get(&s->stream_stopped)||next||
+           (state!=7&&state!=14&&state!=15&&state!=20)) put(&s->refresh_pending,0);
         else if(state==20&&!get(liveview+0x38/4)) {
             __sync_fetch_and_add(&s->refresh_resumes,1);
             c->liveview_memory_restart(liveview,0);
             state=get(liveview+0x34/4);
         }
         put(&s->refresh_state,state);
-        if(state==7&&!get(liveview+0x38/4)&&get(&s->s2_path)==refresh_goal())
+        /* Reaching running completes this transition even if a later LUT
+         * request changed the goal. Let its next frame request that change,
+         * rather than retaining an old pending flag indefinitely. */
+        if(state==7&&!get(liveview+0x38/4))
             put(&s->refresh_pending,0);
     }
     leave(); return result;

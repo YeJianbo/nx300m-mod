@@ -187,12 +187,43 @@ grep -q 'MFW_SELECT page=0 index=1 action=lenses' /perf/normal-menu.log
 grep -q 'MFW_SELECT page=3 index=1 action=lens-select' /perf/normal-menu.log
 grep -q 'MFW_SELECT page=3 index=0 action=lens-info' /perf/normal-menu.log
 [ ! -e /perf/menu-actions.txt ]
-for key in XF86ScrollUp XF86ScrollUp XF86ScrollUp XF86ScrollUp Return XF86ScrollUp XF86ScrollUp XF86ScrollUp XF86ScrollUp Return; do /perf/close.arm key "$key"; done
+# The settings page is built by nxui_feature_pages.h feature_page(5): index 0
+# fw-mode-lock, 1 fw-animation, 2 fw-auto-iso, 3 fw-mode, 4 MOD autostart,
+# 5 modules, 6 debug. The old sequence pressed four detents and landed on the
+# autostart row, executing it instead of opening the debug page.
 attempt=0
-until grep -q 'MENU file=.*/gui_debug.NX300M items=7' /perf/normal-menu.log; do
+while [ "$attempt" -lt 10 ]; do
+    grep -q 'MFW_SELECT page=0 index=4 action=settings' /perf/normal-menu.log && break
+    /perf/close.arm key XF86ScrollUp
+    attempt=$((attempt+1)); /rescue/busybox usleep 150000
+    kill -0 "$panel"
+done
+grep -q 'MFW_SELECT page=0 index=4 action=settings' /perf/normal-menu.log
+/perf/close.arm key Return
+attempt=0
+while [ "$attempt" -lt 10 ]; do
+    grep -q 'MFW_SELECT page=5 index=6 action=debug' /perf/normal-menu.log && break
+    /perf/close.arm key XF86ScrollUp
+    attempt=$((attempt+1)); /rescue/busybox usleep 150000
+    kill -0 "$panel"
+done
+grep -q 'MFW_SELECT page=5 index=6 action=debug' /perf/normal-menu.log
+[ ! -e /perf/menu-actions.txt ]
+/perf/close.arm key Return
+attempt=0
+until grep -q 'MENU file=.*/gui_debug.NX300M items=9' /perf/normal-menu.log; do
     kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
 done
-for key in Menu Menu; do /perf/close.arm key "$key"; done
+# Opening the diagnostic page is navigation only; nothing may run yet.
+[ ! -e /perf/menu-actions.txt ]
+# MENU returns to the settings page, then to the main list.
+/perf/close.arm key Menu
+attempt=0
+until grep -q 'MFW_SELECT page=5 index=6 action=debug' /perf/normal-menu.log \
+      && [ "$(grep -c 'MENU file=.*/gui_debug.NX300M items=9' /perf/normal-menu.log)" -eq 1 ]; do
+    kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 60 ]; /rescue/busybox usleep 100000
+done
+/perf/close.arm key Menu
 attempt=0
 until [ "$(grep -c 'MENU file=.*/gui_mfw.NX300M items=5' /perf/normal-menu.log)" -eq 3 ]; do
     kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
@@ -207,9 +238,27 @@ attempt=0
 until grep -q '^BACKEND kind=5 ok=1' /perf/normal-menu.log; do
     kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
 done
-for key in Menu Menu; do /perf/close.arm key "$key"; done
-wait "$panel"
-[ "$(cat /perf/menu-actions.txt)" = preview-toggle ]
+for key in Menu Menu; do
+    set +e; /perf/close.arm key "$key"; key_rc=$?; set -e
+    kill -0 "$panel" 2>/dev/null; panel_alive=$?
+    printf 'DIAG key=%s rc=%s panel_alive=%s\n' "$key" "$key_rc" "$panel_alive"
+    [ "$key_rc" = 0 ] || { printf 'DIAG key_failed key=%s rc=%s\n' "$key" "$key_rc"; exit 1; }
+done
+set +e
+wait "$panel"; panel_rc=$?
+set -e
+printf 'DIAG panel_wait_rc=%s\n' "$panel_rc"
+printf 'DIAG menu_actions=[%s]\n' "$(cat /perf/menu-actions.txt 2>/dev/null)"
+printf 'DIAG lut_page_lines=%s\n' "$(grep -c '^LUT_PAGE ' /perf/normal-menu.log)"
+[ "$panel_rc" = 0 ] || { printf 'DIAG panel_exited_nonzero rc=%s\n' "$panel_rc"; exit 1; }
+# The preview row is not a single toggle any more: nxui_preview_state.h
+# nx_preview_action() picks preview-stop when preview is on, preview-preference
+# when no LUT is applied, and preview-s2-enable otherwise. This panel never
+# applied a look, so touching the row must record exactly one preference and
+# must not start or stop hardware preview.
+[ "$(grep -c . /perf/menu-actions.txt)" -eq 1 ]
+[ "$(cat /perf/menu-actions.txt)" = preview-preference ]
+! grep -qx 'preview-stop\|preview-s2-enable\|preview-enable' /perf/menu-actions.txt
 kill "$stock"
 trap - EXIT
 '''
@@ -310,6 +359,20 @@ def main():
                       unchanged_saved_look_explicitly_submitted=True)
     except Exception as error:
         report['error'] = str(error)
+        # Keep the evidence of a failing run: without it a gate failure cannot be
+        # attributed, which is what made the previous round's diagnosis wrong.
+        for variant in ('baseline', 'current', 'dry', 'off', 'retain', 'long', 'normal-menu',
+                        'apply-viewfinder', 'apply-failure'):
+            for name in (variant+'.log', variant+'.ppm.gz', variant+'-actions.txt'):
+                try:
+                    collect(OUT, name)
+                except Exception:
+                    pass
+        for name in ('off-action.txt', 'retain-actions.txt', 'menu-actions.txt'):
+            try:
+                collect(OUT, name)
+            except Exception:
+                pass
         raise
     finally:
         if started:

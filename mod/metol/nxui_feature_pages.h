@@ -12,6 +12,30 @@ static int feature_auto_iso_max;
 static int feature_saved_mode_lock,feature_saved_animation,feature_saved_iso_lock;
 static char feature_values[NXUI_MAX_ITEMS][128];
 static unsigned char feature_disabled[NXUI_MAX_ITEMS];
+/* Wireless controls (2026-11-11): runtime state markers under /var/run,
+ * sampled when the page opens. off/starting:<stage>/on/stopping/failed:<stage>
+ * come from the control scripts; the page never starts anything on its own.
+ * The hotspot address comes from the address file the script writes on a
+ * successful start, never from an assumption. */
+static char feature_hotspot_state[32],feature_hotspot_ssid[40],feature_hotspot_address[32];
+static char feature_telnet_state[32],feature_telnet_address[64];
+static void feature_wireless_snapshot(void) {
+    char line[256];FILE *in;
+    feature_hotspot_state[0]=feature_hotspot_ssid[0]=feature_hotspot_address[0]=0;
+    feature_telnet_state[0]=feature_telnet_address[0]=0;
+    in=fopen("/var/run/nx300m-hotspot/state","r");
+    if(in){if(fgets(line,sizeof line,in)){line[strcspn(line,"\r\n")]=0;snprintf(feature_hotspot_state,sizeof feature_hotspot_state,"%.*s",31,line);}fclose(in);}
+    in=fopen("/var/run/nx300m-hotspot/ssid","r");
+    if(in){if(fgets(line,sizeof line,in)){line[strcspn(line,"\r\n")]=0;snprintf(feature_hotspot_ssid,sizeof feature_hotspot_ssid,"%.*s",39,line);}fclose(in);}
+    if(*feature_hotspot_state&&!strcmp(feature_hotspot_state,"on")){
+        in=fopen("/var/run/nx300m-hotspot/address","r");
+        if(in){if(fgets(line,sizeof line,in)){line[strcspn(line,"\r\n")]=0;snprintf(feature_hotspot_address,sizeof feature_hotspot_address,"%.*s",31,line);}fclose(in);}
+    }
+    in=fopen("/var/run/nx300m-telnet/state","r");
+    if(in){if(fgets(line,sizeof line,in)){line[strcspn(line,"\r\n")]=0;snprintf(feature_telnet_state,sizeof feature_telnet_state,"%.*s",31,line);}fclose(in);}
+    in=fopen("/var/run/nx300m-telnet/listen","r");
+    if(in){if(fgets(line,sizeof line,in)){line[strcspn(line,"\r\n")]=0;snprintf(feature_telnet_address,sizeof feature_telnet_address,"%.*s",63,line);}fclose(in);}
+}
 static int feature_saved_value(const char *name,int fallback) {
     char path[NXUI_PATH],extra;int value;
     snprintf(path,sizeof path,"%s/.state/%s",nx_ui_data_root(),name);
@@ -147,8 +171,28 @@ static void feature_page(int page_id) {
         for(int i=0;i<feature_lens_count;i++){char action[80];snprintf(action,sizeof action,"lens-%d",i);
             feature_add(feature_lenses[i].label,action,i==feature_lens_selected?"当前":"",1);}
         mfw_selected=feature_lens_selected+1;
-    }else if(page_id==7||page_id==8){
-        feature_add("刷新状态",page_id==7?"network-info":"status","读取一次",1);
+    }else if(page_id==7){
+        feature_snapshot();feature_wireless_snapshot();
+        int hotspot_on=feature_hotspot_state[0]&&!strcmp(feature_hotspot_state,"on");
+        int hotspot_failed=!strncmp(feature_hotspot_state,"failed",6);
+        int hotspot_busy=!strncmp(feature_hotspot_state,"starting",8)||!strcmp(feature_hotspot_state,"stopping");
+        char hotspot_value[128];
+        if(hotspot_on)
+            snprintf(hotspot_value,sizeof hotspot_value,"%s · %s",*feature_hotspot_ssid?feature_hotspot_ssid:"热点",*feature_hotspot_address?feature_hotspot_address:"192.168.0.1");
+        else if(hotspot_failed)
+            snprintf(hotspot_value,sizeof hotspot_value,"失败 · %s",feature_hotspot_state);
+        else if(hotspot_busy)
+            snprintf(hotspot_value,sizeof hotspot_value,"切换中 · %s",feature_hotspot_state);
+        else
+            snprintf(hotspot_value,sizeof hotspot_value,"关 · 手机连此网络后用 App");
+        feature_add(hotspot_on?"关闭 MOD 热点":hotspot_busy?"热点切换中":"开启 MOD 热点",hotspot_on?"hotspot-stop":hotspot_busy?"unavailable":"hotspot-start",hotspot_value,hotspot_busy?0:1);
+        if(hotspot_on)
+            feature_add("显示热点密码","hotspot-credentials","仅屏幕显示",1);
+        else
+            feature_add("显示热点密码","unavailable","热点未开启",0);
+        feature_add("网络信息","network-info","读取一次",1);
+    }else if(page_id==8){
+        feature_add("刷新状态","status","读取一次",1);
     }else if(page_id==9){
         feature_add("镜头标注","unavailable",feature_lens_selected<0?"未记录":feature_lenses[feature_lens_selected].label,0);
         feature_add("保存范围","unavailable","仅记录预设和焦距",0);
@@ -162,9 +206,33 @@ static int feature_action(const char *action) {
     if(!strcmp(action,"settings")){feature_page(5);return 1;}
     if(!strcmp(action,"lens-select")){feature_page(6);return 1;}
     if(!strcmp(action,"lens-info")){feature_page(9);return 1;}
-    if(!strcmp(action,"connection")){feature_page(7);start_mfw_action("network-info");return 1;}
+    if(!strcmp(action,"connection")){
+        feature_page(7);
+        /* Bounded async state query on entry: hotspot.sh status re-validates
+         * the recorded workers and address and persists concrete failures
+         * (failed:worker-dead / failed:address-lost), so a dead AP never
+         * keeps reporting on from a stale state file. The completion handler
+         * rebuilds the page from the refreshed files. */
+        start_mfw_action("hotspot-status");
+        return 1;
+    }
     if(!strcmp(action,"modules")){feature_page(8);start_mfw_action("status");return 1;}
     if(!strcmp(action,"unavailable")){message("当前不可用");return 1;}
+    /* Wireless toggles: one request at a time; the scripts themselves are
+     * idempotent and serialize on a lock, so a second press while a child is
+     * running is rejected here rather than queued. Telnet lives in the debug
+     * menu (gui_debug.NX300M) and reaches the same scripts through the
+     * standard panel-action path. */
+    if(!strcmp(action,"hotspot-start")||!strcmp(action,"hotspot-stop")||
+       !strcmp(action,"hotspot-credentials")){
+        if(mfw_readonly){message("截图模式不执行操作");return 1;}
+        if(child){message("上一个操作仍在执行");return 1;}
+        const char *panel_action=!strcmp(action,"hotspot-start")?"hotspot-toggle":
+            !strcmp(action,"hotspot-stop")?"hotspot-stop":"hotspot-credentials";
+        if(start_mfw_action(panel_action))message(!strcmp(action,"hotspot-credentials")?"正在读取热点密码…":"正在切换热点…");
+        else message("操作未能启动");
+        return 1;
+    }
     /* Firmware control toggles: the concrete request value comes from the
      * read-back bridge state, never from the label. */
     if(!strncmp(action,"fw-",3)) {

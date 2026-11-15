@@ -4,7 +4,7 @@ set -eu
 set -f
 [ "$#" -eq 1 ] || exit 64
 case $1 in
-    status|network-info|disable-autostart|enable-autostart|preview-preference|preview-toggle|preview-enable|preview-s2-enable|preview-probe-once|preview-identity|preview-monochrome|preview-monochrome-timing|preview-sync|preview-stop|preview-restore|preview-status|preview-diag-export) action=$1 ;;
+    status|network-info|disable-autostart|enable-autostart|preview-preference|preview-toggle|preview-enable|preview-s2-enable|preview-probe-once|preview-identity|preview-monochrome|preview-monochrome-timing|preview-sync|preview-stop|preview-restore|preview-status|preview-diag-export|hotspot-status|hotspot-toggle|hotspot-stop|hotspot-credentials|telnet-status|telnet-toggle|telnet-password|telnet-disable) action=$1 ;;
     fw-*) action=$1 ;;
     *) exit 64 ;;
 esac
@@ -226,6 +226,28 @@ case $action in
         [ -r "$script" ] && [ ! -L "$script" ] || { printf 'RAM preview wrapper unavailable\n' >&2; exit 1; }
         exec /bin/sh "$script" probe-once ;;
 esac
+# Hotspot and Telnet controls (2026-11-11). These own RAM runtime state only;
+# the hotspot driver/hostapd path is camera-side and the toggle never writes
+# to the SD data source, so they run before the media-source checks.
+# credentials/password print the generated secrets for the UI only; they are
+# never persisted by the panel.
+case $action in
+    hotspot-status|hotspot-toggle|hotspot-stop|hotspot-credentials|telnet-status|telnet-toggle|telnet-password|telnet-disable)
+        script=$ROOT/hotspot.sh
+        case $action in telnet-*) script=$ROOT/telnet_toggle.sh ;; esac
+        [ -r "$script" ] && [ ! -L "$script" ] || { printf 'wireless control script unavailable\n' >&2; exit 1; }
+        case $action in
+            hotspot-status)      exec /bin/sh "$script" status ;;
+            hotspot-toggle)      exec /bin/sh "$script" start ;;
+            hotspot-stop)        exec /bin/sh "$script" stop ;;
+            hotspot-credentials) exec /bin/sh "$script" credentials ;;
+            telnet-status)       exec /bin/sh "$script" status ;;
+            telnet-toggle)       exec /bin/sh "$script" toggle ;;
+            telnet-password)     exec /bin/sh "$script" password ;;
+            telnet-disable)      exec /bin/sh "$script" disable ;;
+        esac ;;
+esac
+
 # Serialize explicit preview changes with the finite boot restore. Keep the
 # descriptor in this parent only: loader/engine descendants must not inherit it.
 case $action in

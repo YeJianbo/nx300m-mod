@@ -1,5 +1,6 @@
 /* Input-driven controls and a static reference image. */
 #include "assets/lut_reference_rgb.h"
+#include "lut_table_cache.h"
 static uint32_t lut_reference_pixels[NX_REF_W*NX_REF_H];
 static struct nx_cpu_image lut_reference={NX_REF_W,NX_REF_H,lut_reference_pixels,0};
 static uint16_t lut_reference_table[2190];
@@ -179,11 +180,19 @@ static void lut_init_groups(void) {
     memset(lut_category_count,0,sizeof lut_category_count);
     memset(lut_favorite,0,sizeof lut_favorite);
     lut_load_custom_groups();
-    char file[NXUI_PATH],key[64];snprintf(file,sizeof file,"%s/.state/lut-favorites",root);
-    FILE *in=fopen(file,"r");
-    if(in) {
-        while(fscanf(in,"%63s",key)==1)for(int i=1;i<count;i++)if(!strcmp(key,recipes[i].key)){lut_favorite[i]=1;break;}
-        fclose(in);
+    /* Favorites read through the same dual-slot store as the LUT choice: the
+     * highest-generation valid slot wins, and the legacy single file is only
+     * a fallback for old cards. A damaged or truncated record never reads as
+     * a favorite set. */
+    static char favorite_body[NX_FAVORITES_BODY_MAX];
+    if(nx_favorites_read_root(root,favorite_body,sizeof favorite_body)) {
+        char key[NX_FAVORITES_KEY_MAX];
+        for(char *cursor=favorite_body;*cursor;) {
+            size_t key_length=strcspn(cursor,"\n");
+            snprintf(key,sizeof key,"%.*s",(int)key_length,cursor);
+            cursor+=key_length;cursor+=*cursor?1:0;
+            for(int i=1;i<count;i++)if(!strcmp(key,recipes[i].key)){lut_favorite[i]=1;break;}
+        }
     }
     for(int i=0;i<count;i++) {
         lut_brand[i]=i?lut_detect_brand(i):0;
@@ -329,7 +338,9 @@ static void lut_toggle_favorite(void) {
         else length+=(size_t)n;
     }
     if(overflow){message("收藏列表过大 · 未保存");return;}
-    int saved=nx_atomic_text_write(directory,"lut-favorites",text,length);
+    /* Same dual-slot store the menu reads: write is verified before the old
+     * slot is touched, so a short or failed write keeps the previous set. */
+    int saved=nx_favorites_write_root(root,text,length);
     if(!saved){lut_favorite_notice=1;fprintf(stderr,"LUT_FAVORITES card write failed dir=%s\n",directory);message("收藏未保存，请重试");return;}
     if(saved<0) {
         snprintf(lut_favorite_pending_key,sizeof lut_favorite_pending_key,"%s",recipes[selected].key);
@@ -350,8 +361,10 @@ static void lut_update_reference(void) {
         lut_reference_unmixed_dirty=1;
         if(selected) {
             char file[NXUI_PATH];snprintf(file,sizeof file,"%s/looks/%s/table.d4lut",root,recipes[selected].key);
-            FILE *in=fopen(file,"rb");
-            if(in){lut_reference_valid=fread(lut_reference_table,1,4380,in)==4380 && fgetc(in)==EOF && !ferror(in);fclose(in);}
+            /* LOOK-CACHE: reference tables for the four most recent looks are
+             * served from the session cache instead of re-reading 4380 bytes
+             * for every selection change. */
+            lut_reference_valid=nx_table_cache_load(file,lut_reference_table,4380)==0;
             if(lut_reference_valid)for(unsigned i=0;i<2190;i++)if(lut_reference_table[i]>1023||(i%730==729&&lut_reference_table[i]))lut_reference_valid=0;
             if(lut_reference_valid){lut_reference_mono=1;for(unsigned i=0;i<729;i++)if(lut_reference_table[i]!=lut_reference_table[730+i]||lut_reference_table[i]!=lut_reference_table[1460+i]){lut_reference_mono=0;break;}}
         }

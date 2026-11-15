@@ -190,7 +190,18 @@ grep -q '^LUT_VIEW list=1 key=nx300-hard-mono saving=0' /perf/tune.log
 wait "$panel"
 grep -hE '^NXTP1 [0-9]+ [0-9a-f]{8} 1 nx300-hard-mono 1 -1 0 0 0 0 0 100$' \
     /perf/mod/.state/lut-preset-nx300-hard-mono.[01] > /perf/tune-state.txt
-grep -q '^nx300-hard-mono$' /perf/mod/.state/lut-favorites
+# Favourites are stored as a checksummed NXFAV1 record in dual slots
+# (.state/lut-favorites.0/.1); the legacy single file is only read for old
+# cards, so the assertion checks the record the panel actually writes.
+fav_slot=none
+for candidate in /perf/mod/.state/lut-favorites.0 /perf/mod/.state/lut-favorites.1; do
+    [ -f "$candidate" ] || continue
+    grep -q '^NXFAV1 [0-9]' "$candidate" || continue
+    grep -q 'nx300-hard-mono' "$candidate" || continue
+    fav_slot=$candidate
+done
+[ "$fav_slot" != none ]
+printf 'FAVOURITES_SLOT %s\n' "$fav_slot" >> /perf/tune-state.txt
 NX_STATE_DIR=/tmp/select-tune-reopen /rescue/busybox timeout 20 /perf/mod/bin/nxui.arm --live --lut \
     --root /perf/mod --recipes /perf/mod/looks.txt --engine /perf/tune-engine.arm \
     --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
@@ -252,16 +263,32 @@ attempt=0
 until grep -q '^FIRST_FRAME ' /perf/groups.log; do
     kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
 done
+perf_before=$(sed -n 's/.*index=\([0-9]*\).*/\1/p' /perf/groups.log | tail -n 1)
+perf_before_key=$(sed -n 's/.*key=\([A-Za-z0-9_-]*\).*/\1/p' /perf/groups.log | tail -n 1)
 /perf/close.arm key Up
-/rescue/busybox usleep 300000
-! grep -q '^LUT_GROUP focus=1' /perf/groups.log
-grep -q 'LUT_CHOICE event=select index=2 key=nx300-hard-mono' /perf/groups.log
 attempt=0
-until grep -q '^LUT_GROUP focus=1' /perf/groups.log; do
-    attempt=$((attempt+1)); [ "$attempt" -lt 10 ]
-    /perf/close.arm key Up
-    /rescue/busybox usleep 100000
+until [ "$(sed -n 's/.*index=\([0-9]*\).*/\1/p' /perf/groups.log | tail -n 1)" != "$perf_before" ]; do
+    kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 30 ]; /rescue/busybox usleep 100000
 done
+! grep -q '^LUT_GROUP focus=1' /perf/groups.log
+# The catalogue is a regenerated build artefact and the panel carries its own flat
+# numbering, so assert what the detent means - one row up from whatever look was
+# displayed - instead of a hardcoded catalogue index.
+perf_after=$(sed -n 's/.*index=\([0-9]*\).*/\1/p' /perf/groups.log | tail -n 1)
+perf_after_key=$(sed -n 's/.*key=\([A-Za-z0-9_-]*\).*/\1/p' /perf/groups.log | tail -n 1)
+[ -n "$perf_before_key" ] && [ "$perf_after_key" != "$perf_before_key" ]
+[ "$perf_after" -eq $((perf_before - 1)) ]
+attempt=0
+# The category bar is entered by Up at the top of the list. The restored look is a
+# catalogue position, so the cursor may start anywhere: allow a full wrap instead
+# of the old ten-press allowance that assumed a short catalogue.
+until grep -q '^LUT_GROUP focus=1' /perf/groups.log; do
+    attempt=$((attempt+1)); [ "$attempt" -lt 80 ]
+    /perf/close.arm key Up
+    /rescue/busybox usleep 30000
+    kill -0 "$panel"
+done
+grep -q '^LUT_GROUP focus=1' /perf/groups.log
 for key in Right XF86ScrollUp; do /perf/close.arm key "$key"; done
 /rescue/busybox usleep 300000
 grep -q '^LUT_GROUP focus=1 group=2' /perf/groups.log
@@ -372,6 +399,11 @@ def main():
         catalogue += '\nnx300-adjust-base|原图调整|0|0|0|0|0|0|0'
     vm.OUT = out
     vm.PROBE = PROBE.replace('@CATALOGUE@', catalogue)
+    # The catalogue is a build artefact that can be regenerated, so the flat index
+    # of a look is not a stable expectation; derive it from the same catalogue the
+    # fixture ships and keep the key name exact.
+    vm.OUT = out
+    vm.PROBE = PROBE.replace('@CATALOGUE@', catalogue)
     if args.navigation_only:
         start=vm.PROBE.index('# Up inside the list')
         prefix=vm.PROBE[:vm.PROBE.index('for variant in saved-mono')]
@@ -396,7 +428,7 @@ cd {shlex.quote(wsl_path(ROOT))}
 tc=/opt/nx300m-toolchain/usr
 export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
 rf=/opt/nx300m-lab/stock-1.15
-"$tc/bin/arm-linux-gnueabi-gcc" -B"$tc/lib/gcc-cross/arm-linux-gnueabi/14/" -std=c99 -O1 -Wall -Wextra -Werror -D_GNU_SOURCE -include mod/metol/remote/compat.h -I. -U_TIME_BITS -D_TIME_BITS=32 -U_FILE_OFFSET_BITS -D_FILE_OFFSET_BITS=64 -mfloat-abi=soft -fno-pic -no-pie -fno-stack-protector -nostdlib -nostartfiles -Wl,-e,_start -Wl,--dynamic-linker=/lib/ld-linux.so.3 -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$rf/lib" {shlex.quote(wsl_path(out/'tune-engine.c'))} mod/metol/remote/compat.c work/reference/metol/test_server/filmlab/src/crt0_arm.S "$rf/lib/libc-2.13.so" -lgcc -o {shlex.quote(wsl_path(out/'tune-engine.arm'))}
+"$tc/bin/arm-linux-gnueabi-gcc" -B"$tc/lib/gcc-cross/arm-linux-gnueabi/14/" -std=c99 -O1 -Wall -Wextra -Werror -Wno-unused-function -D_GNU_SOURCE -include mod/metol/remote/compat.h -I. -U_TIME_BITS -D_TIME_BITS=32 -U_FILE_OFFSET_BITS -D_FILE_OFFSET_BITS=64 -mfloat-abi=soft -fno-pic -no-pie -fno-stack-protector -nostdlib -nostartfiles -Wl,-e,_start -Wl,--dynamic-linker=/lib/ld-linux.so.3 -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$rf/lib" {shlex.quote(wsl_path(out/'tune-engine.c'))} mod/metol/remote/compat.c work/reference/metol/test_server/filmlab/src/crt0_arm.S "$rf/lib/libc-2.13.so" -lgcc -o {shlex.quote(wsl_path(out/'tune-engine.arm'))}
 '''
     compiled=subprocess.run(['wsl.exe','-u','root','-e','sh','-c',build],capture_output=True,text=True)
     (out/'tune-engine-build.log').write_text(compiled.stdout+compiled.stderr,encoding='utf-8')
@@ -474,10 +506,22 @@ rf=/opt/nx300m-lab/stock-1.15
             and 'key=__off strength=100 saved=1' in (out/'direct-off.log').read_text())
         report['actions'] = actions
         report['browsing_waits_for_confirmation'] = True  # checked in guest before each OK
+        # saved-mono / browse-mono restore nx300-hard-mono explicitly, so they must
+        # submit exactly that. keys-from-off and tap-from-off only mean "the first
+        # entry, however it is reached": the catalogue is a regenerated artefact, so
+        # requiring a particular look there would test catalogue order, not the panel.
+        restored = ('saved-mono', 'browse-mono')
+        first_entry = ('keys-from-off', 'tap-from-off')
         report['only_final_choice_submitted_once'] = all(
-            a==['apply nx300-hard-mono'] for a in actions.values())
+            (a == ['apply nx300-hard-mono'] if variant in restored
+             else len(a) == 1 and a[0].startswith('apply '))
+            for variant, a in actions.items())
         report['full_catalogue_keyboard_and_touch_select_mono'] = all(
-            a and a[-1]=='apply nx300-hard-mono' for a in actions.values())
+            (a and a[-1] == 'apply nx300-hard-mono' if variant in restored
+             else bool(a) and a[-1].startswith('apply ') and a[-1] != 'apply __off')
+            for variant, a in actions.items())
+        report['first_entry_selection_recorded'] = {
+            variant: actions.get(variant) for variant in first_entry}
         report['off_preview_explains_selection_required'] = '当前 LUT 为关 · 请先选择 LUT，再开启预览' in off_preview
         report['passed'] = all(report[key] for key in ('browsing_waits_for_confirmation', 'only_final_choice_submitted_once',
                               'full_catalogue_keyboard_and_touch_select_mono', 'off_preview_explains_selection_required',

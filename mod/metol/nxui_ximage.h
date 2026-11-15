@@ -17,7 +17,18 @@
 #include <limits.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
+
+/* Per-frame phase timing, off unless the panel runs with NX_PANEL_TRACE=1.
+ * The counters separate damage detection, software rasterization and the
+ * rotated XImage upload so a slow frame can be attributed instead of guessed. */
+static int nx_cpu_timing;
+static unsigned long long nx_cpu_us(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts)) return 0;
+    return (unsigned long long)ts.tv_sec * 1000000ULL + (unsigned long long)ts.tv_nsec / 1000;
+}
 
 struct nx_cpu_glyph {
     nk_rune rune;
@@ -56,6 +67,8 @@ typedef struct XSurface {
     unsigned full_uploads, partial_uploads, skipped_uploads;
     unsigned long long uploaded_pixels;
     unsigned long long raster_pixels;
+    unsigned long long last_damage_us, last_raster_us, last_upload_us;
+    unsigned long long last_raster_pixels, last_upload_pixels;
     struct nx_cpu_frame previous,current;
     struct nx_cpu_box damage;
     uint32_t clear_color;
@@ -359,9 +372,10 @@ static void nx_cpu_upload(Drawable target, XSurface *s, unsigned int w, unsigned
         s->rotated_ready=1;
     }
     s->image_valid=1;s->force_full=0;
+    s->last_upload_pixels=(unsigned long long)(right>left?right-left:0)*(unsigned long long)(bottom>top?bottom-top:0);
     if(right<=left||bottom<=top){s->skipped_uploads++;return;}
     if(left||top||right!=(int)h||bottom!=(int)w)s->partial_uploads++;else s->full_uploads++;
-    s->uploaded_pixels+=(unsigned)(right-left)*(unsigned)(bottom-top);
+    s->uploaded_pixels+=s->last_upload_pixels;
     XPutImage(s->dpy,target,s->gc,s->image,left,top,left,top,(unsigned)(right-left),(unsigned)(bottom-top));
     if (!s->presents++) fprintf(stderr,"PANEL_PRESENT mode=cpu-ximage raw=%ux%u alpha=255\n",h,w);
 }
@@ -382,16 +396,22 @@ static struct nk_context *nk_xlib_init(XFont *font, Display *dpy, int screen, Wi
 }
 static void nk_xlib_render(Drawable target, struct nk_color clear) {
     XSurface *s=xlib.surf; const struct nk_command *cmd;
+    unsigned long long t_start=nx_cpu_timing?nx_cpu_us():0,t_damage=0,t_raster=0;
     if (s->present_failed) {nk_clear(&xlib.ctx);return;}
     s->damage=nx_cpu_damage(s,clear);
+    t_damage=nx_cpu_timing?nx_cpu_us():0;
     if(s->damage.right<=s->damage.left||s->damage.bottom<=s->damage.top) {
-        s->skipped_uploads++;nk_clear(&xlib.ctx);return;
+        s->skipped_uploads++;
+        if(nx_cpu_timing){s->last_damage_us=t_damage-t_start;s->last_raster_us=0;
+            s->last_upload_us=0;s->last_raster_pixels=0;s->last_upload_pixels=0;}
+        nk_clear(&xlib.ctx);return;
     }
     s->rotated_ready=0;
     uint32_t background=0xff000000u|((uint32_t)clear.r<<16)|((uint32_t)clear.g<<8)|clear.b;
     for(int y=s->damage.top;y<s->damage.bottom;y++)for(int x=s->damage.left;x<s->damage.right;x++)
         s->pixels[(size_t)y*s->w+x]=background;
-    s->raster_pixels+=(unsigned)(s->damage.right-s->damage.left)*(unsigned)(s->damage.bottom-s->damage.top);
+    s->last_raster_pixels=(unsigned long long)(s->damage.right-s->damage.left)*(unsigned long long)(s->damage.bottom-s->damage.top);
+    s->raster_pixels+=s->last_raster_pixels;
     s->left=s->damage.left;s->top=s->damage.top;s->right=s->damage.right;s->bottom=s->damage.bottom;
     nk_foreach(cmd,&xlib.ctx) switch(cmd->type) {
     case NK_COMMAND_NOP: break;
@@ -435,7 +455,13 @@ static void nk_xlib_render(Drawable target, struct nk_color clear) {
     default:
         fprintf(stderr,"PANEL_PRESENT unsupported_command=%d\n",cmd->type);s->present_failed=1;break;
     }
-    nk_clear(&xlib.ctx);nx_cpu_upload(target,s,s->w,s->h,1);
+    nk_clear(&xlib.ctx);
+    t_raster=nx_cpu_timing?nx_cpu_us():0;
+    nx_cpu_upload(target,s,s->w,s->h,1);
+    if(nx_cpu_timing){
+        s->last_damage_us=t_damage-t_start;s->last_raster_us=t_raster-t_damage;
+        s->last_upload_us=nx_cpu_us()-t_raster;
+    }
 }
 static void nk_xlib_handle_event(Display *dpy, int screen, Window window, XEvent *event) {
     struct nk_context *ctx=&xlib.ctx;(void)dpy;(void)screen;(void)window;

@@ -33,6 +33,7 @@
 #include "nx_atomic_write.h"
 #include "lut_reference_interp.h"
 #include "nxui_preview_state.h"
+#include "nx_favorites_store.h"
 extern Bool XTestFakeKeyEvent(Display *, unsigned int, Bool, unsigned long);
 /* glibc 2.13 exposes the versioned ARM stat64 entry points. */
 extern int __xstat64(int, const char *, struct stat64 *);
@@ -50,9 +51,29 @@ static const char *mfw_menu_root, *mfw_menu_engine;
 static int mfw_lut_quick, mfw_return_requested;
 static char mfw_lut_root[NXUI_PATH], mfw_lut_engine[NXUI_PATH];
 static long long lut_page_requested;
-/* Continuous-input rasterization gate: paints are held to ~15 Hz during a
- * drag/wheel burst; 0 means no hold (single keys paint immediately). */
+/* Continuous-input rasterization gate: paints during a drag/wheel burst are
+ * scheduled from the previous frame's deadline, not from the moment its paint
+ * started, so a paint that fits inside NX_UI_TARGET_MS does not lose the next
+ * slot; a paint that overruns the target moves the hold just past itself so
+ * sustained input cannot stack paints. 40 ms is the software paint slot, not a
+ * body frame rate. Discrete keys, clicks and Fn/OK/MENU paint immediately. */
+#ifndef NX_UI_TARGET_MS
+#define NX_UI_TARGET_MS 40
+#endif
+/* A reference-image rebuild that overruns this budget drops to the slow cadence
+ * for the rest of the burst: numbers keep updating at the paint cadence, the
+ * last complete image stays on screen, and one final rebuild runs after the
+ * burst ends. */
+#ifndef NX_UI_REFERENCE_BUDGET_MS
+#define NX_UI_REFERENCE_BUDGET_MS 18
+#endif
+#ifndef NX_UI_REFERENCE_SLOW_MS
+#define NX_UI_REFERENCE_SLOW_MS 66
+#endif
 static long long lut_paint_hold;
+/* Frame cap for non-burst updates (expose, backend status, list scrolling).
+ * Kept equal to the paint target so one clock governs both paths. */
+#define NX_UI_FRAME_MS NX_UI_TARGET_MS
 static const char *mfw_stock_key;
 static char mfw_status[1024];
 /* An applied control with a failed preference write must retry the same value,
@@ -87,6 +108,9 @@ static long long lut_reference_pressed_at;
 static void resize_panel(void);
 static struct nx_lut_tune lut_tune;
 static int lut_edit, lut_field, lut_category, lut_category_focus, lut_reference_dirty=1;
+/* UI-25 schedule: one clock drives painting, and reference rebuilds carry their
+ * own due time so a slow rebuild can never block a number update. */
+static long long lut_reference_due, lut_reference_final;
 static int lut_toolbar_focus=-1;
 static int lut_preview_shown=-1;
 static long long lut_preview_due,lut_preview_until;
@@ -265,7 +289,7 @@ static struct nx_panel_input panel_input = {.ev_fd = -1};
 static int busy_kind, child_fd = -1, output_len, child_timed_out, child_slow;
 static pid_t child;
 static pid_t mfw_retired_child;
-static int mfw_child_readonly, mfw_child_preview;
+static int mfw_child_readonly, mfw_child_preview, mfw_child_wireless;
 static long long mfw_cancel_started;
 static long long child_started, lifetime;
 static long long service_due;
@@ -918,6 +942,7 @@ static int start_child(int kind, int index, const char *command) {
 static int mfw_action_allowed(const char *action) {
     const char *allowed[] = {"status", "network-info", "lut", "menu", "gallery", "disable-autostart", "enable-autostart", "close",
         "lenses","exposure","connection","settings", "preview", "debug", "back", "preview-toggle", "preview-enable", "preview-s2-enable", "preview-preference", "preview-probe-once", "preview-identity", "preview-monochrome", "preview-monochrome-timing", "preview-sync", "preview-stop", "preview-restore", "preview-status", "preview-diag-export",
+        "hotspot-status","hotspot-toggle","hotspot-stop","hotspot-credentials","telnet-status","telnet-toggle","telnet-password","telnet-disable",
         "fw-mode-lock-on","fw-mode-lock-off","fw-animation-0","fw-animation-1","fw-animation-2",
         "fw-auto-iso-0","fw-auto-iso-6400","fw-auto-iso-max-6400","fw-auto-iso-max-12800","fw-auto-iso-max-25600","fw-auto-iso-max-3200","fw-mode-P","fw-mode-A","fw-mode-S","fw-mode-M"};
     for (unsigned int i = 0; i < sizeof allowed / sizeof *allowed; i++)
@@ -939,7 +964,8 @@ static void mfw_child_close_fds(void) {
 static int start_mfw_action(const char *action) {
     int pipefd[2]; pid_t pid; char launcher[NXUI_PATH], runtime[NXUI_PATH], state_dir[NXUI_PATH];
     const char *base=getenv("NX300M_MFW_RAM_BASE"), *service=getenv("NX_FN_SERVICE_ROOT");
-    int readonly = !strcmp(action, "status") || !strcmp(action, "network-info") || !strcmp(action, "preview-status");
+    int readonly = !strcmp(action, "status") || !strcmp(action, "network-info") || !strcmp(action, "preview-status") ||
+        !strcmp(action, "hotspot-status") || !strcmp(action, "telnet-status");
     if (child || mfw_retired_child || !mfw_action_allowed(action)) return 0;
     /* The LUT root is SD data, while actions belong to the verified RAM
      * service generation. Never run the data directory's preview wrapper. */
@@ -970,12 +996,19 @@ static int start_mfw_action(const char *action) {
     snprintf(mfw_fw_action,sizeof mfw_fw_action,"%s",!strncmp(action,"fw-",3)?action:"");
     child_fd = pipefd[0]; child = pid; busy_kind = 5;
     mfw_child_preview = !strncmp(action, "preview-", 8);
+    /* Driver load plus two daemon starts is the slowest control action; the
+     * VM measurement of the real script is 24.7 s under TCG. Keep the 12 s
+     * cap for the rest and bound wireless to 30 s. */
+    mfw_child_wireless = !strncmp(action, "hotspot-", 8) || !strncmp(action, "telnet-", 7);
     mfw_child_readonly = readonly;
     mfw_cancel_started = 0;
     pipe_eof = child_timed_out = child_slow = output_len = 0; output[0] = 0; child_started = now_ms();
     if (mfw_child_preview) mfw_status_message(mfw_child_readonly ? "正在读取预览状态…" : "正在更新预览，完成后返回取景…");
     else if (mfw_child_readonly)
-        mfw_status_message(!strcmp(action, "status") ? "正在读取机身服务状态…" : "正在读取网络连接信息…");
+        mfw_status_message(!strcmp(action, "status") ? "正在读取机身服务状态…" :
+                           !strcmp(action, "hotspot-status") ? "正在读取热点状态…" :
+                           !strcmp(action, "telnet-status") ? "正在读取 Telnet 状态…" :
+                           "正在读取网络连接信息…");
     return 1;
 }
 #include "nxui_feature_pages.h"
@@ -1007,7 +1040,8 @@ static void activate_mfw_item(int index) {
         } else mfw_quick = was_quick;
         return;
     }
-    if (mfw_readonly && strcmp(action, "status") && strcmp(action, "network-info") && strcmp(action, "preview-status")) { message("截图模式不执行操作"); return; }
+    if (mfw_readonly && strcmp(action, "status") && strcmp(action, "network-info") && strcmp(action, "preview-status") &&
+        strcmp(action, "hotspot-status") && strcmp(action, "telnet-status")) { message("截图模式不执行操作"); return; }
     if (!strcmp(action, "lut")) {
         lut_page_requested = now_ms(); mfw_open_lut = dirty = 1; return;
     }
@@ -1017,7 +1051,8 @@ static void activate_mfw_item(int index) {
         return;
     }
     if (!start_mfw_action(action)) {
-        if (!strcmp(action, "status") || !strcmp(action, "network-info"))
+        if (!strcmp(action, "status") || !strcmp(action, "network-info") ||
+            !strcmp(action, "hotspot-status") || !strcmp(action, "telnet-status"))
             mfw_status_message("信息读取未能启动 · 请重试");
         else message("操作未能启动");
     }
@@ -1066,7 +1101,8 @@ static void poll_child(void) {
             }
             return;
         }
-        long long timeout = busy_kind == 5 && mfw_child_preview ? 20000 : 12000;
+        long long timeout = busy_kind == 5 && mfw_child_preview ? 20000 :
+            (busy_kind == 5 && mfw_child_wireless ? 30000 : 12000);
         if (age > timeout && !child_timed_out) {
             child_timed_out = 1; kill(-child, SIGTERM);
             message("后端超时 · 正在停止，请检查相机状态");
@@ -1081,7 +1117,23 @@ static void poll_child(void) {
     if(lut_mode&&(busy_kind==1||(busy_kind==5&&mfw_child_preview)))lut_preview_due=0;
     success = result > 0 && !child_timed_out && WIFEXITED(code) && WEXITSTATUS(code) == 0 &&
         !strstr(output, "VERIFY-FAIL") && !strstr(output, "REJECT");
-    fprintf(stderr, "BACKEND kind=%d ok=%d elapsed_ms=%lld output=%s\n", busy_kind, success, now_ms()-child_started, output);
+    /* Credentials ride this pipe as HOTSPOT_CREDENTIALS / TELNET_CREDENTIALS
+     * lines for on-screen display only. The log copy masks every password
+     * value so service logs never contain a live credential. */
+    {char log_output[sizeof output];
+     size_t out=0;
+     for(const char *p=output;*p&&out+1<sizeof log_output;) {
+         if(!strncmp(p,"password=",9)) {
+             const char *value_end=p+9+strcspn(p+9," \r\n");
+             if(out+12>=sizeof log_output)break;
+             memcpy(log_output+out,"password=***",12);out+=12;
+             p=value_end;
+             continue;
+         }
+         log_output[out++]=*p++;
+     }
+     log_output[out]=0;
+     fprintf(stderr, "BACKEND kind=%d ok=%d elapsed_ms=%lld output=%s\n", busy_kind, success, now_ms()-child_started, log_output);}
     if (busy_kind == 5) {
         int fw_slot=mfw_fw_slot(mfw_fw_action);
         /* H3: the fixed FW_MOD result line may legally be preceded by shell
@@ -1109,6 +1161,17 @@ static void poll_child(void) {
                 feature_page(mfw_preview);
                 snprintf(mfw_status,sizeof mfw_status,"%s",keep);
             }
+            /* Wireless pages are rebuilt from the state files the scripts
+             * (hotspot.sh status/start/stop) rewrote, so a toggle or a bounded
+             * status query updates rows, the password entry and the focus
+             * instead of leaving the pre-toggle sampling on screen. */
+            if (mfw_preview==7) {
+                char keep[sizeof mfw_status];snprintf(keep,sizeof keep,"%s",mfw_status);
+                int keep_selected=mfw_selected;
+                feature_page(7);
+                snprintf(mfw_status,sizeof mfw_status,"%s",keep);
+                if(item_count>0)mfw_selected=keep_selected>=0&&keep_selected<item_count?keep_selected:item_count-1;
+            }
             if (mfw_child_preview && !mfw_child_readonly) {
                 if(lut_mode){mfw_status[0]=0;message("LUT 预览设置已更新");}
                 else queue.close_requested = 1;
@@ -1117,6 +1180,7 @@ static void poll_child(void) {
             mfw_status_message(mfw_cancel_started
                 ? (queue.close_requested ? "读取已取消" : "读取超时 · 请重试")
                 : "服务信息读取失败 · 请重试");
+            if (mfw_preview==7) feature_page(7); /* keep rows honest even when the query fails */
         } else if (mfw_child_preview) {
             snprintf(mfw_status, sizeof mfw_status, "%.*s", (int)sizeof(mfw_status)-1, output);
             if (strstr(output, "LUT_OFF ")) {
@@ -1125,7 +1189,13 @@ static void poll_child(void) {
                 message("当前 LUT 为关 · 请先选择 LUT，再开启预览");
                 fprintf(stderr, "MFW preview_needs_selection status=%s\n", status);
             } else message("预览操作失败 · 详情见面板日志");
-        } else message("服务操作失败 · 请查看面板日志");
+        } else {
+            message("服务操作失败 · 请查看面板日志");
+            /* A failed toggle still rewrote state (stop_service recovery or
+             * a persisted failed:<stage>): rebuild so the failure shows and
+             * the start row is retryable. */
+            if (mfw_preview==7) feature_page(7);
+        }
     } else if (busy_kind == 1) {
         was_commit = queue.committing;
         int request_index = lut_mode && lut_request_inflight_valid ? lut_request_index(&lut_request_inflight) : busy_recipe;
@@ -1511,13 +1581,18 @@ int main(int argc, char **argv) {
     const char *font_file = NULL;
     const char *font_metadata = NULL;
     XSetWindowAttributes attr; XFont *font; Atom wm_delete; int i, lockfd, render_count = 0;
-    long long started, next_frame = 0, max_draw_ms = 0, process_started = now_ms();
+    long long started, next_frame = 0, max_draw_ms = 0, process_started = now_ms(), zero_delay_wakes = 0;
+    const char *delay_reason = "none";
+    static const char *reason_names[] = {"none","child","apply_tick","preview_due","reference_press",
+        "service_due","queue_due","lifetime","pending_frame","paint_due","reference_due"};
+    static long long reason_count[sizeof reason_names / sizeof *reason_names];
     long long first_frame_boot_ms = -1;
     long long recipes_ready, display_ready, window_ready, font_ready, backend_ready;
     long long menu_ready, focus_ready, first_draw_started, first_draw_ready;
     int wakeups = 0, blits = 0, explicit_dry_run = 0;
     const char *trace = getenv("NX_PANEL_TRACE");
     int trace_frames = trace && !strcmp(trace, "1");
+    nx_cpu_timing = trace_frames;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--live")) live = 1;
         else if (!strcmp(argv[i], "--dry-run")) { live = 0; explicit_dry_run = 1; }
@@ -1753,14 +1828,20 @@ int main(int argc, char **argv) {
          * continuous/discrete live at loop scope: the paint gate and the
          * select deadline below need the latest burst classification. */
         int continuous = 0, discrete = 0;
+        long long event_started = 0, event_ms = 0;
         if (tick >= next_frame) {
+          if (trace_frames) event_started = now_ms();
           nk_input_begin(ctx);
           while (events < 64 && XPending(display)) {
             XNextEvent(display, &event);
             events++;
-            /* Continuous drag/wheel bursts rasterize at ~15 Hz; input is still
-             * drained every frame and the final state always paints on the
-             * first frame after the burst ends. Single keys stay immediate. */
+            /* Continuous drag/wheel bursts paint on the NX_UI_TARGET_MS
+             * schedule (40 ms), not on every event; input is still drained
+             * every frame and the final state always paints on the first frame
+             * after the burst ends. Single keys stay immediate. Note that the
+             * cadence is only reachable when a paint is cheaper than the
+             * target: a frame that repaints the full reference image costs
+             * ~32 ms of rasterization plus upload and therefore paces itself. */
             if (event.type == MotionNotify) continuous++;
             else if (event.type == KeyPress) {
                 KeySym burst = XLookupKeysym(&event.xkey, 0);
@@ -1909,12 +1990,19 @@ int main(int argc, char **argv) {
             if (event.type == ButtonPress || event.type == ButtonRelease) break;
           }
           nk_input_end(ctx);
+          if (trace_frames) event_ms = now_ms() - event_started;
           /* Burst scheduling: the hold arms once per window and the paint gate
-           * below re-arms it AFTER painting, so sustained input still
-           * rasterizes at ~15 Hz instead of deferring forever. A discrete key
-           * breaks the hold and paints immediately. */
-          if (discrete) lut_paint_hold = 0;
-          else if (continuous >= 2 && lut_paint_hold <= 0) lut_paint_hold = tick + 66;
+           * below re-arms it from the frame deadline (not from when the paint
+           * started), so sustained input keeps the target cadence instead of
+           * deferring forever. A discrete key breaks the hold and paints
+           * immediately. */
+          if (discrete) { lut_paint_hold = 0;lut_reference_final = 0;lut_reference_due = 0; }
+          else if (continuous >= 2 && lut_paint_hold <= 0) lut_paint_hold = tick + NX_UI_TARGET_MS;
+          /* The burst ended with a coalesced reference still pending: it must
+           * be rebuilt now and drawn, not left at the previous image. */
+          if (!continuous && lut_reference_final) {
+              lut_reference_final = 0;lut_reference_dirty = 1;lut_reference_due = 0;dirty = 1;
+          }
         }
         if(lut_mode&&lut_reference_press&&!lut_reference_original&&now_ms()-lut_reference_pressed_at>=300){lut_reference_original=1;lut_reference_dirty=dirty=1;}
         if (mfw_return_requested) { mfw_return_requested = 0; return_mfw_menu(); }
@@ -1939,18 +2027,38 @@ int main(int argc, char **argv) {
         if (!child && (!queue.close_requested || queue.commit_requested) && (index = nx_queue_take(&queue, now_ms())) >= 0)
             if (!start_child(1, index, NULL)) { nx_queue_done(&queue, 0); message("后端启动失败"); }
         if (tick >= next_frame && !quit && !queue.close_requested) {
-            /* A continuous drag/wheel burst defers rasterization to ~15 Hz;
-             * dirty stays set, so the frame after the burst always paints the
-             * final state. Single keys never enter this hold. */
+            /* A continuous drag/wheel burst paints on the target schedule
+             * instead of on every event; dirty stays set, so the frame after
+             * the burst always paints the final state. Single keys never enter
+             * this hold. */
             if (dirty && tick >= lut_paint_hold) {
                 long long draw_started = now_ms(), elapsed;
+                long long reference_started = 0, reference_ms = 0;
                 if(refresh)xlib.surf->force_full=1;
-                if(lut_mode&&!child&&!queue.commit_requested)lut_refresh_preview();
+                if(lut_mode&&!child&&!queue.commit_requested&&tick>=lut_reference_due) {
+                    reference_started = now_ms();
+                    lut_refresh_preview();
+                    reference_ms = now_ms() - reference_started;
+                    /* Bounded publish: the rebuild either produced a complete
+                     * newest-version image or left the previous one intact. */
+                    lut_reference_due = reference_started +
+                        (reference_ms > NX_UI_REFERENCE_BUDGET_MS ? NX_UI_REFERENCE_SLOW_MS : NX_UI_TARGET_MS);
+                    if(reference_ms > NX_UI_REFERENCE_BUDGET_MS && continuous >= 2) lut_reference_final = 1;
+                }
                 dirty = 0; draw(); render_count++; painted = 1;
-                /* Paint first, then re-arm: sustained input keeps rasterizing
-                 * periodically instead of pushing the deadline forward. */
-                if (continuous >= 2 && !discrete) lut_paint_hold = draw_started + 66;
-                else lut_paint_hold = 0;
+                /* Fixed-rate slot. The next paint may start at the frame
+                 * deadline one target period from this frame's own deadline,
+                 * not one period from this paint's start: processing the event
+                 * batch happens before draw_started is sampled, so a
+                 * start-relative hold landed a few milliseconds past the next
+                 * deadline and cost a whole frame per paint (82-83 ms measured
+                 * against a 40 ms target). A paint that overruns the target
+                 * still moves the slot to just after it finishes, so sustained
+                 * input cannot stack paints. */
+                if (continuous >= 2 && !discrete) {
+                    lut_paint_hold = tick + NX_UI_TARGET_MS;
+                    if (lut_paint_hold <= draw_started) lut_paint_hold = draw_started + 1;
+                } else lut_paint_hold = 0;
                 if (lut_mode && lut_page_requested) {
                     XSync(display, False);
                     fprintf(stderr, "LUT_PAGE pid=%ld shown_ms=%lld elapsed_ms=%lld\n",
@@ -1960,15 +2068,29 @@ int main(int argc, char **argv) {
                 if (xlib.surf->present_failed) queue.close_requested = 1;
                 elapsed = now_ms() - draw_started;
                 if (elapsed > max_draw_ms) max_draw_ms = elapsed;
-            } else if (refresh && render_count) {
-                /* Retained image: expose needs one upload, no layout/font work. */
-                XSetClipMask(display, xlib.surf->gc, None);
-                nk_xsurf_blit(window, xlib.surf, (unsigned)width, (unsigned)height);
-                XFlush(display); blits++;
+                if (trace_frames)
+                    fprintf(stderr, "PANEL_DRAW pid=%ld ref_ms=%lld evt_ms=%lld draw_ms=%lld damage_us=%llu raster_us=%llu upload_us=%llu raster_px=%llu upload_px=%llu\n",
+                        (long)getpid(), reference_ms, event_ms, elapsed, xlib.surf->last_damage_us,
+                        xlib.surf->last_raster_us, xlib.surf->last_upload_us,
+                        xlib.surf->last_raster_pixels, xlib.surf->last_upload_pixels);
+            } else {
+                /* Trace the reason a dirty frame did not paint: the burst hold
+                 * or the frame deadline decides it, never a missing input. */
+                if (trace_frames && dirty)
+                    fprintf(stderr, "PANEL_SKIP pid=%ld tick=%lld next_frame=%lld hold=%lld continuous=%d discrete=%d\n",
+                        (long)getpid(), tick, next_frame, lut_paint_hold, continuous, discrete);
+                if (refresh && render_count) {
+                    /* Retained image: expose needs one upload, no layout/font work. */
+                    XSetClipMask(display, xlib.surf->gc, None);
+                    nk_xsurf_blit(window, xlib.surf, (unsigned)width, (unsigned)height);
+                    XFlush(display); blits++;
+                }
             }
-            /* Include rasterization in the frame budget. Adding another
-             * 33 ms after a slow draw unnecessarily delays queued input. */
-            if (events || painted || refresh) next_frame = tick + 33;
+            /* Include rasterization in the frame budget: the next deadline is
+             * one target period after this frame's own deadline, measured from
+             * the loop tick rather than from the draw start, so a normal paint
+             * does not skip a whole frame. */
+            if (events || painted || refresh) next_frame = tick + NX_UI_FRAME_MS;
             if (trace_frames && (events || painted || refresh))
                 fprintf(stderr, "PANEL_FRAME pid=%ld dequeued_ms=%lld submitted_ms=%lld events=%d painted=%d exposed=%d\n",
                     (long)getpid(), input_dequeued, now_ms(), events, painted, refresh);
@@ -1976,28 +2098,44 @@ int main(int argc, char **argv) {
         if (shot && render_count) { snapshot(shot); break; }
         if (quit) break;
         tick = now_ms(); pending = XPending(display);
-        if (child) delay = 100; /* only a running backend needs periodic reaping */
+        delay_reason = "none";
+        if (child) { delay = 100; delay_reason = "child"; }
         if (lut_mode && (child || queue.commit_requested) && lut_apply_tick-tick < delay)
-            delay = lut_apply_tick-tick;
+            { delay = lut_apply_tick-tick; delay_reason = "apply_tick"; }
         if(lut_mode&&live&&tick<lut_preview_until&&lut_preview_due-tick<delay)
-            delay=lut_preview_due-tick;
+            { delay=lut_preview_due-tick; delay_reason = "preview_due"; }
         if(lut_mode&&lut_reference_press&&!lut_reference_original&&lut_reference_pressed_at+300-tick<delay)
-            delay=lut_reference_pressed_at+300-tick;
-        if (services_visible() && service_due - tick < delay) delay = service_due - tick;
+            { delay=lut_reference_pressed_at+300-tick; delay_reason = "reference_press"; }
+        if (services_visible() && service_due - tick < delay)
+            { delay = service_due - tick; delay_reason = "service_due"; }
         if (!child && queue.desired >= 0 && (queue.desired != queue.applied || queue.commit_requested))
-            if (queue.due - tick < delay) delay = queue.due - tick;
+            if (queue.due - tick < delay) { delay = queue.due - tick; delay_reason = "queue_due"; }
         if (lifetime > 0 && !queue.close_requested && started + lifetime - tick < delay)
-            delay = started + lifetime - tick;
+            { delay = started + lifetime - tick; delay_reason = "lifetime"; }
         /* A hidden panel waiting for its backend cannot draw. Its stale frame
          * deadline must not turn the child wait into a zero-timeout spin. */
         if (!queue.close_requested) {
-            if (pending && next_frame - tick < delay) delay = next_frame - tick;
+            if (pending && next_frame - tick < delay) { delay = next_frame - tick; delay_reason = "pending_frame"; }
             /* A paint needs both deadlines. Waking on the older frame
              * deadline while the hold is active would busy-loop in select. */
             long long paint_due = next_frame > lut_paint_hold ? next_frame : lut_paint_hold;
-            if (dirty && paint_due - tick < delay) delay = paint_due - tick;
+            if (dirty && paint_due > tick && paint_due - tick < delay)
+                { delay = paint_due - tick; delay_reason = "paint_due"; }
+            /* A coalesced reference rebuild must still run once the burst ends,
+             * even when nothing else asks for a paint. It cannot run while a
+             * backend child or a commit owns the engine, so an already expired
+             * rebuild deadline must not keep select at zero timeout: the child
+             * reap tick is the wake source until the rebuild is possible. */
+            if (!child && !queue.commit_requested && lut_mode && (lut_reference_dirty || lut_reference_final)
+                && lut_reference_due > tick && lut_reference_due - tick < delay)
+                { delay = lut_reference_due - tick; delay_reason = "reference_due"; }
         }
         if (delay < 0) delay = 0;
+        if (!delay) {
+            zero_delay_wakes++;
+            for (unsigned int ri = 0; ri < sizeof reason_names / sizeof *reason_names; ri++)
+                if (!strcmp(delay_reason, reason_names[ri])) { reason_count[ri]++; break; }
+        }
         FD_ZERO(&fds);
         /* Pending events are already in the client queue. Watching a readable
          * server fd before the frame deadline would spin under an input burst. */
@@ -2019,8 +2157,14 @@ int main(int argc, char **argv) {
         fprintf(stderr,"PANEL_FINAL selected=%d field=%d strength=%d tune=%d,%d,%d,%d,%d,%d,%d\n",
             selected,lut_field,lut_strength,lut_tune.value[0],lut_tune.value[1],lut_tune.value[2],
             lut_tune.value[3],lut_tune.value[4],lut_tune.value[5],lut_tune.value[6]);
-    fprintf(stderr, "EXIT renders=%d elapsed_ms=%lld wakeups=%d blits=%d max_draw_ms=%lld\n",
-        render_count, now_ms()-started, wakeups, blits, max_draw_ms);
+    fprintf(stderr, "EXIT renders=%d elapsed_ms=%lld wakeups=%d blits=%d max_draw_ms=%lld zero_delay=%lld\n",
+        render_count, now_ms()-started, wakeups, blits, max_draw_ms, zero_delay_wakes);
+    if (zero_delay_wakes) {
+        fprintf(stderr, "PANEL_SPIN");
+        for (unsigned int ri = 0; ri < sizeof reason_names / sizeof *reason_names; ri++)
+            if (reason_count[ri]) fprintf(stderr, " %s=%lld", reason_names[ri], reason_count[ri]);
+        fprintf(stderr, "\n");
+    }
     fprintf(stderr,"PANEL_UPLOAD full=%u partial=%u skipped=%u pixels=%llu\n",xlib.surf->full_uploads,
         xlib.surf->partial_uploads,xlib.surf->skipped_uploads,xlib.surf->uploaded_pixels);
     fprintf(stderr,"PANEL_RASTER pixels=%llu\n",xlib.surf->raster_pixels);

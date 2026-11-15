@@ -22,8 +22,46 @@
  * operation or camera-memory read runs in the HTTP process. */
 static void custom_key_launch_panel(long long triggered_at);
 extern Bool XkbSetDetectableAutoRepeat(Display *,Bool,Bool *);
+/* Overridable so a measurement build can compare retry policies without a
+ * second source copy; the shipped defaults are unchanged. */
+#ifndef NX_CUSTOM_KEY_INIT_MS
 #define NX_CUSTOM_KEY_INIT_MS 2000
+#endif
 #define NX_CUSTOM_KEY_HEARTBEAT_MS 1500
+/* Boot window: the menu process can start after this helper. One helper
+ * polls the (small) X tree for a bounded time instead of failing on its
+ * first sample; failures before any READY state then retry quickly for a
+ * bounded number of attempts before the normal error ladder applies. The
+ * wait stays comfortably below the supervisor's NX_CUSTOM_KEY_INIT_MS so a
+ * boot-phase helper always exits as window-unavailable (fast retry), never
+ * as a helper timeout. */
+#ifndef NX_CUSTOM_KEY_WINDOW_WAIT_MS
+#define NX_CUSTOM_KEY_WINDOW_WAIT_MS 1500
+#endif
+#define NX_CUSTOM_KEY_WINDOW_POLL_MS 250
+/* Retry gap while the helper has never reached READY. The helper is alive for
+ * NX_CUSTOM_KEY_WINDOW_WAIT_MS and then absent for this gap, so the gap alone
+ * bounds how late a window that appears just after a helper exits can be
+ * detected. It was one second for every reason, which put up to ~1 s between
+ * the stock window appearing and the shortcut becoming usable (measured in the
+ * ARM fixture: worst 760 ms, median 480 ms).
+ *
+ * The two reasons are separated because they cost different things:
+ *  - window-unavailable (3) means the X server and the camera process are both
+ *    there and only the window is missing. That is self-limiting: the helper
+ *    still polls for NX_CUSTOM_KEY_WINDOW_WAIT_MS, so a short gap here only
+ *    overlaps the next wait instead of spawning in a tight loop.
+ *  - context/X unavailable (1, 2) fail in milliseconds, so a short gap would
+ *    spin fork+exec. They keep the one-second ladder entry. */
+#ifndef NX_CUSTOM_KEY_BOOT_RETRY_MS
+#define NX_CUSTOM_KEY_BOOT_RETRY_MS 100
+#endif
+#ifndef NX_CUSTOM_KEY_BOOT_STARTUP_RETRY_MS
+#define NX_CUSTOM_KEY_BOOT_STARTUP_RETRY_MS 1000
+#endif
+#ifndef NX_CUSTOM_KEY_BOOT_ATTEMPTS
+#define NX_CUSTOM_KEY_BOOT_ATTEMPTS 38
+#endif
 enum { CK_STARTING=1,CK_WAIT_RELEASE,CK_READY,CK_HOLDING,CK_FAILED };
 struct custom_key_message {
     unsigned int type,state,fallbacks,consumed,cancelled,forwarded,reason;
@@ -36,6 +74,13 @@ static struct {
     long long started,heartbeat,retry;
     unsigned int fallbacks,consumed,cancelled,forwarded,triggers,timeouts,failures;
     unsigned int failure_streak,context_stage,context_errno,context_address;
+    /* not_ready_streak spans helpers (consecutive context/display/window
+     * failures that never reached READY); ever_ready is per helper. */
+    unsigned int not_ready_streak,ever_ready;
+    /* IDLE-CHECK: cached resource answer plus its probe counters. */
+    int resources;
+    long long resource_at;
+    unsigned int resource_checks,resource_probes;
     char root[192];
 } custom_key_service;
 
@@ -187,8 +232,24 @@ static void custom_key_child(int fd,pid_t parent) {
     Bool supported=False;
     if(!XkbSetDetectableAutoRepeat(display,True,&supported) || !supported)goto done;
     message.reason=3;
-    unsigned windows=0;custom_key_find(display,DefaultRootWindow(display),0,&window,&windows);
-    if(windows!=1 || custom_key_x_error || !custom_key_window_pid(display,window,context.pid))goto done;
+    /* Boot: the menu window can appear after this helper. Poll the tree with
+     * a bounded deadline instead of failing on the first sample; the alarm
+     * still exits if the X connection itself stalls. */
+    unsigned windows=0;
+    long long window_loop_started=now_ms();
+    alarm((unsigned)(NX_CUSTOM_KEY_WINDOW_WAIT_MS/1000+2));
+    for(long long window_deadline=now_ms()+NX_CUSTOM_KEY_WINDOW_WAIT_MS;;) {
+        custom_key_x_error=0;window=None;windows=0;
+        custom_key_find(display,DefaultRootWindow(display),0,&window,&windows);
+        if(windows==1 && !custom_key_x_error && custom_key_window_pid(display,window,context.pid))break;
+        if(now_ms()>=window_deadline)goto done;
+        usleep(NX_CUSTOM_KEY_WINDOW_POLL_MS*1000);
+    }
+    alarm(0);
+    /* Report the wait-loop time itself: since_start_ms also includes fork,
+     * exec and XOpenDisplay, so it is not the bound the code enforces. */
+    fprintf(stderr,"NX_CUSTOM_BOOT window_loop_ms=%lld since_start_ms=%lld\n",
+            now_ms()-window_loop_started,now_ms()-custom_key_service.started);
     message.reason=4;struct custom_key_mapping initial_mapping;
     if(!custom_key_mapping_snapshot(display,&initial_mapping))goto done;
     code=initial_mapping.code[0];s1=initial_mapping.code[1];s2=initial_mapping.code[2];
@@ -311,14 +372,33 @@ done:
     message.type='F';message.state=CK_FAILED;if(!message.reason)message.reason=5;
     custom_key_send(fd,&message);close(fd);_exit(0);
 }
-static int custom_key_resources(void) {
+static int custom_key_resources_probe(void) {
     char launcher[256],binary[256],disabled[256],no_shortcut[256];const char *root=custom_key_service.root;
     if(!nx_mod_root_valid(root))return 0;
     snprintf(launcher,sizeof launcher,"%s/mfw-panel.sh",root);
     snprintf(binary,sizeof binary,"%s/bin/nxui.arm",root);
     snprintf(disabled,sizeof disabled,"%s/DISABLED",root);
     snprintf(no_shortcut,sizeof no_shortcut,"%s/NO_PANEL_SHORTCUT",root);
+    /* Four metadata lookups per probe; counted so the idle cost is measurable
+     * instead of asserted. */
+    custom_key_service.resource_probes+=4;
     return !access(launcher,R_OK) && !access(binary,X_OK) && access(disabled,F_OK) && access(no_shortcut,F_OK);
+}
+/* The daemon polls every 50 ms, so probing four paths on every pass cost ~120
+ * metadata lookups per second while nothing changed. The answer is cached for
+ * NX_CUSTOM_KEY_RESOURCE_TTL_MS and re-probed immediately before an action
+ * (helper launch) and whenever the status is queried with force=1. Keys and
+ * messages are still consumed every pass; only the resource answer is cached. */
+#define NX_CUSTOM_KEY_RESOURCE_TTL_MS 1000
+static int custom_key_resources(int force) {
+    long long now=now_ms();
+    custom_key_service.resource_checks++;
+    if(force || custom_key_service.resource_at<0 ||
+       now-custom_key_service.resource_at>=NX_CUSTOM_KEY_RESOURCE_TTL_MS) {
+        custom_key_service.resources=custom_key_resources_probe();
+        custom_key_service.resource_at=now;
+    }
+    return custom_key_service.resources;
 }
 static void custom_key_shutdown(void) {
     if(custom_key_service.fd>=0){close(custom_key_service.fd);custom_key_service.fd=-1;}
@@ -328,6 +408,7 @@ static void custom_key_shutdown(void) {
 }
 static void custom_key_init(void) {
     custom_key_service.fd=-1;
+    custom_key_service.resource_at=-1;   /* first poll probes for real */
     const char *enabled=getenv("NX_REMOTE_CUSTOM_KEY"),*root=getenv("NX300M_MOD_ROOT");
     if(!enabled || strcmp(enabled,"1") || !nx_mod_root_valid(root))return;
     snprintf(custom_key_service.root,sizeof custom_key_service.root,"%s",root);
@@ -363,12 +444,33 @@ static void custom_key_poll(void) {
             /* A missing context/X server must not cause a full reinitialization
              * every two seconds throughout a shooting session. */
             if(custom_key_service.failure_streak<6)custom_key_service.failure_streak++;
+            /* Boot vs real error: context/display/menu-window failures before
+             * the helper ever reached READY are the startup order, not a
+             * broken session — retry fast for a bounded count of attempts so
+             * the shortcut is available shortly after the window appears;
+             * anything else (or a long-lived absence) keeps the escalation. */
+            if(!custom_key_service.ever_ready &&
+               (custom_key_service.reason==1||custom_key_service.reason==2||custom_key_service.reason==3)) {
+                if(custom_key_service.not_ready_streak<=NX_CUSTOM_KEY_BOOT_ATTEMPTS)
+                    custom_key_service.not_ready_streak++;
+            } else custom_key_service.not_ready_streak=0;
             unsigned delay=2000u<<(custom_key_service.failure_streak?custom_key_service.failure_streak-1:0);
+            if(custom_key_service.not_ready_streak &&
+               custom_key_service.not_ready_streak<=NX_CUSTOM_KEY_BOOT_ATTEMPTS)
+                /* Only the window-missing exit is cheap to repeat: the next
+                 * helper spends most of its life polling for the window.
+                 * Context/X failures exit in milliseconds and keep the
+                 * slower entry so boot cannot turn into a fork loop. */
+                delay=custom_key_service.reason==3?NX_CUSTOM_KEY_BOOT_RETRY_MS
+                                                  :NX_CUSTOM_KEY_BOOT_STARTUP_RETRY_MS;
             if(delay>60000)delay=60000;
             custom_key_service.retry=now+delay;
+            fprintf(stderr,"NX_CUSTOM_RETRY reason=%u not_ready_streak=%u streak=%u retry_ms=%u\n",
+                    (unsigned)custom_key_service.reason,custom_key_service.not_ready_streak,
+                    custom_key_service.failure_streak,(unsigned)delay);
         }
     }
-    if(!custom_key_service.enabled || stopping || media_paused || !custom_key_resources()) {
+    if(!custom_key_service.enabled || stopping || media_paused || !custom_key_resources(0)) {
         custom_key_shutdown();return;
     }
     if(custom_key_service.pid && !custom_key_service.terminating) {
@@ -381,6 +483,11 @@ static void custom_key_poll(void) {
             custom_key_service.reason=(int)message.reason;
             custom_key_service.context_stage=message.context_stage;custom_key_service.context_errno=message.context_errno;
             custom_key_service.context_address=message.context_address;
+            if((message.state==CK_WAIT_RELEASE||message.state==CK_READY||message.state==CK_HOLDING) &&
+               !custom_key_service.ever_ready)
+                fprintf(stderr,"NX_CUSTOM_BOOT_READY helper_ms=%lld\n",now-custom_key_service.started);
+            if(message.state==CK_WAIT_RELEASE||message.state==CK_READY||message.state==CK_HOLDING)
+                custom_key_service.ever_ready=1;
             if(message.state==CK_READY && now-custom_key_service.started>=5000)
                 custom_key_service.failure_streak=0;
             custom_key_service.fallbacks=message.fallbacks;custom_key_service.consumed=message.consumed;
@@ -399,6 +506,9 @@ static void custom_key_poll(void) {
         }
     }
     if(custom_key_service.pid || now<custom_key_service.retry)return;
+    /* A launch is an action: re-probe even inside the cache window so a just
+     * created DISABLED or a removed launcher is honoured immediately. */
+    if(!custom_key_resources(1)){custom_key_shutdown();return;}
     int sockets[2];
     if(socketpair(AF_UNIX,SOCK_DGRAM,0,sockets)){custom_key_service.retry=now+2000;return;}
     fcntl(sockets[0],F_SETFD,FD_CLOEXEC);fcntl(sockets[1],F_SETFD,FD_CLOEXEC);
@@ -408,6 +518,7 @@ static void custom_key_poll(void) {
     if(child<0){close(sockets[0]);custom_key_service.retry=now+2000;return;}
     custom_key_service.pid=child;custom_key_service.fd=sockets[0];custom_key_service.state=CK_STARTING;custom_key_service.reason=0;
     custom_key_service.started=custom_key_service.heartbeat=now;
+    custom_key_service.ever_ready=0;   /* per helper; not_ready_streak persists across boot attempts */
 }
 static void custom_key_status(char *json,size_t capacity) {
     const char *state=!custom_key_service.enabled?"disabled":stopping?"stopping":media_paused?"paused":
@@ -421,10 +532,12 @@ static void custom_key_status(char *json,size_t capacity) {
     const char *stages[]={"none","stock-executable","proc-scan","stock-process-count","starttime","mem-open","mem-read","accessor-mismatch","identity"};
     const char *context=custom_key_service.context_stage<sizeof stages/sizeof *stages?stages[custom_key_service.context_stage]:"unknown";
     long long retry=custom_key_service.retry-now_ms();if(retry<0 || custom_key_service.pid)retry=0;
-    snprintf(json,capacity,"{\"enabled\":%s,\"mode\":\"async\",\"state\":\"%s\",\"reason\":\"%s\",\"helper_pid\":%ld,\"triggers\":%u,\"fallbacks\":%u,\"consumed\":%u,\"cancelled\":%u,\"forwarded\":%u,\"timeouts\":%u,\"failures\":%u,\"failure_streak\":%u,\"retry_in_ms\":%lld,\"context_stage\":\"%s\",\"context_errno\":%u,\"context_address\":%u}",
+    snprintf(json,capacity,"{\"enabled\":%s,\"mode\":\"async\",\"state\":\"%s\",\"reason\":\"%s\",\"helper_pid\":%ld,\"triggers\":%u,\"fallbacks\":%u,\"consumed\":%u,\"cancelled\":%u,\"forwarded\":%u,\"timeouts\":%u,\"failures\":%u,\"failure_streak\":%u,\"boot_retries\":%u,\"resource_checks\":%u,\"resource_probes\":%u,\"retry_in_ms\":%lld,\"context_stage\":\"%s\",\"context_errno\":%u,\"context_address\":%u}",
         custom_key_service.enabled?"true":"false",state,reason,(long)custom_key_service.pid,
         custom_key_service.triggers,custom_key_service.fallbacks,custom_key_service.consumed,
         custom_key_service.cancelled,custom_key_service.forwarded,custom_key_service.timeouts,custom_key_service.failures,
-        custom_key_service.failure_streak,retry,context,custom_key_service.context_errno,custom_key_service.context_address);
+        custom_key_service.failure_streak,custom_key_service.not_ready_streak,
+        custom_key_service.resource_checks,custom_key_service.resource_probes,
+        retry,context,custom_key_service.context_errno,custom_key_service.context_address);
 }
 #endif

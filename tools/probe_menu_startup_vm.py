@@ -222,7 +222,7 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
     })
 
 
-def linux_worker(action, payload):
+def linux_worker(action, payload, timeout=120):
     arm_vm.SERIAL, arm_vm.QMP = SOCKET + '-serial.sock', SOCKET + '-qmp.sock'
     if action == 'start':
         try:
@@ -250,14 +250,15 @@ def linux_worker(action, payload):
         return {'pid': process.pid}
     if action == 'stop':
         return arm_vm.qmp('quit')
-    return arm_vm.native_exec(base64.b64decode(payload).decode(), timeout=120)
+    return arm_vm.native_exec(base64.b64decode(payload).decode(), timeout=timeout)
 
 
-def call(action, command=''):
+def call(action, command='', timeout=120):
     result = subprocess.run(['wsl.exe', '-d', 'Debian', '-u', 'root', '-e', 'python3',
-                             linux_path(__file__), '--linux', '--output-dir', linux_path(OUT), action,
+                             linux_path(__file__), '--linux', '--output-dir', linux_path(OUT),
+                             '--timeout', str(timeout), action,
                              base64.b64encode(command.encode()).decode()],
-                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=135)
+                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout+15)
     if result.returncode:
         raise RuntimeError(result.stderr or result.stdout)
     return json.loads(result.stdout)
@@ -345,13 +346,14 @@ def main():
     parser.add_argument('--linux', action='store_true')
     parser.add_argument('--output-dir', type=Path, default=OUT)
     parser.add_argument('--baseline-overlay', type=Path, help='Recorded earlier menu overlay to run in the same guest')
+    parser.add_argument('--timeout', type=int, default=120, help='Guest exec deadline for this call')
     parser.add_argument('action', choices=['run', 'start', 'stop', 'exec', 'analyze'], nargs='?', default='run')
     parser.add_argument('payload', nargs='?', default='')
     args = parser.parse_args()
     OUT = args.output_dir.resolve()
     BASELINE_OVERLAY = args.baseline_overlay.resolve() if args.baseline_overlay else None
     if args.linux:
-        print(json.dumps(linux_worker(args.action, args.payload)))
+        print(json.dumps(linux_worker(args.action, args.payload, args.timeout)))
     elif args.action == 'run':
         run()
     elif args.action == 'analyze':

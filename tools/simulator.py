@@ -190,7 +190,9 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             path = self.path[len('/remote'):] if self.path.startswith('/remote') else self.path
             upload = path.split('?', 1)[0] == '/api/v1/gallery/upload'
-            limit = 120 * 1024 * 1024 if upload else 1048576
+            # Same receive limit the native backend enforces and reports in
+            # /api/v1/gallery/upload/capabilities: uploads are buffered whole.
+            limit = 24 * 1024 * 1024 if upload else 1048576
             if length < 0 or length > limit or (upload and not length):
                 raise ValueError('请求为空或过大')
             if self.headers.get('Transfer-Encoding'):
