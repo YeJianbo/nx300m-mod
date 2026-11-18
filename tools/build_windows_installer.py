@@ -19,14 +19,48 @@ OUT = ROOT / 'outputs/releases/windows-updater-20261106'
 CANDIDATE = ROOT / 'outputs/review/2026-11-06-device-feedback/cold-boot-candidate'
 
 
-def main(public=False, version='v0.1.0-preview.6', backend_profile='auto', reuse_dist=False):
+def main(public=False, version='v0.1.0-preview.6', backend_profile='auto', reuse_dist=False,
+         release_sd=None):
     if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyz.-' for c in version):
         raise ValueError('版本名无效。')
-    record = json.loads((CANDIDATE / 'manifest.json').read_text(encoding='utf-8'))
-    evidence = json.loads((CANDIDATE / 'deployment-result.json').read_text(encoding='utf-8'))
-    if not evidence.get('card_written') or evidence.get('readback_verified') != 6:
-        raise ValueError('缺少已部署候选的文件回读记录')
-    first = OUT / ('public-first-install' if public else 'first-install')
+    if release_sd is not None:
+        if not public:
+            raise ValueError('冻结的公开 SD 包需与 --public 一起使用。')
+        release_sd = release_sd.resolve()
+        published = json.loads((release_sd.parent/'publication-result.json').read_text(encoding='utf-8'))
+        accepted = next(a for a in published['assets_verified'] if a['name'] == release_sd.name)
+        if (not published['published'] or published['url'].rsplit('/', 1)[-1] != version
+                or hashlib.sha256(release_sd.read_bytes()).hexdigest() != accepted['sha256']):
+            raise ValueError('SD 包与已发布文件不一致。')
+        first = Path(tempfile.mkdtemp(prefix=version+'-first-', dir=OUT))
+        files = {}
+        with zipfile.ZipFile(release_sd) as archive:
+            if archive.testzip() is not None:
+                raise ValueError('SD 包校验失败。')
+            for name in archive.namelist():
+                if name == 'autoexec.sh' or name.startswith(('nx300m-mod/', 'nx300m-lens-debug/')):
+                    if not name.endswith('/'):
+                        files[name] = archive.read(name)
+        # Retired launchers retain an alias; use the same checked menu there.
+        files[PREFIX+'fn-panel/bin/nxui.arm'] = files[PREFIX+'bin/nxui.arm']
+        entries = {}
+        from nx300m_installer import safe_path
+        for name, data in files.items():
+            target = safe_path(first/'payload', name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            entries[name] = {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+        first_manifest = {'schema': 1, 'kind': 'nx300m-first-install-local-candidate',
+                          'distribution': 'public-original-looks', 'files': entries,
+                          'source_commit': published['source_commit']}
+        (first/'manifest.json').write_text(json.dumps(first_manifest, indent=2)+'\n', encoding='utf-8')
+        record = {'requires': {}, 'payload': {}}
+    else:
+        record = json.loads((CANDIDATE / 'manifest.json').read_text(encoding='utf-8'))
+        evidence = json.loads((CANDIDATE / 'deployment-result.json').read_text(encoding='utf-8'))
+        if not evidence.get('card_written') or evidence.get('readback_verified') != 6:
+            raise ValueError('缺少已部署候选的文件回读记录')
+        first = OUT / ('public-first-install' if public else 'first-install')
     first_record = json.loads((first / 'manifest.json').read_text(encoding='utf-8'))
     for name, item in first_record['files'].items():
         data = (first / 'payload' / name).read_bytes()
@@ -35,11 +69,21 @@ def main(public=False, version='v0.1.0-preview.6', backend_profile='auto', reuse
     if backend_profile == 'auto':
         backend_profile, _ = resolve_backend_profile(
             lambda name: (first / 'payload' / name).read_bytes())
-    if backend_profile not in BACKEND_PROFILES:
+    if backend_profile == 'card-manifest':
+        backend_files = {
+            name: hashlib.sha256((first / 'payload' / PREFIX / name).read_bytes()).hexdigest()
+            for name in ('ipcs-diagnostic/lib/smartfilter_ram.bin',
+                         'ipcs-diagnostic/bin/smartfilter_loader.arm',
+                         'ipcs-diagnostic/bin/smartfilter_probe_launcher.arm',
+                         'smartfilter-preview.sh')
+        }
+    elif backend_profile in BACKEND_PROFILES:
+        backend_files = BACKEND_PROFILES[backend_profile]
+    else:
         raise ValueError('未知后端版本档案：' + backend_profile)
-    backend_files = BACKEND_PROFILES[backend_profile]
     backend = verify_backend(
-        lambda name: (first / 'payload' / name).read_bytes(), backend_files)
+        lambda name: (first / 'payload' / name).read_bytes(), backend_files,
+        profile=backend_profile)
     verify_wifi_payload(lambda name: (first / 'payload' / name).read_bytes())
     complete = verify_complete(
         lambda name: (first / 'payload' / name).read_bytes(), backend_files=backend_files)
@@ -95,7 +139,7 @@ def main(public=False, version='v0.1.0-preview.6', backend_profile='auto', reuse
                 'requires': {PREFIX+k:v for k,v in backend_files.items()},
                 'backend': backend, 'complete_runtime': complete, 'payload': {}}
     for name in first_record['files']:
-        if not is_core(name):
+        if not is_core(name) or name == PREFIX + 'RESTART_SERVICE':
             continue
         data = (first / 'payload' / name).read_bytes()
         asset = 'payload/' + name
@@ -203,8 +247,11 @@ if __name__ == '__main__':
     parser.add_argument('--public',action='store_true')
     parser.add_argument('--version',default='v0.1.0-preview.6')
     parser.add_argument('--backend-profile', default='auto',
-                        choices=('auto', *BACKEND_PROFILES))
+                        choices=('auto', 'card-manifest', *BACKEND_PROFILES))
     parser.add_argument('--reuse-dist', action='store_true')
+    parser.add_argument('--release-sd', type=Path,
+                        help='已发布并记录 SHA256 的冻结 SD 包，避免混入当前相机工作产物')
     args=parser.parse_args()
     main(public=args.public, version=args.version,
-         backend_profile=args.backend_profile, reuse_dist=args.reuse_dist)
+         backend_profile=args.backend_profile, reuse_dist=args.reuse_dist,
+         release_sd=args.release_sd)

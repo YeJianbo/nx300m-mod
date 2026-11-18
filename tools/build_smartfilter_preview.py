@@ -73,6 +73,8 @@ SESSION_BINDINGS = [
     ('liveview_changed',0,'_ZN9CLiveview24checkDataChangeToRestartEi'),
     ('liveview_change_state',0,'_ZN9CLiveview11changeStateENS_15eLIVEVIEW_STATEE'),
     ('liveview_memory_restart',0,'_ZN9CLiveview30changeMemoryAreaRestartProcessEi'),
+    ('liveview_restart_allowed',0,'_ZN9CLiveview25checkModeForRestartEnableEv'),
+    ('capture_counter_ptr',0,'_ZN9SingletonI15CCaptureCounterE11m_pInstanceE'),
 ]
 
 

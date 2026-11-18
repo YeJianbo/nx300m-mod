@@ -329,6 +329,8 @@ static int resident(struct target *t,const struct ram_state *s,const struct nx_s
        cfg->liveview_instance!=expected.liveview_instance||cfg->liveview_changed!=expected.liveview_changed||
        cfg->liveview_change_state!=expected.liveview_change_state||
        cfg->liveview_memory_restart!=expected.liveview_memory_restart||
+       cfg->liveview_restart_allowed!=expected.liveview_restart_allowed||
+       cfg->capture_counter_ptr!=expected.capture_counter_ptr||
        runtime->session.state>NX_IPS_FAILED||runtime->session.held>2||
        runtime->session_initialized>3||runtime->session_started>3) return 0;
 #endif
@@ -363,7 +365,15 @@ static void status(unsigned pid,const char *command,int installed,const struct n
         "\"mapping_retained\":%s,\"diag_window\":%u,\"diag_frames\":%u,\"diag_frozen\":%u,\"diag_dropped\":%u,\"diag_clock_errors\":%u,"
         "\"start\":%llu,\"build\":%u,\"token\":\"%s\",\"probe_once\":%u,\"probe_state\":%u,\"probe_outcome\":%u,"
         "\"refresh_requests\":%u,\"refresh_dispatches\":%u,\"refresh_error\":%d,"
-        "\"refresh_pending\":%u,\"refresh_resumes\":%u,\"refresh_state\":%u,\"refresh_wakeups\":%u,\"hardware_pixels_verified\":false}\n",
+        "\"refresh_pending\":%u,\"refresh_resumes\":%u,\"refresh_state\":%u,\"refresh_wakeups\":%u,"
+#ifdef NX_SFR_SESSION
+        "\"session\":{\"opens\":%u,\"closes\":%u,\"frames\":%u,\"busy\":%u,\"lock_busy\":%u,"
+        "\"idle_releases\":%u,\"drain_timeouts\":%u,"
+        "\"stop_drain\":[%u,%u,%u,%u],\"stop_native\":[%u,%u,%u],"
+        "\"b2y_drain\":[%u,%u,%u,%u],\"b2y_open\":[%u,%u,%u],\"b2y_lease\":[%u,%u,%u],"
+        "\"start\":[%u,%u,%u],\"refresh_ms\":[%u,%u],\"sensor_fps\":[%u,%u],\"refresh_deferred\":%u},"
+#endif
+        "\"hardware_pixels_verified\":false}\n",
         command,pid,installed?"true":"false",c->enabled?"true":"false",NX_SFR_LIVEVIEW_MODE,NX_SFR_STILL_HOST_MODE,c->look_id,c->generation,
         s->bridge.stats.applied_generation,c->strength,s->initialized,s->inflight,s->backend_active,s->captures,s->capture_waits,s->control_pause,
         s->bridge.stats.frames,s->bridge.stats.rendered,s->bridge.stats.passthrough,
@@ -379,7 +389,20 @@ static void status(unsigned pid,const char *command,int installed,const struct n
         c->abi==NX_SFR_ABI?"true":"false",s->timing.window,s->timing.next_frame,
         s->timing.frozen,s->timing.dropped,s->timing.clock_errors,
         start,NX_SFR_BUILD,token,c->probe_once,s->probe.state,s->probe.outcome,refresh_requests,refresh_dispatches,refresh_error,
-        refresh_pending,refresh_resumes,refresh_state,refresh_wakeups);
+        refresh_pending,refresh_resumes,refresh_state,refresh_wakeups
+#ifdef NX_SFR_SESSION
+        ,s->session.opens,s->session.closes,s->session.frames,s->session.busy,s->session.lock_busy,
+        s->session.idle_releases,s->session.drain_timeouts,
+        s->stop_drain_calls,s->stop_drain_waits,s->stop_drain_total_ms,s->stop_drain_max_ms,
+        s->stop_native_calls,s->stop_native_total_ms,s->stop_native_max_ms,
+        s->b2y_drain_calls,s->b2y_drain_waits,s->b2y_drain_total_ms,s->b2y_drain_max_ms,
+        s->b2y_open_calls,s->b2y_open_total_ms,s->b2y_open_max_ms,
+        s->b2y_lease_calls,s->b2y_lease_total_ms,s->b2y_lease_max_ms,
+        s->start_calls,s->start_total_ms,s->start_max_ms,
+        s->refresh_total_ms,s->refresh_max_ms,
+        s->active_sensor_fps,s->saved_sensor_fps,s->refresh_deferred
+#endif
+        );
 }
 #ifdef NX_SFR_SESSION
 static void session_export_to(FILE *out,const struct nx_sfr_config *c,const struct nx_sfr_runtime *s,unsigned pid,
@@ -392,14 +415,33 @@ static void session_export_to(FILE *out,const struct nx_sfr_config *c,const stru
         fprintf(out,"{\"type\":\"ipcs_open_control\",\"begin\":[%u,%u],\"end\":[%u,%u]}\n",v->begin.sec,v->begin.nsec,v->end.sec,v->end.nsec);
     }
     fprintf(out,"{\"type\":\"ipcs_session\",\"pid\":%u,\"build\":%u,\"mode\":%u,\"state\":%u,\"held\":%u,"
-           "\"owner_tid\":%u,\"active\":%u,\"opens\":%u,\"closes\":%u,\"busy\":%u,\"error\":%d,"
+           "\"owner_tid\":%u,\"active\":%u,\"opens\":%u,\"closes\":%u,\"frames\":%u,\"busy\":%u,\"lock_busy\":%u,\"idle_releases\":%u,\"error\":%d,"
            "\"external_stop\":%u,\"drain_timeouts\":%u,\"open_errors\":%u,\"close_errors\":%u,"
            "\"unlock_errors\":%u,\"recoveries\":%u,\"recovery_closes\":%u,"
-           "\"b2y_leases\":%u,\"stream_stopped\":%u,\"trace_next\":%u,\"trace_dropped\":%u}\n",
-           pid,NX_SFR_BUILD,c->session_mode,p->state,p->held,p->owner_tid,p->active,p->opens,p->closes,p->busy,p->error,
+           "\"b2y_leases\":%u,\"stream_stopped\":%u,"
+           "\"stop_drain_calls\":%u,\"stop_drain_waits\":%u,\"stop_drain_total_ms\":%u,\"stop_drain_max_ms\":%u,"
+           "\"stop_native_calls\":%u,\"stop_native_total_ms\":%u,\"stop_native_max_ms\":%u,"
+           "\"b2y_drain_calls\":%u,\"b2y_drain_waits\":%u,\"b2y_drain_total_ms\":%u,\"b2y_drain_max_ms\":%u,"
+           "\"b2y_open_calls\":%u,\"b2y_open_total_ms\":%u,\"b2y_open_max_ms\":%u,"
+           "\"b2y_lease_calls\":%u,\"b2y_lease_total_ms\":%u,\"b2y_lease_max_ms\":%u,"
+           "\"start_calls\":%u,\"start_total_ms\":%u,\"start_max_ms\":%u,"
+           "\"refresh_total_ms\":%u,\"refresh_max_ms\":%u,"
+           "\"sensor_fps\":%u,\"saved_sensor_fps\":%u,\"refresh_deferred\":%u,"
+           "\"trace_next\":%u,\"trace_dropped\":%u}\n",
+           pid,NX_SFR_BUILD,c->session_mode,p->state,p->held,p->owner_tid,p->active,p->opens,p->closes,
+           p->frames,p->busy,p->lock_busy,p->idle_releases,p->error,
            p->external_stop,p->drain_timeouts,p->open_errors,p->close_errors,p->unlock_errors,
            p->recoveries,p->recovery_closes,
-           s->b2y_leases,s->stream_stopped,s->open_trace.next,s->open_trace.dropped);
+           s->b2y_leases,s->stream_stopped,
+           s->stop_drain_calls,s->stop_drain_waits,s->stop_drain_total_ms,s->stop_drain_max_ms,
+           s->stop_native_calls,s->stop_native_total_ms,s->stop_native_max_ms,
+           s->b2y_drain_calls,s->b2y_drain_waits,s->b2y_drain_total_ms,s->b2y_drain_max_ms,
+           s->b2y_open_calls,s->b2y_open_total_ms,s->b2y_open_max_ms,
+           s->b2y_lease_calls,s->b2y_lease_total_ms,s->b2y_lease_max_ms,
+           s->start_calls,s->start_total_ms,s->start_max_ms,
+           s->refresh_total_ms,s->refresh_max_ms,
+           s->active_sensor_fps,s->saved_sensor_fps,s->refresh_deferred,
+           s->open_trace.next,s->open_trace.dropped);
     for(unsigned i=0;i<NX_IPCT_RECORDS&&i<s->open_trace.next;++i) {
         const struct nx_ipct_record *r=&s->open_trace.records[i];
         fprintf(out,"{\"type\":\"ipcs_open_call\",\"pid\":%u,\"build\":%u,\"committed\":%u,\"seq\":%u,"
@@ -463,6 +505,10 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     if(!state_path(pid,path,sizeof path)||!blob_read(blob_path,&blob,&h)||
        (!strcmp(command,"apply")&&(!id_valid(look)||(!probe_once_requested&&!table_read(table,requested))))) {
         fprintf(stderr,"Invalid native module/table or non-RAM state directory; no target changed.\n"); free(blob); return 3;
+    }
+    if((!strcmp(command,"apply")||!strcmp(command,"stock"))&&
+       !wait_for_liveview("SmartFilter",pid,12000,fixture)) {
+        free(blob);return 75;
     }
     unsigned long long admission_at=now_ms();int reused=t->mem>=0;
     if(!(reused?target_refresh(pid,fixture,t):target_open(pid,fixture,t))) {

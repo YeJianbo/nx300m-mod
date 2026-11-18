@@ -93,7 +93,9 @@ job=$(mktemp -d /tmp/nx300m-sf-job.XXXXXX) || fail 'cannot allocate private RAM 
 copy_tool=$HERE/bin/ram_asset_verify.arm
 [ -f "$copy_tool" ] && [ ! -L "$copy_tool" ] && [ -x "$copy_tool" ] || fail 'RAM asset copy verifier unavailable'
 set -- --copy "$HERE" "$job"
-for pair in bin/smartfilter_probe_launcher.arm:launcher bin/smartfilter_loader.arm:loader.arm lib/smartfilter_ram.bin:blob.bin smartfilter-probe-collector.sh:collector.sh; do
+pairs='bin/smartfilter_probe_launcher.arm:launcher bin/smartfilter_loader.arm:loader.arm lib/smartfilter_ram.bin:blob.bin'
+[ "$command" != probe-once ] || pairs="$pairs smartfilter-probe-collector.sh:collector.sh"
+for pair in $pairs; do
     resource=${pair%:*}; destination=${pair#*:}
     if [ "$open_diagnostic" = 1 ]; then
         case $resource in bin/*|lib/*) resource=ipcs-diagnostic/$resource ;; esac
@@ -322,4 +324,21 @@ if [ "$open_diagnostic:$command" = 1:test-monochrome-timing ]; then
                 printf 'KDD 短采样未启动；原 Open 诊断仍然有效。\n' >&2
         fi
     fi
+fi
+
+# Temporary playback-freeze diagnostic: opt-in only via LIVEVIEW_WATCH marker or
+# NX_LIVEVIEW_WATCH=1 to avoid continuous /proc/mem polling and SD log I/O.
+if [ "${NX_LIVEVIEW_WATCH:-0}" = 1 ] || [ -f "$source_root/LIVEVIEW_WATCH" ]; then
+    case $open_diagnostic:$command in
+        1:sync|1:enable-s2)
+            observer=$HERE/bin/liveview_observer.arm
+            if [ -f "$observer" ] && [ ! -L "$observer" ]; then
+                if cp "$observer" "$job/liveview-observer.arm" && chmod 500 "$job/liveview-observer.arm"; then
+                    (
+                        exec 9>&- 6>&-
+                        exec setsid "$job/liveview-observer.arm" "$camera_pid" "$camera_start" "$job/blob.bin" "$source_id"
+                    ) </dev/null > "$job/watch-launch.log" 2>&1 &
+                fi
+            fi ;;
+    esac
 fi

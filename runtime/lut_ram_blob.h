@@ -18,4 +18,10 @@ struct nx_lut_ram_config {
  * publishes). The loader header carries the stride; readers accept V1,
  * diagnostic and this stride. */
 #define NX_LUT_RAM_CONTEXT_STRIDE_STATS_V3 4732U
+/* V4 duplicates the table cache per source branch (tables[2][TOTAL] +
+ * loaded_slot, stat_reads): a branch flip on one thread must never trigger a
+ * synchronous SD read inside the IPCS callback. Readers accept every earlier
+ * stride; recovery is header-driven, so older resident images stay
+ * recoverable. */
+#define NX_LUT_RAM_CONTEXT_STRIDE_DUAL_V4 9120U
 #endif

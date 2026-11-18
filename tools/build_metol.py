@@ -41,7 +41,7 @@ ref=work/reference/metol/test_server/nxui
  -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$rf/usr/lib" -Wl,-rpath-link,"$rf/lib" \
  mod/metol/nxui.c "$ref/nxui_model.c" "$ref/nxui_services.c" \
  work/reference/metol/test_server/filmlab/src/crt0_arm.S \
- "$rf/usr/lib/libX11.so.6" "$rf/usr/lib/libXtst.so.6" "$rf/usr/lib/libfreetype.so.6" \
+ "$rf/usr/lib/libX11.so.6" "$rf/usr/lib/libXext.so.6" "$rf/usr/lib/libXtst.so.6" "$rf/usr/lib/libfreetype.so.6" \
  "$rf/lib/libc-2.13.so" "$rf/lib/librt.so.1" -lgcc -o outputs/metol/nxui.arm
 "$tc/bin/arm-linux-gnueabi-readelf" -V outputs/metol/nxui.arm > outputs/metol/versions.txt
 "$tc/bin/arm-linux-gnueabi-readelf" -d outputs/metol/nxui.arm > outputs/metol/needed.txt

@@ -124,8 +124,11 @@ def collect():
     result = call('exec', f'/rescue/busybox tar -czf {archive} -C /arm-vm mfw-results && '
                          f'/rescue/busybox sha256sum {archive} && '
                          f"/rescue/busybox stat -c 'ARCHIVE_BYTES=%s' {archive}")
-    checksum = re.search(r'(?m)^([0-9a-f]{64})  '+re.escape(archive)+r'\r?$', result['output'])
-    length = re.search(r'(?m)^ARCHIVE_BYTES=(\d+)\r?$', result['output'])
+    # An interleaved emulated-kernel line (e.g. hrtimer warning) can share a
+    # serial line with the metadata, so the anchors stay off the tail; the
+    # assembled archive is still verified against the guest SHA256 below.
+    checksum = re.search(r'(?m)^([0-9a-f]{64})  '+re.escape(archive), result['output'])
+    length = re.search(r'ARCHIVE_BYTES=(\d+)', result['output'])
     if result['exit_code'] or not checksum or not length:
         raise RuntimeError('Evidence archive metadata missing')
     size = int(length.group(1))
@@ -140,7 +143,7 @@ def collect():
             fetched = call('exec', f'/rescue/busybox dd if={archive} of={chunk} bs=4096 '
                 f'skip={offset//4096} count=1 2>/dev/null && '
                 f'/rescue/busybox sha256sum {chunk} && /rescue/busybox base64 {chunk}')
-            digest = re.search(r'(?m)^([0-9a-f]{64})  '+re.escape(chunk)+r'\r?$', fetched['output'])
+            digest = re.search(r'(?m)^([0-9a-f]{64})  '+re.escape(chunk), fetched['output'])
             try:
                 data = base64.b64decode(''.join(line.strip() for line in fetched['output'].splitlines()
                     if re.fullmatch('[A-Za-z0-9+/=]+', line.strip())), validate=True)

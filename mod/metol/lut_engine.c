@@ -17,6 +17,9 @@ static unsigned long long control_ms(void) {
 static int service_control(const char *name,const char *operation,int optional) {
     unsigned long long started=control_ms();
     fprintf(stderr,"LUT_CONTROL script=%s operation=%s phase=begin\n",name,operation);
+    char began[160];
+    snprintf(began,sizeof began,"script=%s op=%s",name,operation);
+    nx_lut_journal("control-begin",began);
     const char *data=nx_lut_data_root(),*runtime=nx_mod_root();
     const char *base=getenv("NX300M_MFW_RAM_BASE");
     char directory[PATH_MAX],state_dir[PATH_MAX],script[PATH_MAX],canonical[PATH_MAX],identity[64];
@@ -83,18 +86,26 @@ static int service_control(const char *name,const char *operation,int optional) 
                     name,operation,(long)child);
             fprintf(stderr,"CONTROL-UNCERTAIN script=%s operation=%s; chain left running for its recovery owner\n",
                     name,operation);
+            nx_lut_journal("control-uncertain",began);
             return 4;
         }
     }
     int result=child>0&&done==child&&WIFEXITED(status)?WEXITSTATUS(status):4;
     fprintf(stderr,"LUT_CONTROL script=%s operation=%s phase=end rc=%d elapsed_ms=%llu\n",name,operation,result,control_ms()-started);
+    char ended[160];
+    snprintf(ended,sizeof ended,"script=%s op=%s rc=%d elapsed_ms=%llu",name,operation,result,control_ms()-started);
+    nx_lut_journal(result?"control-failed":"control-end",ended);
     return result;
 }
 static int ensure_adapter(void) {
     if(nx_lut_hook_ready()) return 0;
     int result=service_control("lut-load.sh","apply",0);
     if(result) return result;
-    if(!nx_lut_hook_ready()) { fputs("REJECT native LUT adapter did not become ready\n",stderr);return 3; }
+    if(!nx_lut_hook_ready()) {
+        fputs("REJECT native LUT adapter did not become ready\n",stderr);
+        nx_lut_journal("adapter-reject","hook not ready after successful loader apply");
+        return 3;
+    }
     return 0;
 }
 static int stage(const char *path,unsigned int strength) {
@@ -103,6 +114,9 @@ static int stage(const char *path,unsigned int strength) {
     fprintf(stderr,"LUT_CONTROL phase=adapter-ready elapsed_ms=%llu\n",control_ms()-started);
     unsigned int generation=0;int result=nx_lut_stage_with_strength(path,strength,&generation);
     fprintf(stderr,"LUT_CONTROL phase=selection-complete rc=%d elapsed_ms=%llu\n",result,control_ms()-started);
+    char st[224];
+    snprintf(st,sizeof st,"rc=%d strength=%u path=%s",result,strength,path);
+    nx_lut_journal(result?"stage-failed":"stage",st);
     if (!result) printf("STAGED generation=%u strength=%u path=%s; awaiting original firmware LUT callback\n",generation,strength,path);
     return result;
 }
@@ -172,8 +186,12 @@ static int action(int argc,char **argv) {
          * meaning. Missing records and damaged records stay distinct. */
         const char *boot_root=nx_lut_data_root();if(!boot_root)return 4;
         struct nx_lut_choice boot_choice;int boot_recorded=0;
-        if(!nx_lut_choice_read_root_full(boot_root,&boot_choice,&boot_recorded))
+        if(!nx_lut_choice_read_root_full(boot_root,&boot_choice,&boot_recorded)) {
+            char detail[64];
+            snprintf(detail,sizeof detail,"choice_recorded=%d",boot_recorded);
+            nx_lut_journal("boot-failed",detail);
             return boot_recorded?5:0;
+        }
         char path[256],id[64];unsigned gen,strength;struct nx_lut_tune tune;
         if(boot_choice.off) {
             if(!access(NX_LUT_RAM_MARKER,F_OK)||!access("/var/run/nx300m-preview-backend",F_OK)||nx_lut_hook_ready()) {
@@ -186,12 +204,20 @@ static int action(int argc,char **argv) {
         }
         snprintf(path,sizeof path,"%s",boot_choice.table);
         strength=boot_choice.strength;gen=boot_choice.generation;(void)gen;
-        if(!nx_lut_selection_id(path,id,&tune))return 5;
+        if(!nx_lut_selection_id(path,id,&tune)) {
+            nx_lut_journal("boot-failed","saved selection id unreadable");
+            return 5;
+        }
         struct nx_lut_look looks[NX_LUT_MAX_LOOKS];int count=0,result=nx_lut_catalog_index(looks,&count);
-        if(result)return result;
+        if(result) { nx_lut_journal("boot-failed","catalog unavailable");return result; }
         for(int i=0;i<count;i++)if(!strcmp(id,looks[i].id)) {
             result=nx_tune_cache(id,&tune,strength,path);
             return result?result:stage(path,strength);
+        }
+        {
+            char detail[96];
+            snprintf(detail,sizeof detail,"saved look=%s missing from catalog",id);
+            nx_lut_journal("boot-failed",detail);
         }
         return 5;
     }
@@ -247,17 +273,19 @@ static int action(int argc,char **argv) {
         /* Save Off first, so an interrupted stop cannot revive an old look.
          * Stock here must not start another stock-only preview session. */
         if(setenv("NX300M_LUT_SKIP_PREVIEW_SYNC","1",1)) return 4;
-        int result=nx_lut_stock();if(result) return result;
+        int result=nx_lut_stock();
+        if(result) { nx_lut_journal("disable-failed","stock selection rc != 0");return result; }
         /* Ordinary Off drains the same native preview session as restore,
          * without attaching a second time just to export diagnostics. The
          * wrapper's `pause` keeps the user's preview preference: suspending
          * preview with the LUT is not the user turning preview off. */
         result=service_control("smartfilter-preview.sh","pause",1);
-        if(result) { fputs("LUT_OFF_FAILED preview stop incomplete\n",stderr);return result; }
+        if(result) { fputs("LUT_OFF_FAILED preview stop incomplete\n",stderr);nx_lut_journal("disable-failed","preview stop incomplete");return result; }
         if(!access(NX_LUT_RAM_MARKER,F_OK)||nx_lut_hook_ready()) {
             result=service_control("lut-load.sh","restore",0);
-            if(result) { fputs("LUT_OFF_FAILED native Still restore incomplete\n",stderr);return result; }
+            if(result) { fputs("LUT_OFF_FAILED native Still restore incomplete\n",stderr);nx_lut_journal("disable-failed","still restore incomplete");return result; }
         }
+        nx_lut_journal("disable","native_still_restored=true preview_processing=false");
         puts("LUT_DISABLED native_still_restored=true preview_processing=false");return 0;
     }
     if (!strcmp(argv[1],"off") || !strcmp(argv[1],"stock")) {
@@ -289,11 +317,23 @@ static int action(int argc,char **argv) {
         nx_tune_load(nx_lut_data_root(),argv[2],&tune,NULL);
     }
     struct nx_lut_look looks[NX_LUT_MAX_LOOKS];int count=0;
-    int result=nx_lut_catalog_index(looks,&count);if (result) return result;
+    int result=nx_lut_catalog_index(looks,&count);
+    if (result) { nx_lut_journal("apply-failed","catalog unavailable");return result; }
     for (int i=0;i<count;i++) if (!strcmp(looks[i].id,argv[2])) {
         char path[256];int composed;
-        if (!nx_lut_validate_look(argv[2],path,&composed)) return 5;
-        result=nx_tune_cache(argv[2],&tune,strength,path);if(result)return result;
+        if (!nx_lut_validate_look(argv[2],path,&composed)) {
+            char detail[224];
+            snprintf(detail,sizeof detail,"look=%s invalid table composed=%d",argv[2],composed);
+            nx_lut_journal("apply-failed",detail);
+            return 5;
+        }
+        result=nx_tune_cache(argv[2],&tune,strength,path);
+        if(result) {
+            char detail[224];
+            snprintf(detail,sizeof detail,"look=%s tune_cache rc=%d",argv[2],result);
+            nx_lut_journal("apply-failed",detail);
+            return result;
+        }
         result=stage(path,strength);
         /* A failed preview sync still leaves the Still selection staged. */
         if(!result||result==6) {
@@ -302,6 +342,11 @@ static int action(int argc,char **argv) {
             else if(saved<0)fputs("PERSIST-UNCONFIRMED per-look tuning written but directory sync failed\n",stderr);
         }
         return result;
+    }
+    {
+        char detail[96];
+        snprintf(detail,sizeof detail,"look=%s not in catalog (%d entries)",argv[2],count);
+        nx_lut_journal("apply-failed",detail);
     }
     return 2;
 }

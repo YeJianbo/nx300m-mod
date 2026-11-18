@@ -14,7 +14,14 @@ import probe_ipcs_session_vm as session
 import probe_smartfilter_vm as boundary
 import probe_smartfilter_ram_vm as ram
 
-PROBE = ram.PROBE[:ram.PROBE.index('request original-mode 2')] + r'''
+REFRESH_START_PROBE = r'''
+operation refresh-race-apply apply --s2 --session 1 --calltrace 0 --table /mnt/mmc/identity.d4lut --look identity --strength 100
+request start-during-refresh 143
+request refresh-race-frames 100
+operation refresh-race-restore restore
+request refresh-race-remove 120
+'''
+PROBE = ram.PROBE[:ram.PROBE.index('request original-mode 2')] + REFRESH_START_PROBE + r'''
 operation initial apply --s2 --session 0 --calltrace 0 --table /mnt/mmc/identity.d4lut --look identity --strength 100
 request inactive-state 125
 request stale-dispatch 126
@@ -31,6 +38,12 @@ request ordinary-memory-recovery 123
 operation ordinary-final status
 operation session-apply apply --s2 --session 1 --calltrace 0 --table /mnt/mmc/identity.d4lut --look identity --strength 100
 request session-frames 100
+request queued-native-start 142
+request queued-native-resumed 100
+request native-playback-stop 140
+operation native-playback-selection apply --s2 --session 1 --calltrace 0 --table /mnt/mmc/monochrome.d4lut --look monochrome --strength 100
+request native-playback-return 141
+request native-playback-resumed 100
 request session-stop-start 109
 request session-resumed 100
 request session-capture 101
@@ -56,7 +69,7 @@ def main():
     boundary.MARKER = 'IPCS_SESSION_PRIVATE_VM_READY'
     boundary.PROBE = PROBE
     if args.expect_before_failure:
-        boundary.PROBE = PROBE[:PROBE.index('# Selection is submitted')] + '''
+        boundary.PROBE = PROBE[:PROBE.index('# Selection is submitted')].replace(REFRESH_START_PROBE, '') + '''
 seq=$((seq+1)); printf '%s 0\n' "$seq" >/tmp/smartfilter-ram.request
 wait "$pid"; pid=
 echo PLAYBACK_REFRESH_PROBE_DONE
@@ -101,9 +114,22 @@ echo PLAYBACK_REFRESH_PROBE_DONE
         observed = dict(inactive=inactive, stale=stale, stopped=stopped)
         if not args.expect_before_failure:
             returned = row('fixture_refresh_return')
+            queued_start = row('fixture_native_queued_start')
+            native_stop = row('fixture_native_playback_stop')
+            native_return = row('fixture_native_playback_return')
+            refresh_start = row('fixture_start_during_refresh')
+            refresh_return = row('fixture_start_during_refresh_return')
             final = json.loads((guest / 'ordinary-final.json').read_text().splitlines()[0])
             observed['returned'] = returned
+            observed.update(queued_start=queued_start, native_stop=native_stop, native_return=native_return)
+            observed.update(start_during_refresh=refresh_start, start_during_refresh_return=refresh_return)
             checks.update(
+                dispatched_refresh_survives_start=refresh_start['pending_after_start'] == 1,
+                queued_start_keeps_refresh_wakeup=(refresh_start['native_state'] == 20 and refresh_start['native_next'] == 2 and refresh_start['queued_after_callback'] == 1),
+                native_queued_action_finishes_refresh=(refresh_return['native_state'] == 7 and refresh_return['native_next'] == 0 and not refresh_return['pending'] and not refresh_return['queued']),
+                queued_start_keeps_preview_stopped=(queued_start['native_state'] == 8 and queued_start['native_next'] == 2 and queued_start['stream_stopped'] != 0 and queued_start['rendered_before_stop_callback'] == 0),
+                native_playback_stop_drains_session=(native_stop['state'] == 1 and native_stop['stream_stopped'] != 0 and not native_stop['held'] and not native_stop['active']),
+                native_playback_start_restores_latest=(native_return['state'] == 7 and native_return['s2_path'] == 1 and not native_return['stream_stopped']),
                 return_uses_latest_playback_selection=not returned['stopped'] and not returned['pending'] and returned['s2_path'] == 1 and returned['look'] == 'monochrome' and not returned['extra_rebuilds'],
                 ordinary_native_memory_resume_preserved=not final['refresh_pending'] and final['s2_path'] == 1,
                 session_stop_start_and_capture_preserved=(guest / 'session-stop-start.response').is_file() and (guest / 'session-capture.response').is_file(),

@@ -13,21 +13,25 @@ import nx300m_installer as app
 from release_payload import is_core, verify_complete
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE = ROOT/'outputs/releases/windows-updater-20261106'
 IDENTITY = {'serial': 'FIXTURE', 'label': 'isolated', 'filesystem': 'exFAT'}
+UPGRADE_BASELINES = (
+    ('preview.8', ROOT/'outputs/releases/v0.1.0-preview.8/NX300M-MOD-SD-v0.1.0-preview.8.zip'),
+    ('preview.9', ROOT/'outputs/releases/v0.1.0-preview.9/NX300M-MOD-SD-v0.1.0-preview.9.zip'),
+    ('preview.10', ROOT/'outputs/releases/v0.1.0-preview.10/NX300M-MOD-SD-v0.1.0-preview.10.zip'),
+)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', default='v0.1.0-preview.6')
+    parser.add_argument('--version', default='v0.1.0-preview.10')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
+    BASE = ROOT/'outputs/releases'/args.version
     checks = []
     def passed(name):
         checks.append(name)
     windows = BASE/('NX300M-MOD-Windows-'+args.version+'.zip')
     sd = BASE/('NX300M-MOD-SD-'+args.version+'.zip')
-    old = BASE/'NX300M-MOD-Windows-v0.1.0-preview.3.zip'
     with tempfile.TemporaryDirectory(prefix='nx-release-') as temp:
         temp = Path(temp)
         program = temp/'program'
@@ -45,7 +49,8 @@ def main():
                 data = archive.read('first-install/payload/'+name)
                 assert len(data) == item['bytes'] and app.checksum(data) == item['sha256']
                 assert data == standalone.read(name)
-                if is_core(name):
+                if (is_core(name) and name not in (app.RESTART, 'autoexec.sh')
+                        and not name.startswith('nx300m-lens-debug/')):
                     assert name in upgrade['payload']
                     assert archive.read(upgrade['payload'][name]['asset']) == data
             assert not any('/.state/' in n or '/logs/' in n or 'table-stock3d' in n for n in archive.namelist())
@@ -64,37 +69,51 @@ def main():
                 assert app.checksum((fresh/name).read_bytes()) == item['sha256']
             assert (fresh/'photo.jpg').read_bytes() == b'preserve photo'
             passed('actual_first_install_all_files_and_photo_preserved')
-            card = temp/'old';card.mkdir()
-            with zipfile.ZipFile(old) as previous:
-                for name in previous.namelist():
-                    prefix = 'first-install/payload/'
-                    if name.startswith(prefix):
-                        target = app.safe_path(card, name[len(prefix):])
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        target.write_bytes(previous.read(name))
-            assert not (card/'nx300m-lens-debug').exists()
-            state = card/'nx300m-mod/.state';state.mkdir()
-            (state/'lut-preview').write_bytes(b'1\n')
-            (state/'lut-choice').write_bytes(b'0\n')
-            (card/'photo.srw').write_bytes(b'preserve raw')
-            (card/'nx300m-mod/lenses.txt').write_bytes(b'personal lens list\n')
-            preserved = {n:(card/n).read_bytes() for n in
-                         ('nx300m-mod/looks.txt', 'nx300m-mod/looks-cycle.txt', 'nx300m-mod/lenses.txt',
-                          'nx300m-mod/.state/lut-preview', 'nx300m-mod/.state/lut-choice', 'photo.srw')}
-            # Reproduce the earlier ABI7-selector omission as well.
-            for marker in ('IPCS_OPEN_DIAGNOSTIC', 'IPCS_SESSION_PREVIEW'):
-                (card/'nx300m-mod'/marker).unlink()
-            runtime = card/'nx300m-mod/runtime-files.list'
-            runtime.write_bytes(b''.join(line for line in runtime.read_bytes().splitlines(keepends=True)
-                                        if line.strip() not in (b'IPCS_OPEN_DIAGNOSTIC', b'IPCS_SESSION_PREVIEW')))
-            backup = app.apply(card, IDENTITY)
-            for name, item in upgrade['payload'].items():
-                assert app.checksum((card/name).read_bytes()) == item['sha256']
-            for name, data in preserved.items():
-                assert (card/name).read_bytes() == data
-            assert (backup/'backup.json').is_file()
-            verify_complete(lambda name:(card/name).read_bytes())
-            passed('released_old_package_upgrades_all_programs_repairs_wifi_and_session_without_losing_user_data')
+            baselines = [(name, archive) for name, archive in UPGRADE_BASELINES
+                         if f'v0.1.0-{name}' in upgrade['accepted_baselines']]
+            for baseline_name, old in baselines:
+                card = temp/('card-'+baseline_name);card.mkdir()
+                with zipfile.ZipFile(old) as previous:
+                    for name in previous.namelist():
+                        if name == 'autoexec.sh' or name.startswith(('nx300m-mod/', 'nx300m-lens-debug/')):
+                            target = app.safe_path(card, name)
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            target.write_bytes(previous.read(name))
+                state = card/'nx300m-mod/.state';state.mkdir()
+                (state/'lut-preview').write_bytes(b'1\n')
+                (state/'lut-choice').write_bytes(b'0\n')
+                (card/'photo.srw').write_bytes(b'preserve raw')
+                (card/'nx300m-mod/lenses.txt').write_bytes(b'personal lens list\n')
+                preserved = {n:(card/n).read_bytes() for n in
+                             ('nx300m-mod/looks.txt', 'nx300m-mod/looks-cycle.txt', 'nx300m-mod/lenses.txt',
+                              'nx300m-mod/.state/lut-preview', 'nx300m-mod/.state/lut-choice', 'photo.srw')}
+                runtime = card/'nx300m-mod/runtime-files.list'
+                # Keep an unrelated optional module. Do not alter a file that is
+                # itself part of the checked baseline runtime; mutating its hash
+                # must fail before any upgrade write.
+                extra = card/'nx300m-mod/bin/optional_module.arm'
+                extra.write_bytes(b'existing optional dial module')
+                runtime.write_bytes(runtime.read_bytes()+b'bin/optional_module.arm\n')
+                old_runtime = set(runtime.read_text(encoding='ascii').splitlines())
+                backup = app.apply(card, IDENTITY)
+                for name, item in upgrade['files'].items():
+                    if name == 'nx300m-mod/runtime-files.list':
+                        expected = set((program/'payload'/name).read_text(encoding='ascii').splitlines()) | old_runtime
+                        actual = (card/name).read_text(encoding='ascii').splitlines()
+                        assert set(actual) == expected and len(actual) == len(expected)
+                    elif name == app.RESTART:
+                        assert (card/name).read_bytes().startswith(b'gui-update-')
+                    else:
+                        assert app.checksum((card/name).read_bytes()) == item['sha256'], name
+                assert extra.read_bytes() == b'existing optional dial module'
+                for name, data in preserved.items():
+                    assert (card/name).read_bytes() == data
+                assert (backup/'backup.json').is_file()
+                verify_complete(lambda name:(card/name).read_bytes())
+                passed(f'{baseline_name}_sd_upgrades_to_{args.version}_and_preserves_user_data')
+                if baseline_name == 'preview.8':
+                    baseline_card = card
+            card = baseline_card
             (card/'nx300m-lens-debug/WIFI_MEM_PROFILE').write_bytes(b'stock\n')
             (card/'nx300m-lens-debug/WIFI_MEM_RUN_ID').write_bytes(b'personal-run\n')
             app.apply(card, IDENTITY)

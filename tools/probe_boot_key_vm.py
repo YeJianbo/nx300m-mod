@@ -61,7 +61,9 @@ set -eu
 export DISPLAY=:97
 now_ms() { awk '{printf "%d", $1*1000}' /proc/uptime; }
 attempt=0
-until [ -S /tmp/.X11-unix/X97 ]; do attempt=$((attempt+1)); [ "$attempt" -lt 60 ]; sleep 1; done
+until [ -S /tmp/.X11-unix/X97 ]; do
+    attempt=$((attempt+1)); if [ "$attempt" -ge 60 ]; then echo 'X server wait timed out' >&2; exit 1; fi; sleep 1
+done
 /perf/close.arm ping
 export NX300M_MOD_ROOT=/perf/mod NX_STATE_DIR=/perf/state
 mkdir -p /perf/state /perf/mod/.state
@@ -75,7 +77,10 @@ sample() {
     rm -f /perf/stock-parent.alive
     /usr/bin/di-camera-app-nx300 stock-parent > /perf/stock-$index.log 2>&1 &
     stock=$!
-    n=0; until [ -s /perf/stock-parent.alive ]; do n=$((n+1)); [ "$n" -lt 60 ]; /rescue/busybox usleep 100000; done
+    n=0; until [ -s /perf/stock-parent.alive ]; do
+        n=$((n+1)); if [ "$n" -ge 60 ]; then echo "sample $index fixture-alive wait timed out" >&2; return 1; fi
+        /rescue/busybox usleep 100000
+    done
     NX_REMOTE_CUSTOM_KEY=1 NX_REMOTE_PANEL_SHORTCUT=1 NX_REMOTE_PANEL_KEY=custom NX_REMOTE_MENU_KEY=0 \
         NX_FN_KEY_LOG=/perf/fn-key.log "$binary" --listen 127.0.0.1:8781 --web-root /perf/mod --media-root /perf/photos \
         > /perf/remote-$index.log 2>&1 &
@@ -85,14 +90,21 @@ sample() {
     # rather than for the evdev menu-key helper's own ready line (that helper
     # needs the fixture's patched device path and is not part of this path).
     n=0; until [ -n "$(custom_state)" ]; do
-        n=$((n+1)); [ "$n" -lt 100 ]; /rescue/busybox usleep 100000; done
+        n=$((n+1)); if [ "$n" -ge 100 ]; then echo "sample $index API wait timed out" >&2; return 1; fi
+        /rescue/busybox usleep 100000
+    done
     # Let three boot retries accumulate, then sweep the phase inside the cycle.
     n=0; until [ "$(status_field boot_retries)" -ge 3 ] 2>/dev/null; do
-        n=$((n+1)); [ "$n" -lt 400 ]; /rescue/busybox usleep 100000; done
+        n=$((n+1)); if [ "$n" -ge 400 ]; then echo "sample $index retry wait timed out" >&2; return 1; fi
+        /rescue/busybox usleep 100000
+    done
     before=$(status_field boot_retries)
     if [ "$offset" -gt 0 ]; then /rescue/busybox usleep $((offset*1000)); fi
     touch /perf/create-window
-    n=0; until [ -s /perf/stock-parent.ready ]; do n=$((n+1)); [ "$n" -lt 60 ]; /rescue/busybox usleep 100000; done
+    n=0; until [ -s /perf/stock-parent.ready ]; do
+        n=$((n+1)); if [ "$n" -ge 60 ]; then echo "sample $index window wait timed out" >&2; return 1; fi
+        /rescue/busybox usleep 100000
+    done
     window_ms=$(cat /perf/stock-parent.ready-ms 2>/dev/null || echo 0)
     n=0; ready_ms=0
     while [ "$n" -lt 200 ]; do
@@ -245,20 +257,48 @@ def main():
             collect(out, 'boot-key-helper.log')
         except RuntimeError:
             pass
-        for index in range(1, len(calls) + 1):
+        # The guest indexes samples and logs from 0, so every call's log is
+        # remote-0.log .. remote-N-1.log; a missing one is itself a defect and
+        # is judged below instead of silently skipped.
+        missing_logs = []
+        for index in range(len(calls)):
             try:
                 collect(out, f'remote-{index}.log')
             except RuntimeError:
-                pass   # a sample that died leaves no log; the samples file is the witness
+                missing_logs.append(f'remote-{index}.log')
+            try:
+                collect(out, f'stock-{index}.log')
+            except RuntimeError:
+                missing_logs.append(f'stock-{index}.log')
+        try:
+            collect(out, 'boot-key-leftovers.txt')
+        except RuntimeError:
+            missing_logs.append('boot-key-leftovers.txt')
         text = (out / 'boot-key-samples.txt').read_text(errors='replace') if (out / 'boot-key-samples.txt').exists() else ''
         (out / 'boot-key-raw.txt').write_text(text, encoding='utf-8')
         samples, summary = analyze(text, offsets)
         report['samples'] = samples
         report['summary'] = summary
-        report['passed'] = (bool(samples) and all(v['samples'] >= 1 for v in summary.values())
-                            and all(s['window_ms'] > 0 and s['ready_ms'] > 0 for s in samples))
+        # Every variant x offset must appear exactly once and be fully observed:
+        # a window or ready stamp of 0 means a fixture wait capped out, and a
+        # negative w2r means the timestamps are inconsistent. A non-zero guest
+        # exit is a failure by itself (boot-key-current-r1 let one slip through
+        # because the old check only required >=1 sample per variant).
+        expected = {(label, offset) for label, _ in variants for offset in offsets}
+        seen = [(s['label'], s['offset_ms']) for s in samples]
+        invalid = [dict(sample=s['sample'], offset=s['offset_ms'])
+                   for s in samples if s['window_ms'] <= 0 or s['ready_ms'] <= 0 or s['w2r_ms'] < 0
+                   or s['w2r_ms'] != s['ready_ms'] - s['window_ms']]
+        report['coverage'] = dict(
+            expected_samples=len(expected), recorded_samples=len(seen),
+            missing=[list(pair) for pair in sorted(expected - set(seen))],
+            duplicates=sorted(pair for pair in set(seen) if seen.count(pair) > 1),
+            invalid=invalid, missing_guest_logs=missing_logs,
+            guest_exit_code=execution['exit_code'])
+        report['passed'] = (execution['exit_code'] == 0 and len(samples) == len(expected)
+                            and set(seen) == expected and len(set(seen)) == len(seen)
+                            and not invalid and not missing_logs)
         if execution['exit_code']:
-            report['probe_exit_code'] = execution['exit_code']
             report['probe_output_tail'] = execution['output'][-2000:]
     except BaseException as error:
         report['failure'] = str(error)
@@ -272,6 +312,8 @@ def main():
                 (out / 'initramfs.cpio.gz').unlink(missing_ok=True)
         arm_vm.write_json(out / 'report.json', report)
     print(json.dumps({k: report[k] for k in ('passed', 'summary')}, ensure_ascii=False, indent=2))
+    if not report['passed']:
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

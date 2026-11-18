@@ -11,6 +11,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* Stock glibc 2.13 exports the versioned stat64 ABI. The modern cross-build
+ * headers otherwise emit a reference to a plain stat symbol it does not have. */
+extern int __xstat64(int,const char *,struct stat64 *);
+static int custom_key_context_stat(const char *path,struct stat64 *value) {
+    return __xstat64(3,path,value);
+}
+
 /* Generated from the stock 1.15 ELF by tools/generate_custom_key_context.py.
  * Validate the complete accessors before interpreting their fixed data layout. */
 /* BEGIN STOCK ACCESSORS */
@@ -22,8 +29,10 @@ static const unsigned char custom_key_bytes_1[]={0x18,0x48,0x2d,0xe9,0x0c,0xb0,0
 static const unsigned char custom_key_bytes_2[]={0x04,0xb0,0x2d,0xe5,0x00,0xb0,0x8d,0xe2,0x0c,0xd0,0x4d,0xe2,0x08,0x00,0x0b,0xe5,0x08,0x30,0x1b,0xe5,0x08,0x30,0x93,0xe5,0x03,0x00,0xa0,0xe1,0x00,0xd0,0x8b,0xe2,0x00,0x08,0xbd,0xe8,0x1e,0xff,0x2f,0xe1};
 /* _Z20Ui_Get_Cap_Run_Statev */
 static const unsigned char custom_key_bytes_3[]={0x00,0x48,0x2d,0xe9,0x04,0xb0,0x8d,0xe2,0x03,0x00,0xa0,0xe3,0x0c,0x02,0x00,0xeb,0x00,0x30,0xa0,0xe1,0x00,0x30,0x93,0xe5,0x03,0x00,0xa0,0xe1,0x00,0x88,0xbd,0xe8};
+/* _ZN20CAPPGUIPlaybackState11getInstanceEv */
+static const unsigned char custom_key_bytes_4[]={0x18,0x48,0x2d,0xe9,0x0c,0xb0,0x8d,0xe2,0xec,0x30,0x0a,0xe3,0x4d,0x30,0x40,0xe3,0x00,0x30,0x93,0xe5,0x01,0x30,0x03,0xe2,0x00,0x00,0x53,0xe3,0x18,0x00,0x00,0x1a,0xec,0x00,0x0a,0xe3,0x4d,0x00,0x40,0xe3,0x1d,0x8f,0xfd,0xeb,0x00,0x30,0xa0,0xe1,0x00,0x00,0x53,0xe3,0x00,0x30,0xa0,0x03,0x01,0x30,0xa0,0x13,0x73,0x30,0xef,0xe6,0x00,0x00,0x53,0xe3,0x0e,0x00,0x00,0x0a,0x00,0x40,0xa0,0xe3,0xf0,0x00,0x0a,0xe3,0x4d,0x00,0x40,0xe3,0xca,0x04,0x00,0xeb,0xec,0x00,0x0a,0xe3,0x4d,0x00,0x40,0xe3,0xda,0x90,0xfd,0xeb,0x14,0x38,0x08,0xe3,0x10,0x30,0x40,0xe3,0xf0,0x00,0x0a,0xe3,0x4d,0x00,0x40,0xe3,0x03,0x10,0xa0,0xe1,0xac,0x22,0x09,0xe3,0x29,0x20,0x40,0xe3,0x45,0x93,0xfd,0xeb,0xf0,0x30,0x0a,0xe3,0x4d,0x30,0x40,0xe3,0x03,0x00,0xa0,0xe1,0x18,0x88,0xbd,0xe8,0x00,0x00,0x54,0xe3,0x02,0x00,0x00,0x1a,0xec,0x00,0x0a,0xe3,0x4d,0x00,0x40,0xe3,0x88,0x8f,0xfd,0xeb,0x0f,0x95,0xfd,0xeb};
 struct custom_key_stock_entry { uint32_t address;size_t size;const unsigned char *bytes; };
-static const struct custom_key_stock_entry custom_key_stock[]={{0xf58c8,sizeof custom_key_bytes_0,custom_key_bytes_0},{0xf8fec,sizeof custom_key_bytes_1,custom_key_bytes_1},{0x85e04,sizeof custom_key_bytes_2,custom_key_bytes_2},{0x1bbc54,sizeof custom_key_bytes_3,custom_key_bytes_3}};
+static const struct custom_key_stock_entry custom_key_stock[]={{0xf58c8,sizeof custom_key_bytes_0,custom_key_bytes_0},{0xf8fec,sizeof custom_key_bytes_1,custom_key_bytes_1},{0x85e04,sizeof custom_key_bytes_2,custom_key_bytes_2},{0x1bbc54,sizeof custom_key_bytes_3,custom_key_bytes_3},{0x107454,sizeof custom_key_bytes_4,custom_key_bytes_4}};
 /* END STOCK ACCESSORS */
 
 enum { CKC_NONE,CKC_EXECUTABLE,CKC_PROC,CKC_COUNT,CKC_START,CKC_MEM,CKC_READ,CKC_ACCESSOR,CKC_IDENTITY };
@@ -50,9 +59,9 @@ static int custom_key_context_read(struct custom_key_context *context,uint32_t a
     return got==(ssize_t)size || custom_key_context_fail(context,CKC_READ,got<0?errno:0,address);
 }
 static int custom_key_context_identity(struct custom_key_context *context) {
-    char path[64],start[32];struct stat info;
+    char path[64],start[32];struct stat64 info;
     snprintf(path,sizeof path,"/proc/%d/exe",context->pid);
-    if(stat(path,&info))return custom_key_context_fail(context,CKC_IDENTITY,errno,0);
+    if(custom_key_context_stat(path,&info))return custom_key_context_fail(context,CKC_IDENTITY,errno,0);
     if(info.st_dev!=context->device || info.st_ino!=context->inode)
         return custom_key_context_fail(context,CKC_IDENTITY,0,0);
     errno=0;
@@ -65,17 +74,17 @@ static void custom_key_context_close(struct custom_key_context *context) {
     context->fd=-1;context->pid=0;
 }
 static int custom_key_context_open(struct custom_key_context *context) {
-    struct stat stock;memset(context,0,sizeof *context);context->fd=-1;
-    if(stat("/usr/bin/di-camera-app-nx300",&stock))return custom_key_context_fail(context,CKC_EXECUTABLE,errno,0);
+    struct stat64 stock;memset(context,0,sizeof *context);context->fd=-1;
+    if(custom_key_context_stat("/usr/bin/di-camera-app-nx300",&stock))return custom_key_context_fail(context,CKC_EXECUTABLE,errno,0);
     if(!S_ISREG(stock.st_mode))return custom_key_context_fail(context,CKC_EXECUTABLE,0,0);
     DIR *directory=opendir("/proc");if(!directory)return custom_key_context_fail(context,CKC_PROC,errno,0);
     struct dirent *entry;unsigned matches=0;
     while((entry=readdir(directory))) {
         char *end;long pid=strtol(entry->d_name,&end,10);
         if(!*entry->d_name || *end || pid<=1 || pid>INT_MAX)continue;
-        char path[64];struct stat candidate;
+        char path[64];struct stat64 candidate;
         snprintf(path,sizeof path,"/proc/%ld/exe",pid);
-        if(!stat(path,&candidate) && candidate.st_dev==stock.st_dev && candidate.st_ino==stock.st_ino) {
+        if(!custom_key_context_stat(path,&candidate) && candidate.st_dev==stock.st_dev && candidate.st_ino==stock.st_ino) {
             context->pid=(int)pid;matches++;
         }
     }
@@ -101,12 +110,17 @@ static int custom_key_context_open(struct custom_key_context *context) {
 }
 /* The singleton application inherits CSAFStateMachine at offset zero. Its
  * getCurrentState reads [this+8]; never execute code in the camera process. */
-static int custom_key_context_preview(struct custom_key_context *context) {
+static int custom_key_context_ready(struct custom_key_context *context,int allow_playback) {
     uint32_t application,preview,state,again,run;
     return custom_key_context_identity(context) &&
         custom_key_context_read(context,0x4c9c5c,&application,4) && application==0x24c0b8 &&
-        custom_key_context_read(context,0x4c9f04,&preview,4) && preview==0x24c838 &&
-        custom_key_context_read(context,0x4c9c64,&state,4) && state==0x4c9f04 &&
+        /* Stock Playback is an inline singleton, returned directly by its
+         * verified getInstance accessor. Keep capture/transition checks for
+         * both states. Only a long press may enter the mod from the album;
+         * a short press must retain the stock Delete action. */
+        custom_key_context_read(context,0x4c9c64,&state,4) &&
+            ((state==0x4c9f04 && custom_key_context_read(context,0x4c9f04,&preview,4) &&
+                preview==0x24c838) || (allow_playback && state==0x4da0f0)) &&
         custom_key_context_read(context,0x4de4d8,&run,4) && !(run&0x200) &&
         custom_key_context_read(context,0x4c9c64,&again,4) && state==again;
 }

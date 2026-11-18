@@ -41,9 +41,16 @@ CAMERA_SETUP = r'''
 CAMERA_LOOP = r'''
         for(;;) {
             FILE *mode=fopen("/perf/camera-mode","r");int c=mode?fgetc(mode):'V';if(mode)fclose(mode);
-            *(volatile unsigned *)0x4c9c64=c=='P'?0x4ca010:0x4c9f04;
+            *(volatile unsigned *)0x4c9c64=c=='P'?0x4da0f0:c=='M'?0x4da0dc:0x4c9f04;
             *(volatile unsigned *)0x4de4d8=c=='L'?0x200:0;
             *(volatile unsigned char *)custom_key_stock[0].address=c=='B'?0:custom_key_stock[0].bytes[0];
+            struct custom_key_context context;
+            int opened=custom_key_context_open(&context);
+            int eligible=opened&&custom_key_context_ready(&context,0);
+            int long_eligible=opened&&custom_key_context_ready(&context,1);
+            custom_key_context_close(&context);
+            FILE *eligibility=fopen("/perf/context-eligible","w");if(!eligibility)return 32;
+            fprintf(eligibility,"%c %d %d\n",c,eligible,long_eligible);fclose(eligibility);
             FILE *ack=fopen("/perf/camera-mode-ready","w");if(!ack)return 31;fputc(c,ack);fclose(ack);
             while(XPending(d)){XEvent e;XNextEvent(d,&e);}
             usleep(20000);
@@ -83,13 +90,25 @@ start_remote() {
 stop_remote() { kill "$remote"; wait "$remote" || :; remote=; /rescue/busybox usleep 300000; }
 key() { /perf/close.arm key "$1"; /rescue/busybox usleep 220000; }
 wait_exit() { wait_marker /perf/fn-key.log 'panel exited pid='; /rescue/busybox usleep 200000; }
-open_panel() { : >/perf/fn-key.log; /perf/fn.arm "$code" 150; wait_marker /perf/fn-key.log '^FIRST_FRAME '; }
+open_panel() { : >/perf/fn-key.log; /perf/fn.arm "$code" 1350; wait_marker /perf/fn-key.log '^FIRST_FRAME '; }
 save_case() { cp /perf/fn-key.log /perf/$1.log; cp /perf/actions.txt /perf/$1-actions.txt; }
 focus_returned() {
     /perf/close.arm focus > /perf/focus.txt
     cmp /perf/focus.txt /perf/stock-parent.ready
 }
 start_remote fixed
+# Exercise the production context predicate as well as the passive evdev path.
+for context in P V L M B; do
+    state "$context"
+    case "$context" in V) eligible=1; long_eligible=1 ;; P) eligible=0; long_eligible=1 ;; *) eligible=0; long_eligible=0 ;; esac
+    wait_marker /perf/context-eligible "^$context $eligible $long_eligible$"
+done
+state P
+: >/perf/fn-key.log
+/perf/fn.arm "$code" 150
+wait_marker /perf/fn-key.log 'custom tap kept stock outside preview'
+! grep -q '^FIRST_FRAME ' /perf/fn-key.log
+cp /perf/fn-key.log /perf/P-short.log
 for context in P V; do
 state "$context"
 # Real production nxui: OK applies/exits, Fn saves/stays, MENU discards/exits.
@@ -167,6 +186,9 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     vm.OUT, vm.PROBE = out, PROBE
     driver = vm.DRIVER.replace('#include <stdio.h>', '#include <stdio.h>\n#include <stdint.h>\n#include <sys/mman.h>\n#include "' + wsl_path(ROOT / 'mod/metol/remote/custom_key_context.h') + '"')
+    driver = ('#undef _TIME_BITS\n#define _TIME_BITS 32\n'
+              '#undef _FILE_OFFSET_BITS\n#define _FILE_OFFSET_BITS 64\n'
+              '#include "' + wsl_path(ROOT / 'mod/metol/remote/compat.c') + '"\n' + driver)
     driver = driver.replace('Window stock=XCreateSimpleWindow', CAMERA_SETUP + '\n        Window stock=XCreateSimpleWindow')
     driver = driver.replace('for(;;){XEvent event;XNextEvent(d,&event);}', CAMERA_LOOP)
     driver = driver.replace('    if(argc==2) {', TAP_DRIVER + '\n    if(argc==2 && !strcmp(argv[1],"focus")){printf("%lu\\n",w);XCloseDisplay(d);return 0;}\n    if(argc==2) {', 1)
@@ -185,7 +207,7 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
     built = subprocess.run(['C:/Windows/System32/wsl.exe', '-d', 'Debian', '-u', 'root', '-e', 'sh', '-c', command], capture_output=True)
     (out / 'fn-build.log').write_bytes(built.stdout + built.stderr)
     built.check_returncode()
-    launcher = b'#!/bin/sh\nexec /perf/mod/bin/nxui.arm --live --lut --root /perf/mod --engine /perf/engine.sh --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf\n'
+    launcher = b'#!/bin/sh\nexec /perf/mod/bin/nxui.arm --live --lut --root /perf/mod --engine /perf/engine.sh --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf >>/perf/fn-key.log 2>&1\n'
     vm.EXTRA_FILES = {
         'perf/remote-fixed.arm': (out / 'remote-fixed.arm').read_bytes(),
         'perf/fn.arm': (out / 'fn.arm').read_bytes(),
@@ -224,7 +246,7 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
             raise TimeoutError('Private ARM VM startup')
         execution = vm.call('exec', '/bin/sh -x /perf/probe.sh 2>/perf/trace.log')
         arm_vm.write_json(out / 'execution.json', execution)
-        for name in ('trace.log', 'stock.log', 'remote-fixed.log', 'fn-key.log', 'actions.txt',
+        for name in ('trace.log', 'stock.log', 'remote-fixed.log', 'fn-key.log', 'actions.txt', 'P-short.log',
                      'P-ok.log', 'P-ok-actions.txt', 'P-fn.log', 'P-fn-actions.txt',
                      'P-menu.log', 'P-menu-actions.txt', 'V-ok.log', 'V-ok-actions.txt',
                      'V-fn.log', 'V-fn-actions.txt', 'V-menu.log', 'V-menu-actions.txt'):

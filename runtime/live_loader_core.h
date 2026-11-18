@@ -79,6 +79,75 @@ static int threads(unsigned pid,struct thread *out,unsigned *count) {
     if(errno)ok=0;
     closedir(d);if(!n)return 0;qsort(out,n,sizeof *out,thread_cmp);*count=n;return ok;
 }
+static unsigned long long core_now_ms(void) {
+    struct timespec ts;if(syscall(263,CLOCK_MONOTONIC,&ts))return 0;
+    return (unsigned long long)ts.tv_sec*1000+(unsigned)ts.tv_nsec/1000000;
+}
+static int liveview_comm_count(unsigned pid,const char *wanted,unsigned *count) {
+    char path[64],line[128];snprintf(path,sizeof path,"/proc/%u/task",pid);
+    DIR *directory=opendir(path);if(!directory)return 0;
+    *count=0;struct dirent *entry;int ok=1;errno=0;
+    while((entry=readdir(directory))) {
+        unsigned tid;if(!decimal(entry->d_name,&tid))continue;
+        snprintf(path,sizeof path,"/proc/%u/task/%u/comm",pid,tid);
+        FILE *comm=fopen(path,"r");
+        if(!comm){ok=0;break;}
+        int got=fgets(line,sizeof line,comm)!=NULL;int failed=ferror(comm);fclose(comm);
+        if(!got||failed){ok=0;break;}
+        line[strcspn(line,"\r\n")]=0;
+        if(!strcmp(line,wanted))++*count;
+        errno=0;
+    }
+    if(errno)ok=0;
+    closedir(directory);return ok;
+}
+/* Stock Liveview reaches 7 only after the preview request has completed.
+ * The task names distinguish that state from a page that merely looks like the
+ * viewfinder while MIPI RX has not started. Fixture processes name their own
+ * readiness boundary and do not expose these fixed stock addresses. */
+static int liveview_ready_snapshot(unsigned pid,unsigned *state,unsigned *native_state,
+                                   unsigned *videosrc,unsigned *udd) {
+    char path[64];snprintf(path,sizeof path,"/proc/%u/mem",pid);
+    int fd=open(path,O_RDONLY|O_CLOEXEC);if(fd<0)return 0;
+    uint32_t application=0,current=0,preview=0,native=0;
+    int ok=read_exact(fd,&application,4,0x4c9c5c)&&application==0x24c0b8&&
+           read_exact(fd,&current,4,0x4c9c64);
+    close(fd);
+    *state=current;*native_state=0;*videosrc=*udd=0;
+    if(!ok||!liveview_comm_count(pid,"videosrc",videosrc)||
+       !liveview_comm_count(pid,"udd_intr_handle",udd))return 0;
+    if(current!=0x4c9f04)return current==0x4da0f0?2:-1;
+    snprintf(path,sizeof path,"/proc/%u/mem",pid);
+    fd=open(path,O_RDONLY|O_CLOEXEC);if(fd<0)return -1;
+    ok=read_exact(fd,&preview,4,0x4c9f04)&&preview==0x24c838&&
+       preview<=UINT32_MAX-0x34&&read_exact(fd,&native,4,preview+0x34);
+    close(fd);*native_state=native;
+    if(!ok)return -1;
+    /* Healthy NX300M 1.15 liveview runs native_state=2231780; 7 is the ARM
+     * fixture marker. Accepting only 7 made every on-device apply wait out the
+     * full admission timeout (exit 75) while all three thread/state checks
+     * already passed. */
+    return (native==7||native==2231780)&&*videosrc>=1&&*udd>=2?1:0;
+}
+static int wait_for_liveview(const char *owner,unsigned pid,unsigned timeout_ms,int fixture) {
+    if(fixture)return 1;
+    unsigned long long deadline=core_now_ms()+timeout_ms,last=~0ULL;
+    for(;;) {
+        unsigned state=0,native=0,videosrc=0,udd=0;
+        int status=liveview_ready_snapshot(pid,&state,&native,&videosrc,&udd);
+        if(status==1)return 1;
+        unsigned long long stamp=((unsigned long long)state<<48)^((unsigned long long)native<<32)^
+                                 ((unsigned long long)videosrc<<16)^udd^(unsigned)(status<0);
+        if(stamp!=last)fprintf(stderr,"%s Liveview admission waiting: state=%08x native_state=%u videosrc=%u udd_intr_handle=%u status=%d.\n",
+            owner,state,native,videosrc,udd,status);
+        last=stamp;
+        if(core_now_ms()>=deadline) {
+            fprintf(stderr,"%s Liveview admission timed out after %u ms; no camera thread attached.\n",owner,timeout_ms);
+            return 0;
+        }
+        struct timespec pause={0,50000000};nanosleep(&pause,NULL);
+    }
+}
 static int load_maps(unsigned pid) {
     char path[64],line[1024];snprintf(path,sizeof path,"/proc/%u/maps",pid);FILE *f=fopen(path,"r");if(!f)return 0;
     int ok=1;nmaps=0;

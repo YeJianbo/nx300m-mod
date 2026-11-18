@@ -35,6 +35,7 @@ DRIVER = r'''
 #include <string.h>
 #include <sys/resource.h>
 #include <unistd.h>
+#include "fixture_camera_identity.h"
 int main(int argc,char **argv) {
     if(argc>2 && !strcmp(argv[1],"launch")) {
         if(setpriority(PRIO_PROCESS,0,19))return 4;
@@ -60,6 +61,12 @@ int main(int argc,char **argv) {
     }
     if(argc==2 && !strcmp(argv[1],"ping")){XCloseDisplay(d);return 0;}
     if(argc==2 && !strcmp(argv[1],"stock-parent")) {
+        /* --live panels open a native custom-key context by process name and
+         * read the stock accessor region, so this synthetic parent has to be
+         * the same camera identity as a real di-camera-app and keep the
+         * videosrc/udd threads alive. Without it every measured frame would
+         * be entry-liveview-not-ready instead of a paint. */
+        if(!nx_fixture_identity())return 21;
         Window stock=XCreateSimpleWindow(d,DefaultRootWindow(d),0,0,480,800,0,0,0);
         XClassHint hint={"di-camera-app-nx300","di-camera-app-nx300"};
         XSetClassHint(d,stock,&hint);XStoreName(d,stock,"NX-TEST-STOCK-PARENT");
@@ -148,17 +155,18 @@ def prepare():
     if (OUT / 'report.json').exists():
         raise RuntimeError('Preserve the existing measurement; choose --output-dir for another run')
     (OUT / 'close.c').write_text(DRIVER, encoding='utf-8')
+    shutil.copyfile(PROJECT / 'tools/fixture_camera_identity.h', OUT / 'fixture_camera_identity.h')
     output = shlex.quote(linux_path(OUT))
     command = f'''set -eu
 tc=/opt/nx300m-toolchain/usr
 rf=/opt/nx300m-lab/stock-1.15
 export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
 "$tc/bin/arm-linux-gnueabi-gcc" -B"$tc/lib/gcc-cross/arm-linux-gnueabi/14/" \
- -O2 -Wall -Wextra -I"$tc/include" -mfloat-abi=soft -fno-pic -no-pie -fno-stack-protector \
+ -O2 -Wall -Wextra -I"$tc/include" -I{output} -mfloat-abi=soft -fno-pic -no-pie -fno-stack-protector \
  -nostdlib -nostartfiles -Wl,-e,_start -Wl,--dynamic-linker=/lib/ld-linux.so.3 \
  -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$rf/usr/lib" -Wl,-rpath-link,"$rf/lib" \
  {output}/close.c {shlex.quote(linux_path(PROJECT))}/work/reference/metol/test_server/filmlab/src/crt0_arm.S \
- "$rf/usr/lib/libX11.so.6" "$rf/lib/libc-2.13.so" -lgcc -o {output}/close.arm
+ "$rf/usr/lib/libX11.so.6" "$rf/lib/libpthread.so.0" "$rf/lib/libc-2.13.so" -lgcc -o {output}/close.arm
 '''
     build = subprocess.run(['wsl.exe', '-d', 'Debian', '-u', 'root', '-e', 'sh', '-c', command],
                            capture_output=True, text=True, encoding='utf-8', errors='replace')

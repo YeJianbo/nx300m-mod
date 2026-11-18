@@ -9,6 +9,7 @@ SPECS = [
     ('_ZN19CAPPGUIPreviewState11getInstanceEv', 0xf8fec, 172),
     ('_ZNK16CSAFStateMachine15getCurrentStateEv', 0x85e04, 40),
     ('_Z20Ui_Get_Cap_Run_Statev', 0x1bbc54, 32),
+    ('_ZN20CAPPGUIPlaybackState11getInstanceEv', 0x107454, 172),
 ]
 
 

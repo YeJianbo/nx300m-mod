@@ -54,6 +54,7 @@ def deployed_overlay(root):
         PREFIX + 'smartfilter-preview.sh': 'mod/deployment/mfw/smartfilter-live-preview.sh',
         PREFIX + 'mfw-panel-actions.sh': 'mod/deployment/mfw/panel-actions.sh',
         PREFIX + 'mfw-services.sh': 'mod/deployment/mfw/services.sh',
+        PREFIX + 'logs-export.sh': 'mod/deployment/mfw/logs-export.sh',
     }
     files = {}
     for name, source in sources.items():

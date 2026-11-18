@@ -191,6 +191,51 @@ static void feature_page(int page_id) {
         else
             feature_add("显示热点密码","unavailable","热点未开启",0);
         feature_add("网络信息","network-info","读取一次",1);
+        /* 连接鉴权 state combines the persisted flag with the runtime's own
+         * publication (.state/remote-auth.status = on/off/failed, rewritten by
+         * the daemon after every load and reload). A flag the daemon has not
+         * confirmed shows 待确认 instead of pretending the toggle already
+         * applies — e.g. the service is down or the fsync was unconfirmed.
+         * Damaged or non-regular files show 配置异常: the daemon fails closed
+         * and rejects outside connections until the config is repaired. */
+        char auth_path[NXUI_PATH],auth_status_path[NXUI_PATH];
+        snprintf(auth_path,sizeof auth_path,"%s/.state/remote-auth.enabled",nx_ui_data_root());
+        snprintf(auth_status_path,sizeof auth_status_path,"%s/.state/remote-auth.status",nx_ui_data_root());
+        char auth_mode[8]="0\n",auth_status[16]="";
+        int auth_bad=0,auth_saved_on=0;
+        extern int __fxstat(int,int,struct stat *);   /* glibc 2.13 strict-c99: fstat has no plain symbol */
+        int auth_fd=open(auth_path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+        if(auth_fd>=0){
+            struct stat auth_st;
+            ssize_t auth_n=-1;
+            if(!__fxstat(3,auth_fd,&auth_st)&&S_ISREG(auth_st.st_mode)&&auth_st.st_size>0&&auth_st.st_size<(off_t)sizeof auth_mode)
+                auth_n=read(auth_fd,auth_mode,sizeof auth_mode-1);
+            if(auth_n>0){auth_mode[auth_n]=0;
+                if(!strcmp(auth_mode,"1\n"))auth_saved_on=1;
+                else if(strcmp(auth_mode,"0\n"))auth_bad=1;
+            }else{auth_bad=1;strcpy(auth_mode,"0\n");}
+            close(auth_fd);
+        }else if(errno!=ENOENT)auth_bad=1;
+        auth_fd=open(auth_status_path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+        if(auth_fd>=0){
+            struct stat auth_st;
+            ssize_t auth_n=-1;
+            if(!__fxstat(3,auth_fd,&auth_st)&&S_ISREG(auth_st.st_mode)&&auth_st.st_size>0&&auth_st.st_size<(off_t)sizeof auth_status)
+                auth_n=read(auth_fd,auth_status,sizeof auth_status-1);
+            if(auth_n>0)auth_status[auth_n]=0;else auth_status[0]=0;
+            close(auth_fd);
+        }
+        auth_status[strcspn(auth_status,"\r\n")]=0;
+        int auth_runtime_failed=!strcmp(auth_status,"failed");
+        int auth_confirmed=auth_saved_on?!strcmp(auth_status,"on"):!strcmp(auth_status,"off");
+        const char *auth_value=auth_bad?"配置异常 · 已拒绝外部连接":
+            auth_runtime_failed?"配置异常 · 服务拒绝外部连接":
+            auth_saved_on?auth_confirmed?"开":"开 · 待确认":
+            auth_confirmed?"关 · 兼容旧版":"关 · 待确认";
+        const char *auth_action=(auth_saved_on||auth_bad)?"remote-auth-off":"remote-auth-on";
+        feature_add("连接鉴权",auth_action,auth_value,1);
+        if(auth_saved_on&&!auth_bad&&!auth_runtime_failed)
+            feature_add("显示连接密钥","remote-auth-key","",1);
     }else if(page_id==8){
         feature_add("刷新状态","status","读取一次",1);
     }else if(page_id==9){
@@ -218,6 +263,12 @@ static int feature_action(const char *action) {
     }
     if(!strcmp(action,"modules")){feature_page(8);start_mfw_action("status");return 1;}
     if(!strcmp(action,"unavailable")){message("当前不可用");return 1;}
+    if(!strcmp(action,"remote-auth-on")||!strcmp(action,"remote-auth-off")||!strcmp(action,"remote-auth-key")) {
+        if(mfw_readonly){message("截图模式不执行操作");return 1;}
+        if(child){message("上一个操作仍在执行");return 1;}
+        if(start_mfw_action(action))message("正在读取连接设置…");else message("操作未能启动");
+        return 1;
+    }
     /* Wireless toggles: one request at a time; the scripts themselves are
      * idempotent and serialize on a lock, so a second press while a child is
      * running is rejected here rather than queued. Telnet lives in the debug

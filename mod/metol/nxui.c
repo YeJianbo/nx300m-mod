@@ -34,6 +34,7 @@
 #include "lut_reference_interp.h"
 #include "nxui_preview_state.h"
 #include "nx_favorites_store.h"
+#include "remote/custom_key_context.h"
 extern Bool XTestFakeKeyEvent(Display *, unsigned int, Bool, unsigned long);
 /* glibc 2.13 exposes the versioned ARM stat64 entry points. */
 extern int __xstat64(int, const char *, struct stat64 *);
@@ -463,6 +464,11 @@ static int panel_show(void) {
         }
     }
     if (panel_visibility != VisibilityUnobscured) return 0;
+    {
+        /* 刚才已向刚映射的窗口完整贴图并 XSync，清理 XMapRaised 触发的初始 Expose 避免重复全屏传图。 */
+        XEvent expose_ev;
+        while (XCheckTypedWindowEvent(display, window, Expose, &expose_ev)) {}
+    }
     panel_stage("visible-draw-ready");
     panel_input.unmapped = panel_input.focus_restored = 0;
     XSetInputFocus(display, window, panel_focus_revert, CurrentTime);
@@ -472,6 +478,113 @@ static int panel_show(void) {
     panel_window_trace("after-focus");
     panel_stage("focus-ready");
     return panel_visibility == VisibilityUnobscured;
+}
+static int panel_camera_task_count(int pid,const char *wanted,unsigned *count) {
+    char path[64],line[128],wanted_line[32];
+    snprintf(wanted_line,sizeof wanted_line,"%s",wanted);
+    snprintf(path,sizeof path,"/proc/%d/task",pid);
+    DIR *directory=opendir(path);if(!directory)return 0;
+    *count=0;struct dirent *entry;int ok=1;errno=0;
+    while((entry=readdir(directory))){
+        char *end;long tid=strtol(entry->d_name,&end,10);
+        if(!*entry->d_name||*end||tid<=0)continue;
+        snprintf(path,sizeof path,"/proc/%d/task/%ld/comm",pid,tid);
+        FILE *comm=fopen(path,"r");if(!comm){ok=0;break;}
+        int got=fgets(line,sizeof line,comm)!=NULL,failed=ferror(comm);fclose(comm);
+        if(!got||failed){ok=0;break;}
+        line[strcspn(line,"\r\n")]=0;
+        if(!strcmp(line,wanted_line))++*count;
+        errno=0;
+    }
+    if(errno)ok=0;
+    closedir(directory);return ok;
+}
+static int panel_liveview_snapshot(struct custom_key_context *context,uint32_t *ui_state,
+        uint32_t *native_state,unsigned *videosrc,unsigned *udd) {
+    uint32_t application=0,state=0,page=0,preview=0,native=0;
+    *ui_state=*native_state=0;*videosrc=*udd=0;
+    if(!custom_key_context_identity(context)||
+       !custom_key_context_read(context,0x4c9c5c,&application,4)||application!=0x24c0b8||
+       !custom_key_context_read(context,0x4c9c64,&state,4)||
+       !custom_key_context_read(context,0x4de4d4,&page,4)||
+       !panel_camera_task_count(context->pid,"videosrc",videosrc)||
+       !panel_camera_task_count(context->pid,"udd_intr_handle",udd))return -1;
+    *ui_state=page;
+    /* Every non-Liveview page uses the same hidden gate. Playback alone gets
+     * one native return key below; menus, settings and unknown pages keep the
+     * panel hidden and wait for the stock state machine to finish. */
+    if(state!=0x4c9f04)return 0;
+    if(
+       !custom_key_context_read(context,0x4c9f04,&preview,4)||preview!=0x24c838||
+       preview>UINT32_MAX-0x34||!custom_key_context_read(context,preview+0x34,&native,4))return -1;
+    *native_state=native;
+    /* Liveview readiness is application identity + live camera threads plus
+     * the stock preview being in a liveview state. Healthy NX300M 1.15
+     * liveview was observed with native_state=2231780; the ARM fixture marks
+     * its liveview with 7. Any other native value (menus, playback, unknown
+     * stock states) must keep the panel hidden. */
+    return (*videosrc>=1&&*udd>=2&&(native==7||native==2231780))?1:2;
+}
+/* UI_Get_State(2) reads 0x4de4d4. The LCD Playback handlers accept XF86Tools
+ * (internal key 11) in Single, Thumbnail, DZoom, Menu, Slideshow, Movie,
+ * Panorama, Folder, Movie Trim and Photo Edit. CMM is the only LCD page in
+ * that range without a return action; HDMI uses a separate state family. */
+static int panel_playback_has_return_key(uint32_t ui_state) {
+    return (ui_state>=18&&ui_state<=26)||ui_state==28;
+}
+static int panel_send_stock_key(const char *name) {
+    Window target;int revert;XWindowAttributes attributes;
+    XGetInputFocus(display,&target,&revert);
+    KeyCode code=XKeysymToKeycode(display,XStringToKeysym(name));
+    if(!code||target==None||target==PointerRoot||target==window||
+       !XGetWindowAttributes(display,target,&attributes)||attributes.map_state!=IsViewable){
+        target=panel_parent;
+        if(target==None||!XGetWindowAttributes(display,target,&attributes)||attributes.map_state!=IsViewable)
+            return 0;
+        XSetInputFocus(display,target,RevertToParent,CurrentTime);
+    }
+    int down=XTestFakeKeyEvent(display,code,True,0);
+    int up=XTestFakeKeyEvent(display,code,False,0);
+    XSync(display,False);
+    fprintf(stderr,"PANEL_LIVEVIEW key=%s press_sent=%d release_sent=%d\n",name,down,up);
+    return down&&up;
+}
+static int panel_liveview_ready_before_show(void) {
+    struct custom_key_context context;long long started=now_ms(),deadline=started+4000;
+    int opened=custom_key_context_open(&context),sent=0,last_status=INT_MIN;
+    uint32_t start_state=0,last_page=0,last_native=0;unsigned last_videosrc=0,last_udd=0;
+    if(!opened){
+        fprintf(stderr,"PANEL_LIVEVIEW context=unavailable stage=%d errno=%d address=%08x\n",
+            context.failure,context.error,context.failed_address);
+        return 0;
+    }
+    custom_key_context_read(&context,0x4c9c64,&start_state,4);
+    for(;;){
+        uint32_t page=0,native=0;unsigned videosrc=0,udd=0;
+        int status=panel_liveview_snapshot(&context,&page,&native,&videosrc,&udd);
+        if(status==1){
+            fprintf(stderr,"PANEL_LIVEVIEW ready elapsed_ms=%lld ui_state=%u native_state=%u videosrc=%u udd_intr_handle=%u returned=%d\n",
+                now_ms()-started,page,native,videosrc,udd,sent);
+            custom_key_context_close(&context);return 1;
+        }
+        if(status!=last_status||page!=last_page||native!=last_native||videosrc!=last_videosrc||udd!=last_udd)
+            fprintf(stderr,"PANEL_LIVEVIEW waiting status=%d ui_state=%u native_state=%u videosrc=%u udd_intr_handle=%u elapsed_ms=%lld\n",
+                status,page,native,videosrc,udd,now_ms()-started);
+        last_status=status;last_page=page;last_native=native;last_videosrc=videosrc;last_udd=udd;
+        if(status==0&&!sent&&start_state==0x4da0f0&&panel_playback_has_return_key(page)){
+            if(!panel_send_stock_key("XF86Tools")){
+                fprintf(stderr,"PANEL_LIVEVIEW return_key=unavailable\n");
+                custom_key_context_close(&context);return 0;
+            }
+            sent=1;
+        }
+        if(interrupted||now_ms()>=deadline){
+            fprintf(stderr,"PANEL_LIVEVIEW timeout elapsed_ms=%lld reason=%s\n",now_ms()-started,
+                interrupted?"interrupted":"deadline");
+            custom_key_context_close(&context);return 0;
+        }
+        struct timespec pause={0,50000000};nanosleep(&pause,NULL);
+    }
 }
 static void panel_check_visibility(void) {
     if (panel_input.unmapped || queue.close_requested || panel_visibility == VisibilityUnobscured) return;
@@ -516,7 +629,8 @@ static void on_signal(int sig) { (void)sig; interrupted = 1; }
  * This bounds a client wait, not a hung kernel/display server. */
 static void on_display_timeout(int sig) {
     static const char message[] = "PANEL_DISPLAY_TIMEOUT exit=124\n";
-    (void)sig; write(STDERR_FILENO, message, sizeof message-1); _exit(124);
+    (void)sig; write(STDERR_FILENO, message, sizeof message-1);
+    kill(getpid(), SIGTERM); _exit(124);
 }
 static void on_child(int sig) { (void)sig; } /* interrupt select; waitpid stays in the main loop */
 static void message(const char *s) { snprintf(status, sizeof status, "%s", s); dirty = 1; }
@@ -889,6 +1003,14 @@ static int start_child(int kind, int index, const char *command) {
                 lut_request_inflight.tune.value[0],lut_request_inflight.tune.value[1],lut_request_inflight.tune.value[2],
                 lut_request_inflight.tune.value[3],lut_request_inflight.tune.value[4],lut_request_inflight.tune.value[5],
                 lut_request_inflight.tune.value[6], queue.committing, lut_request_inflight.generation);
+        /* Persist the submitted identity before the engine can save its choice.
+         * A battery pull must not leave a newer choice with only an older
+         * transaction in the on-card log. Pipes used by fixtures cannot sync. */
+        if (live && queue.committing) {
+            fflush(stderr);
+            if (fsync(STDERR_FILENO) && errno != EINVAL && errno != EROFS)
+                fprintf(stderr,"LUT_LOG_SYNC phase=submit errno=%d\n",errno);
+        }
     }
     if (!live) {
         if (kind == 1) {
@@ -941,8 +1063,9 @@ static int start_child(int kind, int index, const char *command) {
 }
 static int mfw_action_allowed(const char *action) {
     const char *allowed[] = {"status", "network-info", "lut", "menu", "gallery", "disable-autostart", "enable-autostart", "close",
-        "lenses","exposure","connection","settings", "preview", "debug", "back", "preview-toggle", "preview-enable", "preview-s2-enable", "preview-preference", "preview-probe-once", "preview-identity", "preview-monochrome", "preview-monochrome-timing", "preview-sync", "preview-stop", "preview-restore", "preview-status", "preview-diag-export",
+        "lenses","exposure","connection","settings", "preview", "debug", "back", "lens-cs-probe", "preview-toggle", "preview-enable", "preview-s2-enable", "preview-preference", "preview-probe-once", "preview-identity", "preview-monochrome", "preview-monochrome-timing", "preview-sync", "preview-stop", "preview-restore", "preview-status", "preview-diag-export",
         "hotspot-status","hotspot-toggle","hotspot-stop","hotspot-credentials","telnet-status","telnet-toggle","telnet-password","telnet-disable",
+        "remote-auth-on","remote-auth-off","remote-auth-key",
         "fw-mode-lock-on","fw-mode-lock-off","fw-animation-0","fw-animation-1","fw-animation-2",
         "fw-auto-iso-0","fw-auto-iso-6400","fw-auto-iso-max-6400","fw-auto-iso-max-12800","fw-auto-iso-max-25600","fw-auto-iso-max-3200","fw-mode-P","fw-mode-A","fw-mode-S","fw-mode-M"};
     for (unsigned int i = 0; i < sizeof allowed / sizeof *allowed; i++)
@@ -965,7 +1088,7 @@ static int start_mfw_action(const char *action) {
     int pipefd[2]; pid_t pid; char launcher[NXUI_PATH], runtime[NXUI_PATH], state_dir[NXUI_PATH];
     const char *base=getenv("NX300M_MFW_RAM_BASE"), *service=getenv("NX_FN_SERVICE_ROOT");
     int readonly = !strcmp(action, "status") || !strcmp(action, "network-info") || !strcmp(action, "preview-status") ||
-        !strcmp(action, "hotspot-status") || !strcmp(action, "telnet-status");
+        !strcmp(action, "hotspot-status") || !strcmp(action, "telnet-status") || !strcmp(action, "lens-cs-probe");
     if (child || mfw_retired_child || !mfw_action_allowed(action)) return 0;
     /* The LUT root is SD data, while actions belong to the verified RAM
      * service generation. Never run the data directory's preview wrapper. */
@@ -1134,6 +1257,11 @@ static void poll_child(void) {
      }
      log_output[out]=0;
      fprintf(stderr, "BACKEND kind=%d ok=%d elapsed_ms=%lld output=%s\n", busy_kind, success, now_ms()-child_started, log_output);}
+    if (busy_kind == 1 && live) {
+        fflush(stderr);
+        if (fsync(STDERR_FILENO) && errno != EINVAL && errno != EROFS)
+            fprintf(stderr,"LUT_LOG_SYNC phase=backend-done errno=%d\n",errno);
+    }
     if (busy_kind == 5) {
         int fw_slot=mfw_fw_slot(mfw_fw_action);
         /* H3: the fixed FW_MOD result line may legally be preceded by shell
@@ -1376,6 +1504,7 @@ static void activate_item(int index) {
     }
     dirty = 1;
 }
+#define NX_TABLE_CACHE_SLOTS 72
 #include "nxui_lut_panel.h"
 #include "nxui_feature_draw.h"
 static void draw(void) {
@@ -1410,7 +1539,7 @@ static void draw(void) {
                 nk_layout_space_end(ctx);
             }
             nk_end(ctx);ctx->style.button=saved;
-            nk_xlib_render(window,nk_rgb(23,24,26));XFlush(display);return;
+            nk_xlib_render(window,nk_rgb(23,24,26));nx_cpu_flush(display);return;
         }
         if (nk_begin(ctx, "NXWA", nk_rect(0, 0, (float)width, (float)height), NK_WINDOW_NO_SCROLLBAR)) {
             nk_layout_row_begin(ctx, NK_STATIC, 30, 2);
@@ -1453,7 +1582,7 @@ static void draw(void) {
             nk_label_colored(ctx, child ? (mfw_child_readonly ? "正在读取…" : "正在执行…")
                 : (mfw_quick && !*status ? "方向键选择 · OK 确认 · MENU 关闭" : status), NK_TEXT_LEFT, nk_rgb(171, 182, 190));
         }
-        nk_end(ctx); nk_xlib_render(window, nk_rgb(23, 24, 26)); XFlush(display);
+        nk_end(ctx); nk_xlib_render(window, nk_rgb(23, 24, 26)); nx_cpu_flush(display);
         return;
     }
     if (nk_begin(ctx, "NXWA", nk_rect(0, 0, (float)width, (float)height), NK_WINDOW_NO_SCROLLBAR)) {
@@ -1562,7 +1691,7 @@ static void draw(void) {
     }
     nk_end(ctx);
     nk_xlib_render(window, nk_rgb(24, 29, 33));
-    XFlush(display);
+    nx_cpu_flush(display);
 }
 static void snapshot(const char *path) {
     FILE *f; int x, y;
@@ -1582,6 +1711,7 @@ int main(int argc, char **argv) {
     const char *font_metadata = NULL;
     XSetWindowAttributes attr; XFont *font; Atom wm_delete; int i, lockfd, render_count = 0;
     long long started, next_frame = 0, max_draw_ms = 0, process_started = now_ms(), zero_delay_wakes = 0;
+    long long last_discrete_ms = 0;
     const char *delay_reason = "none";
     static const char *reason_names[] = {"none","child","apply_tick","preview_due","reference_press",
         "service_due","queue_due","lifetime","pending_frame","paint_due","reference_due"};
@@ -1746,8 +1876,11 @@ int main(int argc, char **argv) {
      * visible. Mapping an empty black window before this work obscures it. */
     first_draw_started = now_ms();
     panel_stage("first-draw-begin");
-    if(lut_mode)lut_refresh_preview();
+    if(lut_mode){lut_refresh_preview();lut_update_reference();}
+    /* 窗口尚未映射时只完成光栅化与旋转，等 panel_show() XMapRaised 后再做唯一一次全屏 XPutImage。 */
+    xlib.surf->skip_put = 1;
     draw();
+    xlib.surf->skip_put = 0;
     if (xlib.surf->present_failed) {
         fprintf(stderr, "Panel image unavailable; stock focus was not changed\n");
         nk_xlib_shutdown(); nk_xfont_del(display, font);nk_xfont_del(display,hint_font);
@@ -1760,6 +1893,12 @@ int main(int argc, char **argv) {
     panel_stage("hidden-draw-ready");
     first_draw_ready = now_ms();
     max_draw_ms = first_draw_ready-first_draw_started;
+    if(live&&!panel_liveview_ready_before_show()){
+        panel_stage("entry-liveview-not-ready");
+        nx_panel_input_hide(&panel_input);
+        nk_xlib_shutdown();nk_xfont_del(display,font);nk_xfont_del(display,hint_font);
+        XDestroyWindow(display,window);XCloseDisplay(display);alarm(0);return 6;
+    }
     if (!panel_show()) {
         panel_stage("entry-not-visible");
         nx_panel_input_hide(&panel_input);
@@ -1809,7 +1948,7 @@ int main(int argc, char **argv) {
         /* Observe only a finite boot transition. Idle, restored panels retain
          * their event-driven sleep; an external completion redraws once. */
         if(lut_mode&&live&&tick>=lut_preview_due&&tick<lut_preview_until){
-            if(lut_refresh_preview())dirty=1;
+            if(lut_refresh_preview()) { dirty=1; next_frame = tick + NX_UI_FRAME_MS; }
         }
         if (interrupted || (lifetime > 0 && now_ms()-started >= lifetime)) queue.close_requested = 1;
         /* 半按快门 S1：/dev/input/event0 code 125 (KEY_LEFTMETA) press ⇒ 关闭 */
@@ -1991,17 +2130,26 @@ int main(int argc, char **argv) {
           }
           nk_input_end(ctx);
           if (trace_frames) event_ms = now_ms() - event_started;
-          /* Burst scheduling: the hold arms once per window and the paint gate
-           * below re-arms it from the frame deadline (not from when the paint
-           * started), so sustained input keeps the target cadence instead of
-           * deferring forever. A discrete key breaks the hold and paints
-           * immediately. */
-          if (discrete) { lut_paint_hold = 0;lut_reference_final = 0;lut_reference_due = 0; }
-          else if (continuous >= 2 && lut_paint_hold <= 0) lut_paint_hold = tick + NX_UI_TARGET_MS;
+          /* The previous paint owns the burst deadline. Starting another hold
+           * when input first arrives adds a whole slot before its first paint.
+           * Discrete input bypasses the remaining hold. */
+          if (discrete) {
+              lut_paint_hold = 0;
+              /* 连续快速按方向键切换时暂缓 75ms 重建参考缩略图，让列表高亮与参数先行响应。 */
+              if (lut_mode && lut_reference_dirty && last_discrete_ms > 0 && tick - last_discrete_ms < 180) {
+                  lut_reference_due = tick + 75;
+                  lut_reference_final = 0;
+              } else {
+                  lut_reference_final = 0;
+                  lut_reference_due = 0;
+              }
+              last_discrete_ms = tick;
+          }
           /* The burst ended with a coalesced reference still pending: it must
            * be rebuilt now and drawn, not left at the previous image. */
-          if (!continuous && lut_reference_final) {
-              lut_reference_final = 0;lut_reference_dirty = 1;lut_reference_due = 0;dirty = 1;
+          if (!continuous && !discrete && lut_reference_final) {
+              lut_reference_final = 0;lut_reference_due = 0;
+              if(lut_reference_dirty)dirty = 1;
           }
         }
         if(lut_mode&&lut_reference_press&&!lut_reference_original&&now_ms()-lut_reference_pressed_at>=300){lut_reference_original=1;lut_reference_dirty=dirty=1;}
@@ -2026,6 +2174,8 @@ int main(int argc, char **argv) {
         if (queue.close_requested && !queue.commit_requested && !child) break;
         if (!child && (!queue.close_requested || queue.commit_requested) && (index = nx_queue_take(&queue, now_ms())) >= 0)
             if (!start_child(1, index, NULL)) { nx_queue_done(&queue, 0); message("后端启动失败"); }
+        if(lut_mode&&!child&&!queue.commit_requested&&lut_reference_dirty&&tick>=lut_reference_due)
+            dirty=1;
         if (tick >= next_frame && !quit && !queue.close_requested) {
             /* A continuous drag/wheel burst paints on the target schedule
              * instead of on every event; dirty stays set, so the frame after
@@ -2033,18 +2183,19 @@ int main(int argc, char **argv) {
              * this hold. */
             if (dirty && tick >= lut_paint_hold) {
                 long long draw_started = now_ms(), elapsed;
-                long long reference_started = 0, reference_ms = 0;
+                long long reference_started = 0, reference_ms = 0, sync_us = 0;
                 if(refresh)xlib.surf->force_full=1;
                 if(lut_mode&&!child&&!queue.commit_requested&&tick>=lut_reference_due) {
                     reference_started = now_ms();
                     lut_refresh_preview();
+                    lut_update_reference();
                     reference_ms = now_ms() - reference_started;
                     /* Bounded publish: the rebuild either produced a complete
                      * newest-version image or left the previous one intact. */
                     lut_reference_due = reference_started +
                         (reference_ms > NX_UI_REFERENCE_BUDGET_MS ? NX_UI_REFERENCE_SLOW_MS : NX_UI_TARGET_MS);
-                    if(reference_ms > NX_UI_REFERENCE_BUDGET_MS && continuous >= 2) lut_reference_final = 1;
                 }
+                if(lut_mode&&lut_reference_dirty&&!child&&!queue.commit_requested)lut_reference_final=1;
                 dirty = 0; draw(); render_count++; painted = 1;
                 /* Fixed-rate slot. The next paint may start at the frame
                  * deadline one target period from this frame's own deadline,
@@ -2060,7 +2211,9 @@ int main(int argc, char **argv) {
                     if (lut_paint_hold <= draw_started) lut_paint_hold = draw_started + 1;
                 } else lut_paint_hold = 0;
                 if (lut_mode && lut_page_requested) {
+                    unsigned long long sync_started=trace_frames?nx_cpu_us():0;
                     XSync(display, False);
+                    if(trace_frames)sync_us=(long long)(nx_cpu_us()-sync_started);
                     fprintf(stderr, "LUT_PAGE pid=%ld shown_ms=%lld elapsed_ms=%lld\n",
                         (long)getpid(), now_ms(), now_ms()-lut_page_requested);
                     lut_page_requested = 0;
@@ -2069,10 +2222,11 @@ int main(int argc, char **argv) {
                 elapsed = now_ms() - draw_started;
                 if (elapsed > max_draw_ms) max_draw_ms = elapsed;
                 if (trace_frames)
-                    fprintf(stderr, "PANEL_DRAW pid=%ld ref_ms=%lld evt_ms=%lld draw_ms=%lld damage_us=%llu raster_us=%llu upload_us=%llu raster_px=%llu upload_px=%llu\n",
+                    fprintf(stderr, "PANEL_DRAW pid=%ld ref_ms=%lld evt_ms=%lld draw_ms=%lld damage_us=%llu raster_us=%llu upload_us=%llu raster_px=%llu upload_px=%llu rotate_us=%llu put_us=%llu flush_us=%llu sync_us=%lld\n",
                         (long)getpid(), reference_ms, event_ms, elapsed, xlib.surf->last_damage_us,
                         xlib.surf->last_raster_us, xlib.surf->last_upload_us,
-                        xlib.surf->last_raster_pixels, xlib.surf->last_upload_pixels);
+                        xlib.surf->last_raster_pixels, xlib.surf->last_upload_pixels,
+                        xlib.surf->last_rotate_us,xlib.surf->last_put_us,xlib.surf->last_flush_us,sync_us);
             } else {
                 /* Trace the reason a dirty frame did not paint: the burst hold
                  * or the frame deadline decides it, never a missing input. */
@@ -2100,13 +2254,22 @@ int main(int argc, char **argv) {
         tick = now_ms(); pending = XPending(display);
         delay_reason = "none";
         if (child) { delay = 100; delay_reason = "child"; }
-        if (lut_mode && (child || queue.commit_requested) && lut_apply_tick-tick < delay)
+        if (lut_mode && (child || queue.commit_requested) && lut_apply_tick > tick && lut_apply_tick-tick < delay)
             { delay = lut_apply_tick-tick; delay_reason = "apply_tick"; }
-        if(lut_mode&&live&&tick<lut_preview_until&&lut_preview_due-tick<delay)
-            { delay=lut_preview_due-tick; delay_reason = "preview_due"; }
-        if(lut_mode&&lut_reference_press&&!lut_reference_original&&lut_reference_pressed_at+300-tick<delay)
+        if(lut_mode&&live&&tick<lut_preview_until){
+            if(lut_preview_due<=tick&&!queue.close_requested&&!child){
+                if(lut_refresh_preview()){
+                    long long preview_paint_due=next_frame>lut_paint_hold?next_frame:lut_paint_hold;
+                    dirty=1;
+                    if(preview_paint_due<=tick){delay=0;delay_reason="preview_due";}
+                }
+            }
+            if(tick<lut_preview_until&&lut_preview_due>tick&&lut_preview_due-tick<delay)
+                { delay=lut_preview_due-tick; delay_reason = "preview_due"; }
+        }
+        if(lut_mode&&lut_reference_press&&!lut_reference_original&&lut_reference_pressed_at+300>tick&&lut_reference_pressed_at+300-tick<delay)
             { delay=lut_reference_pressed_at+300-tick; delay_reason = "reference_press"; }
-        if (services_visible() && service_due - tick < delay)
+        if (services_visible() && service_due > tick && service_due - tick < delay)
             { delay = service_due - tick; delay_reason = "service_due"; }
         if (!child && queue.desired >= 0 && (queue.desired != queue.applied || queue.commit_requested))
             if (queue.due - tick < delay) { delay = queue.due - tick; delay_reason = "queue_due"; }

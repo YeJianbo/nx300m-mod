@@ -187,11 +187,11 @@ static void custom_key_trace(const char *stage) {
             (long)getpid(),stage,now_ms());
 }
 static int custom_key_ready(Display *display,Window window,struct custom_key_context *context,
-                            KeyCode s1,KeyCode s2) {
+                            KeyCode s1,KeyCode s2,int allow_playback) {
     custom_key_trace("focus-check");
     if(!custom_key_focus(display,window))return 0;
     custom_key_trace("preview-check");
-    if(!custom_key_context_preview(context))return 0;
+    if(!custom_key_context_ready(context,allow_playback))return 0;
     custom_key_trace("shutter-state-check");
     return custom_key_shutter_clear(display,s1,s2);
 }
@@ -336,8 +336,9 @@ static void custom_key_child(int fd,pid_t parent) {
              * checking context or launching the UI. */
             XSync(display,False);custom_key_trace("release-fenced");
             unsigned modifiers=ShiftMask|LockMask|ControlMask|Mod1Mask|Mod2Mask|Mod3Mask|Mod4Mask|Mod5Mask;
+            unsigned long held_ms=(uint32_t)(event.xkey.time-pressed.xkey.time);
             if(!cancelled && !(pressed.xkey.state&modifiers) &&
-                custom_key_ready(display,window,&context,s1,s2)) {
+                custom_key_ready(display,window,&context,s1,s2,held_ms>=1200&&held_ms<=10000)) {
                 long long sent=now_ms();
                 fprintf(stderr,"NX_CUSTOM_TRIGGER trigger_ms=%lld sent_ms=%lld checks_ms=%lld\n",
                         message.triggered_at,sent,sent-message.triggered_at);
@@ -345,7 +346,7 @@ static void custom_key_child(int fd,pid_t parent) {
                 custom_key_trace("panel-dispatch-sent");
             } else if(!cancelled) {
                 /* Async grabs cannot use ReplayKeyboard. Restore exactly the
-                 * saved press/release pair outside eligible preview, in order. */
+                 * saved press/release pair outside the eligible context, in order. */
                 if(custom_key_forward(display,window,&pressed))message.forwarded++;
                 if(custom_key_forward(display,window,&event))message.forwarded++;
                 XFlush(display);message.fallbacks++;custom_key_trace("stock-pair-forwarded");

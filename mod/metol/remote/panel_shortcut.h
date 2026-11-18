@@ -77,6 +77,11 @@ static void panel_launch_script(long long triggered_at,const char *script,int lu
                 int fd=open(log,O_WRONLY|O_APPEND|O_CREAT|O_CLOEXEC,0600);
                 if (fd>=0) { dup2(fd,1); dup2(fd,2); if (fd>2) close(fd); }
             }
+            /* lut-panel.sh only opens the interactive panel when this is set;
+             * without it the panel renders but every tap is swallowed by
+             * --dry-run. The Fn long-press path is an explicit live launcher. */
+            if (setenv("NX_LUT_PANEL_LIVE","1",1))
+                fprintf(stderr,"NX_PANEL_ENV failed name=NX_LUT_PANEL_LIVE errno=%d\n",errno);
             /* FAT gives the card a new inode identity after every card-reader
              * round trip; lut-panel.sh rejects a stale inherited identity. */
             const char *source=getenv("NX300M_MOD_SOURCE_ROOT");

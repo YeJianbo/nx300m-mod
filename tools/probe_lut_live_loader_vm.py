@@ -339,8 +339,12 @@ export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
 
 def compile_binding_helper():
     source = OUT / 'ram_ready.c'
+    # <sys/stat.h> must precede the shared headers: lut_engine_shared.h declares
+    # the stat64 entry points it uses, and the current gcc rejects those
+    # declarations when the struct is not yet defined. _GNU_SOURCE moves to the
+    # command line because -include compat.h can reach <features.h> first.
     source.write_text('''/* Explicit fixture: validate binding without camera-name impersonation. */
-#define _GNU_SOURCE
+#include <sys/stat.h>
 #include "mod/metol/lut_engine_shared.h"
 int main(int argc,char **argv) {
     unsigned int pid;
@@ -356,8 +360,8 @@ tc=/opt/nx300m-toolchain/usr
 rf=/opt/nx300m-lab/stock-1.15
 export LD_LIBRARY_PATH="$tc/lib/x86_64-linux-gnu"
 "$tc/bin/arm-linux-gnueabi-gcc" -B"$tc/lib/gcc-cross/arm-linux-gnueabi/14/" \\
- -std=gnu99 -O1 -Wall -Wextra -Werror -march=armv7-a -mfloat-abi=soft -fno-pic -no-pie -fno-stack-protector \\
- -D_TIME_BITS=32 -D_FILE_OFFSET_BITS=64 -I{shlex.quote(arm_vm.wsl_path(PROJECT))} \\
+ -std=gnu99 -O1 -Wall -Wextra -Werror -Wno-unused-function -march=armv7-a -mfloat-abi=soft -fno-pic -no-pie -fno-stack-protector \\
+ -D_GNU_SOURCE -D_TIME_BITS=32 -D_FILE_OFFSET_BITS=64 -I{shlex.quote(arm_vm.wsl_path(PROJECT))} \\
  -include {shlex.quote(arm_vm.wsl_path(PROJECT / 'mod/metol/remote/compat.h'))} \\
  -nostdlib -nostartfiles -Wl,-e,_start -Wl,--dynamic-linker=/lib/ld-linux.so.3 -Wl,-rpath-link,"$rf/lib" \\
  {shlex.quote(arm_vm.wsl_path(source))} \\
@@ -514,15 +518,25 @@ def verify(guest):
         ('cache-repeat', 'composed', candidate['composed'], 100, True, False),
     ]
     if 'direct' in modes:
+        # cache-composed returns to the composed branch after cache-direct:
+        # with the per-branch table caches (stride V4) this is a cache hit and
+        # must NOT re-read the table — the reads invariant below proves the
+        # branch flip served the cached planes. The single-cache layout this
+        # suite originally asserted re-read here by construction.
         cache_cases += [('cache-direct', 'direct', candidate['direct'], 100, False, False),
-                        ('cache-composed', 'composed', candidate['composed'], 100, False, False)]
+                        ('cache-composed', 'composed', candidate['composed'], 100, True, False)]
     half = tuple((a + b + 1) // 2 for a, b in zip(baseline['composed'], candidate['composed']))
     cache_cases += [
         ('cache-replaced', 'composed', candidate['direct'], 100, False, False),
         ('cache-replaced-repeat', 'composed', candidate['direct'], 100, True, False),
         ('cache-edited', 'composed', candidate['composed'], 100, False, False),
         ('cache-strength', 'composed', half, 50, True, False),
-        ('cache-generation', 'composed', candidate['composed'], 100, False, False),
+        # A generation-only bump (every engine stage writes one, strength
+        # changes included) must HIT: path + stamp already identify the table,
+        # so re-reading unchanged bytes on the card inside the capture
+        # callback is exactly the per-strength-tweak hitch this cache exists
+        # to prevent. Content changes still miss via the stamp (cache-edited).
+        ('cache-generation', 'composed', candidate['composed'], 100, True, False),
         ('cache-fallback', 'composed', candidate['direct'], 100, False, False),
         ('cache-fallback-repeat', 'composed', candidate['direct'], 100, True, False),
         ('cache-reappeared', 'composed', candidate['composed'], 100, False, False),

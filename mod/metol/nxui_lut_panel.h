@@ -8,6 +8,10 @@ static uint16_t lut_reference_tuned[2190];
 static struct nx_lut_tune lut_reference_cached_tune;
 static int lut_reference_tuned_index=-1;
 static unsigned lut_reference_position[256],lut_reference_fraction[256];
+static unsigned char lut_reference_to8[1024];
+struct nx_ref_coord { uint16_t index; unsigned char f0,f1,f2; };
+static struct nx_ref_coord lut_reference_coords[NX_REF_W*NX_REF_H];
+static int lut_reference_coord_scene=-1;
 static int lut_reference_axes_ready;
 static int lut_reference_index=-1,lut_reference_valid;
 static int lut_reference_mono,lut_nav_dirty;
@@ -381,35 +385,66 @@ static void lut_update_reference(void) {
             lut_reference_position[i]=pos==8?7:pos;
             lut_reference_fraction[i]=pos==8?255:n%255;
         }
+        for(unsigned i=0;i<1024;i++) lut_reference_to8[i]=(unsigned char)((i*255+511)/1023);
         lut_reference_axes_ready=1;
     }
+    int built_pixels=0;
     if(lut_reference_valid&&!lut_reference_original&&lut_strength&&lut_reference_unmixed_dirty) {
-        for(unsigned i=0;i<NX_REF_W*NX_REF_H;i++) {
-            const unsigned char *src=nx_reference_rgb[lut_reference_scene]+3*i;
-            unsigned pos[3],f[3];
-            for(int c=0;c<3;c++){pos[c]=lut_reference_position[src[c]];f[c]=lut_reference_fraction[src[c]];}
-            unsigned index=pos[0]*81+pos[1]*9+pos[2];
-            for(int c=0;c<3;c++) {
-                unsigned v=nx_ref_interpolate(lut_reference_tuned+c*730+index,f[0],f[1],f[2]);
-                lut_reference_unmixed[3*i+c]=(unsigned char)((v*255+511)/1023);
+        if(lut_reference_coord_scene!=lut_reference_scene) {
+            const unsigned char *base=nx_reference_rgb[lut_reference_scene];
+            for(unsigned i=0;i<NX_REF_W*NX_REF_H;i++) {
+                const unsigned char *src=base+3*i;
+                lut_reference_coords[i].index=(uint16_t)(lut_reference_position[src[0]]*81u+
+                    lut_reference_position[src[1]]*9u+lut_reference_position[src[2]]);
+                lut_reference_coords[i].f0=(unsigned char)lut_reference_fraction[src[0]];
+                lut_reference_coords[i].f1=(unsigned char)lut_reference_fraction[src[1]];
+                lut_reference_coords[i].f2=(unsigned char)lut_reference_fraction[src[2]];
+            }
+            lut_reference_coord_scene=lut_reference_scene;
+        }
+        int mono_tuned=lut_reference_mono&&!lut_tune.value[3]&&!lut_tune.value[4];
+        if(mono_tuned) {
+            for(unsigned i=0;i<NX_REF_W*NX_REF_H;i++) {
+                struct nx_ref_coord cd=lut_reference_coords[i];
+                unsigned char v=lut_reference_to8[nx_ref_interpolate(lut_reference_tuned+cd.index,cd.f0,cd.f1,cd.f2)];
+                unsigned char *u=lut_reference_unmixed+3*i;
+                u[0]=u[1]=u[2]=v;
+                if(lut_strength==100)lut_reference_pixels[i]=0xff000000U|((uint32_t)v*0x010101U);
+            }
+        } else {
+            for(unsigned i=0;i<NX_REF_W*NX_REF_H;i++) {
+                struct nx_ref_coord cd=lut_reference_coords[i];
+                unsigned char *u=lut_reference_unmixed+3*i;
+                nx_ref_interpolate3(lut_reference_tuned,cd.index,cd.f0,cd.f1,cd.f2,
+                    lut_reference_to8,u);
+                if(lut_strength==100)lut_reference_pixels[i]=0xff000000U|((uint32_t)u[0]<<16)|((uint32_t)u[1]<<8)|u[2];
             }
         }
+        built_pixels=(lut_strength==100);
         lut_reference_unmixed_dirty=0;
     }
-    for(unsigned i=0;i<NX_REF_W*NX_REF_H;i++) {
-        const unsigned char *src=nx_reference_rgb[lut_reference_scene]+3*i;
-        unsigned output[3]={src[0],src[1],src[2]};
-        if(lut_reference_valid&&!lut_reference_original&&lut_strength) {
-            const unsigned char *unmixed=lut_reference_unmixed+3*i;
-            for(int c=0;c<3;c++) {
-                unsigned color=unmixed[c];
-                /* strength 100 is the default and divides out exactly; keep
-                 * the general formula for every other value unchanged. */
-                output[c]=lut_strength==100?color:
-                    (color*lut_strength+src[c]*(100-lut_strength)+50)/100;
+    const unsigned char *src_base=nx_reference_rgb[lut_reference_scene];
+    if(lut_reference_valid&&!lut_reference_original&&lut_strength) {
+        if(!built_pixels&&lut_strength==100) {
+            for(unsigned i=0;i<NX_REF_W*NX_REF_H;i++) {
+                const unsigned char *u=lut_reference_unmixed+3*i;
+                lut_reference_pixels[i]=0xff000000U|((uint32_t)u[0]<<16)|((uint32_t)u[1]<<8)|u[2];
+            }
+        } else if(lut_strength!=100) {
+            unsigned s1=(unsigned)lut_strength,s0=100u-s1;
+            for(unsigned i=0;i<NX_REF_W*NX_REF_H;i++) {
+                const unsigned char *src=src_base+3*i,*u=lut_reference_unmixed+3*i;
+                unsigned r=((u[0]*s1+src[0]*s0+50u)*5243u)>>19;
+                unsigned g=((u[1]*s1+src[1]*s0+50u)*5243u)>>19;
+                unsigned b=((u[2]*s1+src[2]*s0+50u)*5243u)>>19;
+                lut_reference_pixels[i]=0xff000000U|(r<<16)|(g<<8)|b;
             }
         }
-        lut_reference_pixels[i]=0xff000000U|(output[0]<<16)|(output[1]<<8)|output[2];
+    } else {
+        for(unsigned i=0;i<NX_REF_W*NX_REF_H;i++) {
+            const unsigned char *src=src_base+3*i;
+            lut_reference_pixels[i]=0xff000000U|((uint32_t)src[0]<<16)|((uint32_t)src[1]<<8)|src[2];
+        }
     }
     lut_reference.revision++;
 }
@@ -463,8 +498,15 @@ static void lut_slider_row(int field,float x,float y,float w) {
     float fraction=(float)(value-min)/(max-min),travel=bounds.w-16;
     nk_fill_rect(canvas,nk_rect(bounds.x+8,bounds.y+19,travel,4),2,nk_rgb(69,75,84));
     float zero=strength?0:travel/2,position=travel*fraction;
-    if(supported)nk_fill_rect(canvas,nk_rect(bounds.x+8+(position<zero?position:zero),bounds.y+19,
-                 position<zero?zero-position:position-zero,4),2,nk_rgb(76,154,232));
+    /* Emit a constant command count across zero so crossing 0 does not shift
+     * downstream command indices in nx_cpu_damage(); the opaque thumb below
+     * overwrites the 1px placeholder completely. */
+    if(supported){
+        float fill_x=position<zero?position:zero;
+        float fill_w=position<zero?zero-position:position-zero;
+        nk_fill_rect(canvas,nk_rect(bounds.x+8+fill_x,bounds.y+19,fill_w<1.0f?1.0f:fill_w,4),
+                     fill_w<1.0f?0:2,nk_rgb(76,154,232));
+    }
     if(!strength)nk_fill_rect(canvas,nk_rect(bounds.x+8+travel/2,bounds.y+15,1,12),0,nk_rgb(128,137,148));
     if(supported)nk_fill_rect(canvas,nk_rect(bounds.x+position+3,bounds.y+11,10,20),4,nk_rgb(219,234,249));
     char number[24];snprintf(number,sizeof number,strength?"%d%%":"%+d",value);
@@ -481,9 +523,9 @@ static void draw_lut_panel(void) {
             nk_layout_row_dynamic(ctx,42,1);nk_label(ctx,selected?recipes[selected].label:"关闭 LUT",NK_TEXT_CENTERED);
             nk_layout_row_dynamic(ctx,40,1);nk_label_colored(ctx,dots[(now_ms()/250)%4],NK_TEXT_CENTERED,nk_rgb(76,154,232));
         }
-        nk_end(ctx);nk_xlib_render(window,nk_rgb(23,24,26));XFlush(display);return;
+        nk_end(ctx);nk_xlib_render(window,nk_rgb(23,24,26));nx_cpu_flush(display);return;
     }
-    lut_update_reference();char line[256];
+    char line[256];
     struct nk_style_button saved_button=ctx->style.button;
     ctx->style.button.rounding=7;ctx->style.button.border=0;
     if(nk_begin(ctx,"NXWA",nk_rect(0,0,(float)width,(float)height),NK_WINDOW_NO_SCROLLBAR)) {
@@ -571,5 +613,5 @@ static void draw_lut_panel(void) {
             for(int i=0;i<3;i++)if(lut_button(choices[i],lut_leave_option==i)){lut_leave_pick(i);break;}
         }nk_end(ctx);
     }
-    ctx->style.button=saved_button;nk_xlib_render(window,nk_rgb(23,24,26));XFlush(display);
+    ctx->style.button=saved_button;nk_xlib_render(window,nk_rgb(23,24,26));nx_cpu_flush(display);
 }

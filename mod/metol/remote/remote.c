@@ -30,6 +30,7 @@
 #include "mongoose.h"
 #include "nx_model.h"
 #include "status.h"
+#include "http_auth.h"
 
 extern Bool XTestFakeKeyEvent(Display *, unsigned int, Bool, unsigned long);
 extern Bool XTestFakeButtonEvent(Display *, unsigned int, Bool, unsigned long);
@@ -387,6 +388,12 @@ static void upload_gate(struct mg_connection *c) {
         if (!memcmp(io->buf+i,"\r\n\r\n",4)) {header_end=io->buf+i+2;break;}
     }
     if (!header_end) return;   /* header still arriving in segments */
+    if(nx_http_auth_enabled) {
+        struct http_message request;
+        if(mg_parse_http(io->buf,(int)io->len,&request,1)>0&&!nx_auth_request(c,&request)) {
+            c->flags|=MG_F_USER_4|MG_F_SEND_AND_CLOSE;return;
+        }
+    }
     const char *line_end=memchr(io->buf,'\r',io->len);
     if (!line_end) return;
     const char *method_end=memchr(io->buf,' ',(size_t)(line_end-io->buf));
@@ -978,6 +985,7 @@ static void handler(struct mg_connection *c,int event,void *data) {
      * FILE on a second pipelined request without closing the previous one. */
     if (c->flags&MG_F_USER_2) { c->flags|=MG_F_CLOSE_IMMEDIATELY;return; }
     struct http_message *h=data;
+    if(!nx_auth_request(c,h)){c->flags|=MG_F_SEND_AND_CLOSE;return;}
     if (defer_request(c,h)) return;
     const struct mg_str *connection=mg_get_http_header(h,"Connection");
     if (connection_token(connection,"close") ||
@@ -997,7 +1005,9 @@ static void handler(struct mg_connection *c,int event,void *data) {
         reply(c,409,"{\"error\":\"原生配方控制任务正在运行\"}");return;
     }
     if (!strcmp(uri,"/api/v1/health")) {
-        reply(c,200,"{\"ok\":true,\"service\":\"nx300m-remote\"}");
+        reply(c,200,nx_http_auth_enabled?"{\"ok\":true,\"service\":\"nx300m-remote\",\"http_auth\":true}":"{\"ok\":true,\"service\":\"nx300m-remote\",\"http_auth\":false}");
+    } else if (!strcmp(uri,"/api/v1/auth/status")) {
+        reply(c,200,nx_http_auth_enabled?"{\"http_auth\":true}":"{\"http_auth\":false}");
     } else if (!strcmp(uri,"/api/v1/camera/info")) {
         /* Capability checks must not open the source card without a live hook. */
         int lut_ready=lk_ready(),recipe_ready=rp_ready(NULL);
@@ -1011,7 +1021,7 @@ static void handler(struct mg_connection *c,int event,void *data) {
         if (nx_discovery.mac[0]) snprintf(mac_json,sizeof mac_json,"\"%s\"",nx_discovery.mac);
         if (nx_discovery.instance[0]) snprintf(instance_json,sizeof instance_json,"\"%s\"",nx_discovery.instance);
         char custom_json[768],menu_json[384];custom_key_status(custom_json,sizeof custom_json);menu_key_status(menu_json,sizeof menu_json);
-        char json[4096];snprintf(json,sizeof json,"{\"service_revision\":\"20261031-fn-evdev\",\"model\":\"%s\",\"fw_ver\":\"%s\",\"mac_address\":%s,\"instance_id\":%s,\"media_paused\":%s,\"capabilities\":{\"osd\":true,\"input\":true,\"gallery\":true,\"gallery_preview\":true,\"gallery_writeback\":true,\"gallery_original_backup\":true,\"screen_mirroring\":true,\"sensor_liveview\":false,\"liveview\":false,\"lcd\":false,\"lcd_control\":false,\"silent_shutter\":false,\"key_input\":true,\"keep_alive\":true,\"time_sync\":false,\"quickshare_native\":%s,\"exposure_status\":%s,\"iso_controls\":%s,\"shutter_limit\":%s,\"color_style\":%s,\"chroma_style\":%s,\"contrast_style\":%s,\"sharpness_style\":%s,\"source_rgb_style\":%s,\"picture_wizard\":%s,\"dial_lock\":%s,\"looks\":%s,\"lut_selection\":%s,\"recipes\":%s,\"recipe_style\":%s},\"osd\":{\"width\":800,\"height\":480,\"block_width\":80,\"block_height\":40},\"screen_source\":\"%s\",\"video_source\":\"%s\",\"custom_key\":%s,\"menu_key\":%s,\"x11\":{\"background_enabled\":%s,\"helper_running\":%s,\"held_input\":%s}}",get_nx_model_name(),get_nx_model_version(),mac_json,instance_json,media_paused?"true":"false",qs_available()?"true":"false",exposure_ready?"true":"false",exposure_writable?"true":"false",ex_ready(1,NULL)?"true":"false",ex_ready(2,NULL)?"true":"false",ex_ready(4,NULL)?"true":"false",ex_ready(5,NULL)?"true":"false",ex_ready(6,NULL)?"true":"false",ex_ready(7,NULL)?"true":"false",pw_ready?"true":"false",pw_ready?"true":"false",lut_available?"true":"false",lut_ready?"true":"false",recipe_available?"true":"false",recipe_ready?"true":"false",lcd_screen_source(),lcd_video_source(),custom_json,menu_json,panel_shortcut_allowed()?"true":"false",xw.pid && !xw.retiring?"true":"false",xw_has_held()?"true":"false");reply(c,200,json);
+        char json[4096];snprintf(json,sizeof json,"{\"service_revision\":\"20261031-fn-evdev\",\"http_auth\":%s,\"model\":\"%s\",\"fw_ver\":\"%s\",\"mac_address\":%s,\"instance_id\":%s,\"media_paused\":%s,\"capabilities\":{\"osd\":true,\"input\":true,\"gallery\":true,\"gallery_preview\":true,\"gallery_writeback\":true,\"gallery_original_backup\":true,\"screen_mirroring\":true,\"sensor_liveview\":false,\"liveview\":false,\"lcd\":false,\"lcd_control\":false,\"silent_shutter\":false,\"key_input\":true,\"keep_alive\":true,\"time_sync\":false,\"quickshare_native\":%s,\"exposure_status\":%s,\"iso_controls\":%s,\"shutter_limit\":%s,\"color_style\":%s,\"chroma_style\":%s,\"contrast_style\":%s,\"sharpness_style\":%s,\"source_rgb_style\":%s,\"picture_wizard\":%s,\"dial_lock\":%s,\"looks\":%s,\"lut_selection\":%s,\"recipes\":%s,\"recipe_style\":%s},\"osd\":{\"width\":800,\"height\":480,\"block_width\":80,\"block_height\":40},\"screen_source\":\"%s\",\"video_source\":\"%s\",\"custom_key\":%s,\"menu_key\":%s,\"x11\":{\"background_enabled\":%s,\"helper_running\":%s,\"held_input\":%s}}",nx_http_auth_enabled?"true":"false",get_nx_model_name(),get_nx_model_version(),mac_json,instance_json,media_paused?"true":"false",qs_available()?"true":"false",exposure_ready?"true":"false",exposure_writable?"true":"false",ex_ready(1,NULL)?"true":"false",ex_ready(2,NULL)?"true":"false",ex_ready(4,NULL)?"true":"false",ex_ready(5,NULL)?"true":"false",ex_ready(6,NULL)?"true":"false",ex_ready(7,NULL)?"true":"false",pw_ready?"true":"false",pw_ready?"true":"false",lut_available?"true":"false",lut_ready?"true":"false",recipe_available?"true":"false",recipe_ready?"true":"false",lcd_screen_source(),lcd_video_source(),custom_json,menu_json,panel_shortcut_allowed()?"true":"false",xw.pid && !xw.retiring?"true":"false",xw_has_held()?"true":"false");reply(c,200,json);
     } else if (!strcmp(uri,"/api/v1/mods/status")) mm_request(c,h,0);
     else if (!strcmp(uri,"/api/v1/panel/entry")) {
         if (mg_vcmp(&h->method,"GET")) reply(c,405,"{\"error\":\"GET required\"}");
@@ -1056,6 +1066,7 @@ static void handler(struct mg_connection *c,int event,void *data) {
 }
 int main(int argc,char **argv) {
     close_inherited_fds();
+    if(argc==3&&!strcmp(argv[1],"--http-auth"))return nx_auth_configure(argv[2]);
     /* Initialize the card log before anything can fail: an X11 or media
      * failure must still leave evidence, and the log records whether the
      * environment variable reached this process at all. */
@@ -1073,6 +1084,9 @@ int main(int argc,char **argv) {
     }
     trace_http=getenv("NX_REMOTE_TRACE_HTTP") && !strcmp(getenv("NX_REMOTE_TRACE_HTTP"),"1");
     signal(SIGPIPE,SIG_IGN);signal(SIGINT,stop);signal(SIGTERM,stop);signal(SIGCHLD,SIG_DFL);
+    signal(SIGHUP,nx_auth_hup);
+    nx_http_auth_in_daemon=1;
+    if(!nx_auth_load())fputs("NX_REMOTE_AUTH invalid configuration; private routes locked\n",stderr);
     setpriority(PRIO_PROCESS,0,19);
     nx_model_init();
     if (!xw_init()) { fputs("NX REMOTE: X worker memory unavailable\n",stderr);fn_log_exit("xw-init");return 3; }
@@ -1103,6 +1117,7 @@ int main(int argc,char **argv) {
     if (publish_ready()<0) { perror("NX REMOTE: readiness notification");stopping=1;result=6; }
     unsigned int traced_polls=0;
     while (!stopping) {
+        if(nx_http_auth_reload){nx_http_auth_reload=0;if(!nx_auth_load())fputs("NX_REMOTE_AUTH reload failed; private routes locked\n",stderr);}
         int trace_poll=trace_http && traced_polls<3;
         if (trace_poll) fprintf(stderr,"NX_REMOTE_HTTP poll_begin=%u\n",traced_polls);
         mg_mgr_poll(&manager,50);

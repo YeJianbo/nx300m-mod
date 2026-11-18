@@ -4,11 +4,42 @@ set -eu
 set -f
 [ "$#" -eq 1 ] || exit 64
 case $1 in
-    status|network-info|disable-autostart|enable-autostart|preview-preference|preview-toggle|preview-enable|preview-s2-enable|preview-probe-once|preview-identity|preview-monochrome|preview-monochrome-timing|preview-sync|preview-stop|preview-restore|preview-status|preview-diag-export|hotspot-status|hotspot-toggle|hotspot-stop|hotspot-credentials|telnet-status|telnet-toggle|telnet-password|telnet-disable) action=$1 ;;
+    status|network-info|remote-auth-on|remote-auth-off|remote-auth-key|disable-autostart|enable-autostart|lens-cs-probe|preview-preference|preview-toggle|preview-enable|preview-s2-enable|preview-probe-once|preview-identity|preview-monochrome|preview-monochrome-timing|preview-sync|preview-stop|preview-restore|preview-status|preview-diag-export|hotspot-status|hotspot-toggle|hotspot-stop|hotspot-credentials|telnet-status|telnet-toggle|telnet-password|telnet-disable) action=$1 ;;
     fw-*) action=$1 ;;
     *) exit 64 ;;
 esac
 . "${NX300M_MOD_ROOT:-/mnt/mmc/nx300m-mod}/common.sh"
+case $action in
+    remote-auth-on|remote-auth-off|remote-auth-key)
+        case $action in remote-auth-on) auth_mode=on ;; remote-auth-off) auth_mode=off ;; *) auth_mode=status ;; esac
+        "$REMOTE" --http-auth "$auth_mode" || exit 1
+        if [ "$auth_mode" != status ]; then
+            if ! record_alive; then printf '服务未运行，下次启动生效\n'; exit 0; fi
+            auth_prev=
+            IFS= read -r auth_prev < "$STATE/remote-auth.status" || :
+            kill -HUP "$REC_PID" || exit 1
+            auth_deadline=$(monotonic_cs); auth_deadline=$((auth_deadline+200))
+            while :; do
+                auth_actual=
+                IFS= read -r auth_actual < "$STATE/remote-auth.status" || :
+                [ "$auth_actual" != "$auth_mode" ] || break
+                # A failed publication means the daemon rejected the config
+                # (fail closed); surface it immediately instead of burning the
+                # deadline on a plain confirmation timeout. Only a failure
+                # published after this reload request counts: the pre-HUP
+                # content can still hold an older failed state (e.g. a fix
+                # attempt right after a config error), and the daemon always
+                # republishes within the deadline even when it fails again.
+                if [ "$auth_actual" = failed ] && [ "$auth_actual" != "$auth_prev" ]; then
+                    printf '连接鉴权配置异常，服务已拒绝外部连接\n' >&2
+                    exit 1
+                fi
+                [ "$(monotonic_cs)" -lt "$auth_deadline" ] || { printf '已保存，服务确认超时\n' >&2; exit 1; }
+                sleep 0.05
+            done
+        fi
+        exit 0 ;;
+esac
 if [ "$action" = network-info ]; then
     # Network inspection touches neither the source card nor media. Keep it
     # available while USB/media access is paused, just like the HTTP status.
@@ -354,6 +385,67 @@ case $action in
             enable-s2-stock) printf 'S2 原样已请求；保持原厂滤镜关闭。单位表处理仅允许独立单帧探针。\n' ;;
             restore) printf '预览已关闭。S2 为软停，完全退出需正常关机重启。\n' ;;
         esac
+        exit 0
+        ;;
+    lens-cs-probe)
+        probe=$ROOT/bin/manual-lens-probe.arm
+        [ -f "$probe" ] && [ ! -L "$probe" ] && [ -x "$probe" ] || fail '镜头探针不可用'
+        rc=0
+        data=$("$probe" 2>&1) || rc=$?
+        ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf unknown)
+        log_dir=$SOURCE_ROOT/logs
+        log_file=$log_dir/lens-cs-probe.log
+        saved=0
+        sample_count=0
+        if { [ -d "$log_dir" ] || mkdir -p "$log_dir" 2>/dev/null; } && [ -d "$log_dir" ] && [ ! -L "$log_dir" ] && [ ! -L "$log_file" ]; then
+            if { printf 'TS=%s RC=%s\n%s\n' "$ts" "$rc" "$data" >> "$log_file"; } 2>/dev/null; then
+                saved=1
+                sample_count=$(grep -c '^TS=' "$log_file" 2>/dev/null || printf 1)
+            fi
+        fi
+        printf '%s\n' "$data" | awk -v rc="$rc" -v saved="$saved" -v count="$sample_count" '
+            function grab(key,    pat, p, s, c, i) {
+                pat = "\"" key "\":"
+                p = index($0, pat)
+                if (!p) return "?"
+                s = substr($0, p + length(pat))
+                if (substr(s, 1, 1) == "\"") {
+                    s = substr(s, 2)
+                    p = index(s, "\"")
+                    return p ? substr(s, 1, p - 1) : "?"
+                }
+                for (i = 1; i <= length(s); i++) {
+                    c = substr(s, i, 1)
+                    if (c == "," || c == "}" || c == "]") break
+                }
+                return i > 1 ? substr(s, 1, i - 1) : "?"
+            }
+            substr($0, 1, 1) == "{" {
+                found = 1
+                reason = grab("reason")
+                eready = grab("electronic_ready")
+                raw = grab("state_signed")
+                phys = grab("physical_attached")
+                iqr = grab("ready")
+                shd = grab("shading")
+                mode = grab("mode")
+                flags = grab("flags")
+                cs_src = grab("cs_source")
+                cs_ok = grab("sampled")
+                cs_dev = grab("device_mapping")
+                printf "电子镜头：%s (raw=%s)\n", (eready=="true" ? "就绪" : eready=="false" ? "未就绪" : "未知"), raw
+                printf "卡口开关：%s · IQ ready=%s\n", (phys=="true" ? "闭合" : phys=="false" ? "断开" : "未知"), iqr
+                printf "IQ shading=%s\n", (shd=="0x00000000" ? "空" : shd)
+                printf "PP mode=%s flags=%s cs=%s\n", mode, flags, (cs_ok=="true" ? "已采样" : cs_dev=="true" ? "设备映射" : cs_src=="0x00000000" ? "空" : reason)
+                if (saved == 1) printf "已追加保存到 logs/lens-cs-probe.log (第 %s 次)\n", count
+                else printf "警告：仅显示结果，未写入日志卡\n"
+            }
+            END {
+                if (!found) {
+                    printf "探针退出 rc=%s\n", rc
+                }
+            }
+        '
         exit 0
         ;;
 esac

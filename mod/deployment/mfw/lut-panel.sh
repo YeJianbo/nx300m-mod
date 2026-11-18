@@ -12,7 +12,26 @@ panel_stage() {
 panel_stage script-entry
 PATH=/bin:/usr/bin:/sbin:/usr/sbin
 export PATH
-fail() { printf 'NX300M LUT panel: %s\n' "$*" >&2; exit 1; }
+# Control-path journal shared with lut-load.sh and lut_engine; see the note
+# in lut-load.sh. Panel stderr redirection depends on the launcher, so entry
+# failures also land in the canonical RAM journal.
+LUT_JOURNAL=/var/run/nx300m-lut-journal.log
+journal() {
+    up=0; read -r up rest </proc/uptime 2>/dev/null || up=0
+    printf '%s %s\n' "${up:-0}" "$*" >>"$LUT_JOURNAL" 2>/dev/null || :
+}
+journal_cap() {
+    size=$(stat -c %s "$LUT_JOURNAL" 2>/dev/null) || return 0
+    [ "$size" -le 32768 ] || {
+        tail -c 16384 "$LUT_JOURNAL" >"$LUT_JOURNAL.trim" 2>/dev/null || return 0
+        cat "$LUT_JOURNAL.trim" >"$LUT_JOURNAL" 2>/dev/null || :
+        rm -f "$LUT_JOURNAL.trim"
+    }
+    return 0
+}
+journal_cap
+journal "panel begin pid=$$ args=$*"
+fail() { journal "PANEL-FAIL $*"; printf 'NX300M LUT panel: %s\n' "$*" >&2; exit 1; }
 force_dry=0
 lifetime=
 while [ "$#" -gt 0 ]; do
@@ -80,7 +99,14 @@ export NX_STATE_DIR="$runtime"
 unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH
 # The engine admits/loads the adapter on Apply. Merely opening the list must
 # not pause the camera or synchronize preview before the first UI frame.
-if [ "$force_dry" -eq 0 ]; then set -- --live; else set -- --dry-run; fi
+# Default is live: a user who managed to launch the LUT panel must be able to
+# operate it. Only an explicit --dry-run (lut-cycle.sh's probe) stays dry, and
+# NX_LUT_PANEL_DRY=1 forces dry for a caller that must never touch the camera.
+if [ "$force_dry" -eq 0 ] && [ "${NX_LUT_PANEL_DRY:-0}" != 1 ]; then
+    set -- --live
+else
+    set -- --dry-run
+fi
 [ "$(stat -c '%d:%i' "$ROOT")" = "$source_id" ] || fail 'LUT source changed during panel preparation'
 printf 'panel_runtime=%s\nlut_data_root=%s\n' "$runtime" "$ROOT"
 cd "$runtime"

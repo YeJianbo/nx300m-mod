@@ -69,6 +69,8 @@ struct nx_sfr_config {
     int (*liveview_changed)(void *,int);
     void (*liveview_change_state)(void *,unsigned);
     void (*liveview_memory_restart)(void *,int);
+    int (*liveview_restart_allowed)(void *);
+    void *const volatile *capture_counter_ptr;
 #endif
 };
 enum nx_sfr_probe_state {
@@ -87,7 +89,7 @@ struct nx_sfr_probe {
 };
 struct nx_sfr_origin { volatile unsigned tid, pending, active; };
 #ifdef NX_SFR_SESSION
-struct nx_sfr_capture_owner { volatile unsigned tid; unsigned native,skipped; };
+struct nx_sfr_capture_owner { volatile unsigned tid; unsigned native,skipped,opened_ms; };
 #endif
 struct nx_sfr_runtime {
     volatile unsigned inflight, initialized, backend_active, captures, control_pause;
@@ -116,6 +118,15 @@ struct nx_sfr_runtime {
     volatile unsigned refresh_queued, refresh_attempt, refresh_requests, refresh_dispatches;
     int refresh_error;
     volatile unsigned refresh_pending, refresh_resumes, refresh_state, refresh_wakeups;
+    volatile unsigned create_calls, create_native_state, create_deferred;
+    unsigned stop_drain_calls, stop_drain_waits, stop_drain_total_ms, stop_drain_max_ms;
+    unsigned b2y_drain_calls, b2y_drain_waits, b2y_drain_total_ms, b2y_drain_max_ms;
+    unsigned stop_native_calls, stop_native_total_ms, stop_native_max_ms;
+    unsigned b2y_open_calls, b2y_open_total_ms, b2y_open_max_ms;
+    unsigned b2y_lease_calls, b2y_lease_total_ms, b2y_lease_max_ms;
+    unsigned start_calls, start_total_ms, start_max_ms;
+    unsigned refresh_start_ms, refresh_total_ms, refresh_max_ms;
+    unsigned saved_sensor_fps, active_sensor_fps, capture_hold_ms, refresh_deferred;
 #endif
 };
 /* Only --fixture on the named ARM test process accepts this UDD/lease boundary.

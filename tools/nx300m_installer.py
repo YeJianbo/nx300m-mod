@@ -57,7 +57,17 @@ def prepare_first(card, identity):
         if len(data) != rec['bytes'] or checksum(data) != rec['sha256']:
             raise ValueError('首次安装文件校验失败：' + name)
         size += len(data)
-    verify_complete(lambda name: safe_path(FIRST / 'payload', name).read_bytes())
+    read = lambda name: safe_path(FIRST / 'payload', name).read_bytes()
+    if info.get('card_manifest'):
+        runtime = read('nx300m-mod/runtime-files.list').decode('ascii').splitlines()
+        if not runtime or len(runtime) != len(set(runtime)):
+            raise ValueError('首次安装运行清单无效。')
+        for name in runtime:
+            read('nx300m-mod/' + name)
+        if read('nx300m-mod/bin/nxui.arm') != read('nx300m-mod/fn-panel/bin/nxui.arm'):
+            raise ValueError('菜单版本不一致。')
+    else:
+        verify_complete(read)
     if shutil.disk_usage(card).free < size + 4 * 1024 * 1024:
         raise ValueError('存储卡剩余空间不足。')
     return files
@@ -167,6 +177,8 @@ def volume(root):
 
 def prepare(card):
     info = json.loads(MANIFEST.read_text(encoding='utf-8'))
+    if info.get('kind') == 'nx300m-checked-card-runtime':
+        return prepare_card_manifest(card, info)
     if info.get('kind') != 'nx300m-cold-boot-update' or info.get('schema') != 1:
         raise ValueError('升级包格式不受支持。')
     complete_runtime = bool(info.get('complete_runtime'))
@@ -188,17 +200,74 @@ def prepare(card):
             if not valid:
                 raise ValueError('已有无线配置无效，请保留并检查：' + name)
             continue
-        if current not in rec['accepted']:
+        inventory = name == 'nx300m-mod/runtime-files.list'
+        if not inventory and current not in rec['accepted']:
             raise ValueError('目标版本不匹配：' + name)
         data = safe_path(BASE, rec['asset']).read_bytes()
         if checksum(data) != rec['sha256']:
             raise ValueError('升级包校验失败：' + name)
+        if inventory and current is not None:
+            # Keep optional installed modules in the RAM staging inventory.
+            entries = set(data.decode('ascii').splitlines())
+            entries.update(dest.read_text(encoding='ascii').splitlines())
+            for entry in entries:
+                if not entry or entry != PurePosixPath(entry).as_posix():
+                    raise ValueError('运行清单路径无效：' + entry)
+                safe_path(card, 'nx300m-mod/' + entry)
+            data = ('\n'.join(sorted(entries)) + '\n').encode('ascii')
         writes[name] = data
     read = lambda name: writes[name] if name in writes else safe_path(card, name).read_bytes()
     if complete_runtime:
         verify_complete(read, allow_stock_wifi=True)
     else:
         verify_backend(read, info.get('backend_files'))
+    return writes
+
+
+def prepare_card_manifest(card, info):
+    if info.get('schema') != 1:
+        raise ValueError('升级包格式不受支持。')
+    files = info.get('files', {})
+    menu = files.get('nx300m-mod/bin/nxui.arm')
+    menu_path = safe_path(card, 'nx300m-mod/bin/nxui.arm')
+    if not menu or not menu_path.is_file():
+        raise ValueError('当前卡缺少 MOD 菜单。')
+    if checksum(menu_path.read_bytes()) not in info.get('accepted_menu_sha256', []):
+        raise ValueError('当前菜单版本不在本安装器支持范围内。')
+    writes = {}
+    for name, rec in files.items():
+        dest = safe_path(card, name)
+        if dest.exists() and not dest.is_file():
+            raise ValueError('目标不是普通文件：' + name)
+        current = checksum(dest.read_bytes()) if dest.is_file() else None
+        if current is None and not rec.get('allow_missing'):
+            raise ValueError('当前卡缺少目标文件，请使用完整安装包：' + name)
+        if name == RESTART:
+            # The restart marker is generated on every update. Its previous
+            # random value cannot identify the installed release, so validate
+            # the nonempty marker format while excluding it from version gates.
+            if current is not None and not re.fullmatch(rb'[0-9A-Za-z.-]{1,128}\n', dest.read_bytes()):
+                raise ValueError('当前重启标记格式无效：' + name)
+            version_gate = False
+        else:
+            version_gate = name != 'nx300m-mod/runtime-files.list'
+        if version_gate and current is not None and current not in rec.get('accepted', [rec['sha256']]):
+            raise ValueError('卡上版本与本次发布不一致：' + name)
+        asset = safe_path(BASE, 'payload/' + name)
+        data = asset.read_bytes()
+        if len(data) != rec['bytes'] or checksum(data) != rec['sha256']:
+            raise ValueError('升级包校验失败：' + name)
+        if name == 'nx300m-mod/runtime-files.list' and current is not None:
+            entries = set(data.decode('ascii').splitlines())
+            entries.update(dest.read_text(encoding='ascii').splitlines())
+            for entry in entries:
+                if not entry or entry != PurePosixPath(entry).as_posix() or '\n' in entry:
+                    raise ValueError('运行清单路径无效：' + entry)
+                safe_path(card, 'nx300m-mod/' + entry)
+            data = ('\n'.join(sorted(entries)) + '\n').encode('ascii')
+        writes[name] = data
+    if not writes:
+        raise ValueError('升级包为空。')
     return writes
 
 
@@ -410,8 +479,9 @@ def apply(card, identity):
             target = safe_path(card, name)
             target.parent.mkdir(parents=True, exist_ok=True)
             write_checked(target, data)
-        backend_files = json.loads(MANIFEST.read_text(encoding='utf-8')).get('backend_files')
-        verify_backend(lambda name: safe_path(card, name).read_bytes(), backend_files)
+        info = json.loads(MANIFEST.read_text(encoding='utf-8'))
+        if info.get('kind') != 'nx300m-checked-card-runtime':
+            verify_backend(lambda name: safe_path(card, name).read_bytes(), info.get('backend_files'))
         if volume(str(card))['serial'] != identity['serial']:
             raise OSError('写入期间磁盘已更换')
         write_checked(safe_path(card, RESTART), all_writes[RESTART])

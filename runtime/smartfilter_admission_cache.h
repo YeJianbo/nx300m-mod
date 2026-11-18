@@ -2,6 +2,15 @@
  * still runs on every operation, including after ptrace has stopped threads. */
 #ifndef NX_SMARTFILTER_ADMISSION_CACHE_H
 #define NX_SMARTFILTER_ADMISSION_CACHE_H
+#ifndef NX_ADMISSION_CACHE_SLOTS
+#define NX_ADMISSION_CACHE_SLOTS (STOCK_IMAGES+1)
+#endif
+#ifndef NX_ADMISSION_CACHE_BUILD
+#define NX_ADMISSION_CACHE_BUILD NX_SFR_BUILD
+#endif
+#ifndef NX_ADMISSION_CACHE_PREFIX
+#define NX_ADMISSION_CACHE_PREFIX "nx300m-sf-files"
+#endif
 struct nx_sfr_file_proof {
     struct stat64 file;
     char sha[65];
@@ -10,7 +19,7 @@ struct nx_sfr_file_cache {
     unsigned magic, build, pid, fixture, count;
     unsigned long long start;
     char boot[40];
-    struct nx_sfr_file_proof proof[STOCK_IMAGES+1];
+    struct nx_sfr_file_proof proof[NX_ADMISSION_CACHE_SLOTS];
 };
 static struct nx_sfr_file_cache admission_cache;
 static char admission_cache_path[128];
@@ -29,19 +38,19 @@ static void admission_cache_begin(unsigned pid,unsigned long long start,int fixt
     struct statfs fs;
     if(length!=37||boot[36]!='\n'||statfs("/var/run",&fs)||
        ((unsigned long)fs.f_type!=0x01021994UL&&(unsigned long)fs.f_type!=0x858458f6UL)) return;
-    admission_cache.magic=0x48434653U; admission_cache.build=NX_SFR_BUILD;
+    admission_cache.magic=0x48434653U; admission_cache.build=NX_ADMISSION_CACHE_BUILD;
     admission_cache.pid=pid; admission_cache.start=start; admission_cache.fixture=(unsigned)fixture;
     memcpy(admission_cache.boot,boot,sizeof boot);
     snprintf(admission_cache_path,sizeof admission_cache_path,
-             "/var/run/nx300m-sf-files-%u-%u.cache",pid,NX_SFR_BUILD);
+             "/var/run/" NX_ADMISSION_CACHE_PREFIX "-%u-%u.cache",pid,NX_ADMISSION_CACHE_BUILD);
     fd=open(admission_cache_path,O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
     struct stat64 st; struct nx_sfr_file_cache saved;
     int ok=fd>=0&&!__fxstat64(3,fd,&st)&&S_ISREG(st.st_mode)&&
         st.st_uid==geteuid()&&!(st.st_mode&077)&&st.st_size==sizeof saved&&
         read(fd,&saved,sizeof saved)==sizeof saved;
     if(fd>=0) close(fd);
-    if(ok&&saved.magic==admission_cache.magic&&saved.build==NX_SFR_BUILD&&saved.pid==pid&&
-       saved.start==start&&saved.fixture==(unsigned)fixture&&saved.count<=STOCK_IMAGES+1&&
+    if(ok&&saved.magic==admission_cache.magic&&saved.build==NX_ADMISSION_CACHE_BUILD&&saved.pid==pid&&
+       saved.start==start&&saved.fixture==(unsigned)fixture&&saved.count<=NX_ADMISSION_CACHE_SLOTS&&
        !memcmp(saved.boot,boot,sizeof boot)) admission_cache=saved;
 }
 static int admission_file_hash(int fd,unsigned size,const char *expected) {
@@ -59,7 +68,7 @@ static int admission_file_hash(int fd,unsigned size,const char *expected) {
         unsigned i;
         for(i=0;i<admission_cache.count;++i)
             if(!memcmp(admission_cache.proof[i].sha,expected,65)) break;
-        if(i<STOCK_IMAGES+1) {
+        if(i<NX_ADMISSION_CACHE_SLOTS) {
             admission_cache.proof[i].file=after;
             memcpy(admission_cache.proof[i].sha,expected,65);
             if(i==admission_cache.count) ++admission_cache.count;

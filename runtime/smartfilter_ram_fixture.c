@@ -53,7 +53,15 @@ static unsigned ram_liveview[64],ram_handler_factory[84],ram_item_handler[4],ram
 static unsigned ram_controller_dispatches,ram_topology_rebuilds,ram_stock_callback_done;
 static unsigned ram_frame_tid,ram_controller_tid;
 static unsigned ram_stop_pending,ram_stop_callbacks,ram_memory_state=1,ram_waiting_observed;
+static int ram_native_start_callback;
+static unsigned ram_create_state,ram_create_path,ram_create_initialized;
+static unsigned ram_liveview_vptr[5];
+void set_timing_marker(unsigned marker,const char *name) { (void)marker; (void)name; }
+static void ram_native_notify(void *self,unsigned event,int value) {
+    REQUIRE(self==ram_liveview); (void)event; (void)value;
+}
 static void *ram_liveview_instance(void) { return ram_liveview; }
+EXPORTED(void *, ram_creator_instance,"_ZN20CLiveviewPathCreator11GetInstanceEv",(void)) { return ram_liveview; }
 EXPORTED(void *, ram_factory,"_ZN15CHandlerFactory11GetInstanceEv",(void)) { return ram_handler_factory; }
 EXPORTED(void *, ram_controller,"_ZN18CCaptureController8InstanceEv",(void)) { return ram_b2y; }
 EXPORTED(int, ram_measure,"_ZNK18CCaptureController18MeasurePerformanceEv",(void *self)) {
@@ -88,20 +96,32 @@ EXPORTED(unsigned, ram_memory,"_ZN15CLiveviewBuffer14GetMemoryStateEv",(void *se
 EXPORTED(unsigned, ram_fd,"_ZN15CLiveviewCommon11GetFDEnableEv",(void *self)) { REQUIRE(self==common); return 0; }
 EXPORTED(unsigned, ram_zoom,"_ZN15CLiveviewCommon20GetZoomMagnificationEv",(void *self)) { REQUIRE(self==common); return 0; }
 EXPORTED(unsigned, ram_display,"_ZN15CLiveviewCommon22GetOutputDisplayDeviceEv",(void *self)) { REQUIRE(self==common); return 0; }
+EXPORTED(unsigned, ram_video_out,"_ZN15CLiveviewCommon15GetVideoOutModeEv",(void *self)) { REQUIRE(self==common); return 0; }
 EXPORTED(unsigned, ram_peak,"_ZN15CLiveviewCommon18GetFocusPeakEnableEv",(void *self)) { REQUIRE(self==common); return 0; }
 EXPORTED(unsigned, ram_tracking,"_ZN15CLiveviewCommon23GetObjectTrackingEnableEv",(void *self)) { REQUIRE(self==common); return 0; }
 EXPORTED(int, ram_create,"_ZN20CLiveviewPathCreator6CreateEi",(void *self,int mode)) {
     REQUIRE(self==ram_liveview&&mode==0&&ram_controller_tid==(unsigned)syscall(SYS_gettid));
     ++ram_topology_rebuilds;
     ram_path_probe(NX_SFR_CREATE);
+    ram_create_state=ram_liveview[0x34/4];ram_create_path=ram_runtime->s2_path;
+    ram_create_initialized=ram_runtime->initialized;
     return 0;
 }
 EXPORTED(void, ram_skip_rate,"_ZN9CLiveview16setFrameSkipRateEv",(void *self)) { REQUIRE(self==ram_liveview); }
 EXPORTED(int, ram_prepare_nodes,"_ZN17CLiveviewCallback11PrepareNodeEv",(void *self)) {
     REQUIRE(self==ram_callback); return 1;
 }
+EXPORTED(int, ram_ready_nodes,"_ZN17CLiveviewCallback9ReadyNodeEv",(void *self)) {
+    REQUIRE(self==ram_callback); return 1;
+}
 EXPORTED(void, ram_stream_on,"_ZN9CLiveview13videoStreamOnEv",(void *self)) {
-    REQUIRE(self==ram_liveview); ram_liveview[0x34/4]=7;
+    REQUIRE(self==ram_liveview);
+    if(ram_native_start_callback) {
+        void *library=dlopen("libcapture-fw-slpcam-nx300.so",RTLD_LAZY|RTLD_NOLOAD);
+        REQUIRE(library);
+        void (*complete)(void *,unsigned,int)=symbol(library,"_ZN9CLiveview20startCallbackProcessEmi");
+        complete(self,0,0);
+    } else ram_liveview[0x34/4]=7;
 }
 static unsigned ram_device_open_original;
 static const char *ram_device_open_owner;
@@ -357,6 +377,13 @@ static void ram_capture_retained_test(void) {
     /* Another client holds a channel, so the owner cannot relinquish its
      * power reference. Native Open can still acquire the free lifecycle.
      * Release the channel before native Prepare, as that client completes. */
+    /* A separate console request may arrive after the 250 ms idle release.
+     * Establish this test's retained reference locally, before taking a channel. */
+    for(unsigned tries=0;;++tries) {
+        REQUIRE(tries<100); ram_off_prepare(1); ram_off_worker();
+        if(operations) break;
+        usleep(10000);
+    }
     REQUIRE(ram_runtime->session.held==1);
     REQUIRE(!sem_trywait(&native_semaphore[2]));
     ram_b2y_open_call();
@@ -549,7 +576,116 @@ int main(void) {
             }
             else
 #endif
-            if(command==120) ram_refresh();
+            if(command==144||command==145) {
+                ram_liveview_vptr[4]=(unsigned)ram_native_notify;
+                ram_liveview[0]=(unsigned)ram_liveview_vptr;
+                ram_liveview[0x34/4]=1;ram_liveview[0x38/4]=0;
+                ram_controller_tid=(unsigned)syscall(SYS_gettid);
+                ram_native_start_callback=1;
+                int (*start_native)(void *,int,unsigned)=(void *)*ram_slots[NX_SFR_START];
+                if(command==145) {
+                    /* RecipeView builds the path before Start(-1) reuses it.
+                     * Exercise that stock caller while native state is 1. */
+                    int (*register_path)(void *,int)=symbol(capture,"_ZN11CRecipeView8RegisterEi");
+                    REQUIRE(register_path(NULL,0)==0&&ram_create_state==1);
+                }
+                REQUIRE(start_native(ram_liveview,command==145?-1:0,60)==1);
+                ram_native_start_callback=0;
+                printf("{\"type\":\"fixture_initial_start_path\",\"create_state\":%u,\"s2_at_create\":%u,\"initialized_at_create\":%u,\"native_state\":%u,\"frames\":%u,\"queued_before_frame\":%u}\n",
+                    ram_create_state,ram_create_path,ram_create_initialized,ram_liveview[0x34/4],
+                    ram_runtime->bridge.stats.frames,ram_runtime->refresh_queued);
+                ram_refresh();
+                printf("{\"type\":\"fixture_initial_start_rebuild\",\"create_state\":%u,\"s2_path\":%u,\"native_state\":%u,\"pending\":%u,\"queued\":%u}\n",
+                    ram_create_state,ram_runtime->s2_path,ram_liveview[0x34/4],ram_runtime->refresh_pending,ram_runtime->refresh_queued);
+            }
+            else if(command==143) {
+                /* Native Start may be accepted after our changeProcess has
+                 * stopped the stream, before its asynchronous stop callback. */
+                filter_mode=15;
+                ram_liveview_vptr[4]=(unsigned)ram_native_notify;
+                ram_liveview[0]=(unsigned)ram_liveview_vptr;
+                ram_liveview[0x34/4]=7; ram_liveview[0x38/4]=0;
+                ram_refresh_callback();
+                unsigned payload[4],receiver[16]={0};
+                REQUIRE(msgrcv(ram_capture_queue,payload,12,0,IPC_NOWAIT)==12);
+                memcpy(receiver+2,payload,sizeof payload);
+                ram_controller_tid=(unsigned)syscall(SYS_gettid);
+                int (*handle)(void *)=(void *)*ram_slots[NX_SFR_MESSAGE_HANDLE];
+                REQUIRE(!handle(receiver));
+                REQUIRE(ram_runtime->refresh_pending&&ram_stop_pending&&ram_liveview[0x34/4]==14);
+                int (*start_native)(void *,int,unsigned)=(void *)*ram_slots[NX_SFR_START];
+                REQUIRE(start_native(ram_liveview,0,60)==1);
+                REQUIRE(ram_liveview[0x34/4]==14&&ram_liveview[0x38/4]==2);
+                unsigned pending=ram_runtime->refresh_pending;
+                ram_stop_pending=0;
+                void (*complete)(void *,int)=(void *)*ram_slots[NX_SFR_CHANGE_STOP_CALLBACK];
+                complete(ram_liveview,0);
+                unsigned callback_state=ram_liveview[0x34/4],callback_next=ram_liveview[0x38/4];
+                unsigned callback_pending=ram_runtime->refresh_pending,callback_queued=ram_runtime->refresh_queued;
+                if(callback_queued) {
+                    REQUIRE(msgrcv(ram_capture_queue,payload,12,0,IPC_NOWAIT)==12);
+                    memcpy(receiver+2,payload,sizeof payload);
+                    ram_native_start_callback=1;
+                    REQUIRE(!handle(receiver));
+                    ram_native_start_callback=0;
+                }
+                printf("{\"type\":\"fixture_start_during_refresh\",\"native_state\":%u,\"native_next\":%u,\"pending_after_start\":%u,\"pending_after_callback\":%u,\"queued_after_callback\":%u}\n",
+                    callback_state,callback_next,pending,callback_pending,callback_queued);
+                printf("{\"type\":\"fixture_start_during_refresh_return\",\"native_state\":%u,\"native_next\":%u,\"pending\":%u,\"queued\":%u}\n",
+                    ram_liveview[0x34/4],ram_liveview[0x38/4],ram_runtime->refresh_pending,ram_runtime->refresh_queued);
+            }
+            else if(command==140) {
+                /* Exercise the real native stop caller and its asynchronous
+                 * completion, rather than replacing stopProcess itself. */
+                ram_liveview_vptr[4]=(unsigned)ram_native_notify;
+                ram_liveview[0]=(unsigned)ram_liveview_vptr;
+                ram_liveview[0x34/4]=7; ram_liveview[0x38/4]=0;
+                int (*stop_native)(void *,unsigned,unsigned)=symbol(capture,"_ZN9CLiveview19stopLiveviewProcessENS_15eLIVEVIEW_STATEEb");
+                REQUIRE(stop_native(ram_liveview,8,0)==1);
+                REQUIRE(ram_stop_pending&&ram_liveview[0x34/4]==8&&ram_runtime->stream_stopped);
+                void (*complete)(void *,unsigned,int)=symbol(capture,"_ZN9CLiveview19stopCallbackProcessEmi");
+                ram_stop_pending=0; complete(ram_liveview,0,0);
+                REQUIRE(ram_liveview[0x34/4]==1&&!ram_runtime->session.held&&!ram_runtime->session.active);
+                printf("{\"type\":\"fixture_native_playback_stop\",\"state\":%u,\"stream_stopped\":%u,\"held\":%u,\"active\":%u}\n",
+                    ram_liveview[0x34/4],ram_runtime->stream_stopped,ram_runtime->session.held,ram_runtime->session.active);
+            }
+            else if(command==142) {
+                ram_liveview_vptr[4]=(unsigned)ram_native_notify;
+                ram_liveview[0]=(unsigned)ram_liveview_vptr;
+                ram_liveview[0x34/4]=7; ram_liveview[0x38/4]=0;
+                int (*stop_native)(void *,unsigned,unsigned)=symbol(capture,"_ZN9CLiveview19stopLiveviewProcessENS_15eLIVEVIEW_STATEEb");
+                REQUIRE(stop_native(ram_liveview,8,0)==1&&ram_stop_pending);
+                int (*start_native)(void *,int,unsigned)=(void *)*ram_slots[NX_SFR_START];
+                REQUIRE(start_native(ram_liveview,0,60)==1);
+                REQUIRE(ram_liveview[0x34/4]==8&&ram_liveview[0x38/4]==2);
+                unsigned stopped_before_callback=ram_runtime->stream_stopped;
+                unsigned rendered=ram_runtime->bridge.stats.rendered;
+                for(unsigned i=0;i<16;++i) { ram_off_prepare(1); ram_off_worker(); usleep(10000); }
+                printf("{\"type\":\"fixture_native_queued_start\",\"native_state\":%u,\"native_next\":%u,\"stream_stopped\":%u,\"rendered_before_stop_callback\":%u}\n",
+                    ram_liveview[0x34/4],ram_liveview[0x38/4],stopped_before_callback,ram_runtime->bridge.stats.rendered-rendered);
+                ram_controller_tid=(unsigned)syscall(SYS_gettid);
+                void (*complete)(void *,unsigned,int)=symbol(capture,"_ZN9CLiveview19stopCallbackProcessEmi");
+                ram_stop_pending=0; complete(ram_liveview,0,0);
+                REQUIRE(ram_liveview[0x34/4]==7);
+                ram_refresh();
+                REQUIRE(!ram_runtime->stream_stopped&&!ram_runtime->session.blockers[NX_IPS_STREAM]);
+            }
+            else if(command==141) {
+                /* Native Start -> startLiveviewProcess -> startProcess runs;
+                 * only the Create prefix and hardware stream stay doubles. */
+                ram_controller_tid=(unsigned)syscall(SYS_gettid);
+                ram_liveview[0x34/4]=1; ram_liveview[0x38/4]=0;
+                int (*start_native)(void *,int,unsigned)=(void *)*ram_slots[NX_SFR_START];
+                REQUIRE(start_native(ram_liveview,0,60)==1);
+                REQUIRE(ram_liveview[0x34/4]==7&&!ram_runtime->stream_stopped);
+                REQUIRE(!ram_runtime->session.blockers[NX_IPS_STREAM]);
+                /* Only after native Start has reached running may its first
+                 * completed frame request the LUT topology transition. */
+                ram_refresh();
+                printf("{\"type\":\"fixture_native_playback_return\",\"state\":%u,\"s2_path\":%u,\"generation\":%u,\"stream_stopped\":%u}\n",
+                    ram_liveview[0x34/4],ram_runtime->s2_path,((struct nx_sfr_config *)((unsigned)h+h->config_offset))->generation,ram_runtime->stream_stopped);
+            }
+            else if(command==120) ram_refresh();
             else if(command==125) {
                 filter_mode=15;
                 unsigned before=ram_runtime->refresh_requests,unsafe=0;

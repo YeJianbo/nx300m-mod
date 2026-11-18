@@ -1,5 +1,6 @@
 /* Passive Fn or MENU hold/release entry, independent of the capture X client.
- * One selected entry only. No grab, injection or camera-memory access. */
+ * One selected entry only. No grab or injection. A Custom short release reads
+ * stock context once to leave album Delete alone; long entry is independent. */
 #ifndef NX_REMOTE_MENU_KEY_H
 #define NX_REMOTE_MENU_KEY_H
 #include <linux/input.h>
@@ -94,13 +95,17 @@ static void menu_key_child(int channel, pid_t parent) {
     for(;;) {
         alarm(2);
         long long now=now_ms();
-        if(now-beat>=250) {
+        if(now-beat>=400) {
             message.type='H';
             if(send(channel,&message,sizeof message,MSG_DONTWAIT|MSG_NOSIGNAL)!=(ssize_t)sizeof message)break;
             beat=now;
         }
         struct pollfd descriptors[2]={{channel,POLLIN,0},{device,POLLIN,0}};
-        alarm(0);int result=poll(descriptors,2,200);alarm(2);
+        /* Input and parent shutdown wake poll immediately. The only idle
+         * deadline is the heartbeat. Keep its previous 400 ms idle cadence
+         * and the two-second X11 deadline inside the supervisor's 2.5 s
+         * timeout, without an extra wakeup between heartbeats. */
+        alarm(0);int result=poll(descriptors,2,(int)(400-(now-beat)));alarm(2);
         if(result<0){if(errno==EINTR)continue;break;}
         if(descriptors[0].revents || (descriptors[1].revents&(POLLHUP|POLLERR|POLLNVAL)))break;
         /* Bound each batch even under a noisy device. Each reader has its own
@@ -148,10 +153,15 @@ static void menu_key_child(int channel, pid_t parent) {
                         mode=='c'?"NX_CUSTOM_KEY_TRIGGER":mode=='m'?"NX_MENU_KEY_TRIGGER":"NX_FN_KEY_TRIGGER",duration,released);
                     fn_log("trigger held_ms=%lld",duration);
                 } else if(tap && mode=='c') {
+                    struct custom_key_context context;
+                    int allowed=custom_key_context_open(&context)&&custom_key_context_ready(&context,0);
+                    custom_key_context_close(&context);
+                    if(allowed) {
                     message.type='D';message.triggered_at=released;
                     if(send(channel,&message,sizeof message,MSG_DONTWAIT|MSG_NOSIGNAL)==(ssize_t)sizeof message)
                         fn_log("custom tap dispatched lut panel held_ms=%lld",duration);
                     else goto closed;
+                    } else fn_log("custom tap kept stock outside preview held_ms=%lld",duration);
                 } else if(mode!='c')
                     fn_log("key release held_ms=%lld cancelled=%d suppressed=%d in_window=%d",
                         pressed?duration:-1,cancelled,suppress_trigger,duration>=1200&&duration<=10000);

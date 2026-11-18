@@ -47,7 +47,13 @@ extern int old_fscanf(FILE *,const char *,...) __asm__("fscanf");
 #define sscanf old_sscanf
 #define fscanf old_fscanf
 
+#define NX_ADMISSION_CACHE_SLOTS 4U
+#define NX_ADMISSION_CACHE_BUILD NX_LUT_BLOB_BUILD
+#define NX_ADMISSION_CACHE_PREFIX "nx300m-lut-files"
+static int admission_file_hash(int,unsigned,const char *);
+#define NX_LOADER_FILE_HASH admission_file_hash
 #include "live_loader_core.h"
+#include "smartfilter_admission_cache.h"
 
 static int dynamic_abi(struct image *iq) {
     uint32_t rel=0,nrel=0,drel=0,ndrel=0,sym=0,str=0;int ended=0;
@@ -223,6 +229,7 @@ static int mutate(unsigned pid,const char *command,const char *blob_path,const c
     struct mapping iq_map,udd_map,libc_map;
     if(!task_identity(pid,pid,&identity))goto done;
     start=identity.start;
+    admission_cache_begin(pid,start,fixture);
     snprintf(path,sizeof path,"/proc/%u/exe",pid);char exe[512];ssize_t len=readlink(path,exe,sizeof exe-1);if(len<0)goto done;exe[len]=0;
     if(fixture?(strcmp(base(exe),"lut_live_fixture.arm")&&strcmp(base(exe),"smartfilter_fixture.arm")):
        strcmp(base(exe),"di-camera-app-nx300")){fprintf(stderr,"Unexpected target executable.\n");goto done;}
@@ -231,7 +238,7 @@ static int mutate(unsigned pid,const char *command,const char *blob_path,const c
      * the preview loader does; never hash NAND files in the stop window. */
     int appfd=open(path,O_RDONLY|O_CLOEXEC);
     int exact=appfd>=0&&!__fxstat64(3,appfd,&app_file)&&
-        (fixture||file_hash(appfd,STOCK_APP_SIZE,STOCK_APP_SHA))&&
+        (fixture||admission_file_hash(appfd,STOCK_APP_SIZE,STOCK_APP_SHA))&&
         !__fxstat64(3,appfd,&check_file)&&same_admitted_file(&app_file,&check_file);
     if(appfd>=0)close(appfd);
     if(!exact){fprintf(stderr,"Camera executable admission failed.\n");goto done;}
@@ -244,8 +251,10 @@ static int mutate(unsigned pid,const char *command,const char *blob_path,const c
     if(!libc_ok)libc_ok=image_open(pid,"libc.so.6",STOCK_LIBC_SIZE,STOCK_LIBC_SHA,&libc);
     if(!iq_ok||!udd_ok||!libc_ok||!dynamic_abi(&iq)||
        __fxstat64(3,iq.fd,&iq_file)||__fxstat64(3,udd.fd,&udd_file)||__fxstat64(3,libc.fd,&libc_file))goto done;
+    admission_cache_save();
     iq_map=*iq.first;udd_map=*udd.first;libc_map=*libc.first;
-    fprintf(stderr,"Still control admission: elapsed_ms=%llu; camera running\n",now_ms()-admission_at);
+    fprintf(stderr,"Still control admission: %s elapsed_ms=%llu cache_hits=%u hashed_files=%u; camera running\n",
+        admission_cache_hits?"cached_file_identity":"full_hash",now_ms()-admission_at,admission_cache_hits,admission_cache_misses);
     if(abort_requested)goto done;
     stopped_at=now_ms();
     if(!attach_all(pid)){fprintf(stderr,"Thread admission/attach failed; no slot write.\n");goto done;}
@@ -447,9 +456,12 @@ static int inspect(unsigned pid) {
     snprintf(path,sizeof path,"/proc/%u/exe",pid);ssize_t len=readlink(path,exe,sizeof exe-1);if(len<0)return 2;exe[len]=0;
     int camera=!strcmp(base(exe),"di-camera-app-nx300"),map_ok=load_maps(pid),conflict=0;
     for(unsigned i=0;i<nmaps;i++)if(strstr(maps[i].path,"lut_port")||strstr(maps[i].path,"lut_node_port")||strstr(maps[i].path,"lut-live"))conflict=1;
+    unsigned long long boot_start=0;for(unsigned i=0;i<nb;i++)if(before[i].tid==pid)boot_start=before[i].start;
+    if(identity&&camera&&boot_start)admission_cache_begin(pid,boot_start,0);
     struct image iq={0},udd={0};iq.fd=udd.fd=-1;
     int iq_ok=map_ok&&image_open(pid,"libiq-fw-slpcam.so",STOCK_IQ_SIZE,STOCK_IQ_SHA,&iq);
     int udd_ok=map_ok&&image_open(pid,"libudd.so.3.1",STOCK_UDD_SIZE,STOCK_UDD_SHA,&udd);
+    if(iq_ok&&udd_ok)admission_cache_save();
     int abi=iq_ok&&dynamic_abi(&iq);snprintf(path,sizeof path,"/proc/%u/mem",pid);int mem=open(path,O_RDONLY|O_CLOEXEC);int mem_errno=mem<0?errno:0;
     uint32_t slot_update=0,slot_lut=0;int code=0,slots=0,ram_hooks=0,ready=0;
     if(iq_ok&&udd_ok&&mem>=0){code=code_check(mem,iq.bias+0x350dc0,stock_update)&&code_check(mem,iq.bias+0x350e0c,stock_reset)&&code_check(mem,udd.bias+0x955c8,stock_lut);
@@ -509,6 +521,7 @@ int main(int argc,char **argv) {
     if(!strcmp(command,"restore")){if(blob||root)goto usage;return supervised_mutate(pid,command,NULL,NULL,fixture);}
     if(!blob||!root||root[0]!='/'||strlen(root)>160||strstr(root,"..")||strstr(root,"//"))goto usage;
     for(const char *p=root;*p;p++)if(!((*p>='a'&&*p<='z')||(*p>='A'&&*p<='Z')||(*p>='0'&&*p<='9')||*p=='/'||*p=='_'||*p=='-'||*p=='.'))goto usage;
+    if(!strcmp(command,"apply")&&!wait_for_liveview("RAM LUT",pid,12000,fixture))return 75;
     return supervised_mutate(pid,command,blob,root,fixture);
 usage:
     fprintf(stderr,"usage: lut_live_loader.arm [status|apply|restore|restore-known] --pid PID [--blob FILE --root DIR] [--fixture]\n");return 64;

@@ -13,14 +13,19 @@ struct context {
     volatile u32 tid;
     u32 active, generation, strength, forwarded, composed;
     char path[256];
-    u16 table[TOTAL];
+    /* One table per source branch: the stock preview and still paths hand the
+     * adapter different source pointers, and a branch flip on one thread must
+     * never fall back to a synchronous SD read inside the IPCS callback. */
+    u16 tables[2][TOTAL];
+    u32 loaded_slot;
     u32 source_branch, channel_order[3], order_count, writer_tids[3];
     u32 source_ptrs[3], forwarded_ptrs[3], trace_enabled;
     /* R4 step-1 frequency counters: always incremented (memory writes in
-     * control context), reported only through the gated trace channel. Not
-     * part of the loader-visible ABI; the internal context layout stays
-     * private to this file. */
-    u32 stat_updates, stat_ipcs_completes, stat_publishes;
+     * control context), reported only through the gated trace channel. Field
+     * layout stays private to this file, but the total stride is
+     * loader-visible via the blob header; lut_ram_blob.ld pins it and the
+     * build guard fails if it drifts. */
+    u32 stat_updates, stat_ipcs_completes, stat_publishes, stat_reads;
 };
 __attribute__((visibility("hidden"))) struct context nx_lut_ram_contexts[SLOTS];
 #define contexts nx_lut_ram_contexts
@@ -47,15 +52,31 @@ struct table_cache {
     struct file_stamp stamp;
     char path[272];
 };
-/* A context slot owns both its table and this cache until Update returns.
- * Other threads never wait for it or reuse its table while a writer runs. */
-static struct table_cache table_caches[SLOTS];
+/* A context slot owns both its branch tables and these caches until Update
+ * returns. Other threads never wait for it or reuse its tables while a writer
+ * runs. Slot 0 is the direct branch, slot 1 the stock-composed branch. */
+static struct table_cache table_caches[SLOTS][2];
 struct selection_cache {
     u32 valid, generation, strength, reads, hit;
     struct file_stamp stamp;
     char path[256];
 };
 static struct selection_cache selection_caches[SLOTS];
+/* The stock camera may submit an unchanged selection repeatedly. Rewriting the
+ * same status through open/write/rename each time is repeated I/O inside the
+ * capture thread, so one published state is reused until it stops matching.
+ * The cached key covers only the fields that define the state; the counters are
+ * refreshed by PUBLISH_REFRESH_HELD. Every obligation that made the write
+ * necessary is kept: first publish, any state change, error and recovery, a
+ * deleted or externally rewritten file, a failed write (no cache), and a
+ * bounded counter refresh. */
+enum { PUBLISH_REFRESH_UPDATES = 32 };
+struct publish_cache {
+    u32 valid, hash, updates, skips;
+    struct file_stamp stamp;
+};
+/* Same ownership rule as the table and selection caches: one slot per slot. */
+static struct publish_cache publish_caches[SLOTS];
 
 static int sys3(int n, int a, int b, int c) {
     register int r0 __asm__("r0")=a;
@@ -136,12 +157,13 @@ static void trace(struct context *s,const char *stage) {
     p=append(p,",\"forwarded_ptrs\":");p=array(p,s->forwarded_ptrs,3);
     p=append(p,",\"generation\":");p=number(p,s->generation);
     p=append(p,",\"strength\":");p=number(p,s->strength);
-    struct table_cache *cache=&table_caches[s-contexts];
+    struct table_cache *cache=&table_caches[s-contexts][0];
+    struct table_cache *composed=&table_caches[s-contexts][1];
     struct selection_cache *choice=&selection_caches[s-contexts];
     p=append(p,",\"selection_reads\":");p=number(p,choice->reads);
     p=append(p,",\"selection_cache_hit\":");p=append(p,choice->hit?"true":"false");
-    p=append(p,",\"table_reads\":");p=number(p,cache->reads);
-    p=append(p,",\"table_cache_hit\":");p=append(p,cache->hit?"true":"false");
+    p=append(p,",\"table_reads\":");p=number(p,cache->reads+composed->reads);
+    p=append(p,",\"table_cache_hit\":");p=append(p,(cache->hit||composed->hit)?"true":"false");
     p=append(p,",\"selection_path\":\"");p=append(p,s->path);p=append(p,"\"}\n");
     char *q=append(path,"/var/run/nx300m-lut-trace-");q=number(q,s->tid);append(q,".json");
     q=append(temp,path);append(q,".tmp");
@@ -186,7 +208,9 @@ static void selection(struct context *s) {
     struct file_stamp before,after;
     cache->hit=0;
     s->active=0;s->generation=0;s->strength=100;s->forwarded=0;s->composed=0;s->path[0]=0;
-    int stamped=!file_stamp("/var/run/nx300m-lut-selection",&before);
+    int rc=file_stamp("/var/run/nx300m-lut-selection",&before);
+    if(rc==-2) {cache->valid=0;return;} /* Missing: no read can succeed, skip the failed open. */
+    int stamped=!rc;
     if(stamped && cache->valid && same_stamp(&cache->stamp,&before)) {
         cache->hit=1;
         s->active=1;s->generation=cache->generation;s->strength=cache->strength;
@@ -223,7 +247,12 @@ invalid:
     s->active=0;s->path[0]=0;s->generation=0;s->strength=100;
 }
 static int load_table(struct context *s,int stock) {
-    struct table_cache *cache=&table_caches[s-contexts];
+    unsigned slot=stock?1:0;
+    struct table_cache *cache=&table_caches[s-contexts][slot];
+    u16 *table=s->tables[slot];
+    /* sizeof on the member array, not on the local pointer: the local is a
+     * u16* and sizeof(*table) would be 2. */
+    const unsigned table_bytes=sizeof(s->tables[slot]);
     struct file_stamp before,after;
     char path[272]; append(path,s->path);
     unsigned n=length(path);
@@ -236,32 +265,58 @@ static int load_table(struct context *s,int stock) {
             rc=file_stamp(path,&before);
         } else s->composed=1;
     } else rc=file_stamp(path,&before);
-    if(!rc && cache->valid && cache->generation==s->generation &&
+    /* Path + stamp fully identify the table contents: a selection write that
+     * only bumps the generation (every engine stage does) must not force a
+     * synchronous card read of unchanged bytes inside the capture callback. */
+    if(!rc && cache->valid &&
        cache->branch==s->source_branch && equal(cache->path,path) &&
-       same_stamp(&cache->stamp,&before)) {cache->hit=1;return 1;}
+       same_stamp(&cache->stamp,&before)) {cache->hit=1;s->loaded_slot=slot;return 1;}
     cache->valid=0;
     /* If stat64 is unavailable, retain the uncached reader. Never serve an
      * old table after a missing, replaced, edited or unreadable file. */
-    if(!rc && before.size!=(long long)sizeof(s->table)) return 0;
-    ++cache->reads;
-    int got=read_file(path,s->table,sizeof(s->table));
+    if(!rc && before.size!=(long long)table_bytes) return 0;
+    ++cache->reads;++s->stat_reads;
+    int got=read_file(path,table,table_bytes);
     if(got==-2 && s->composed) {
         s->composed=0;append(path,s->path);rc=file_stamp(path,&before);
-        ++cache->reads;got=read_file(path,s->table,sizeof(s->table));
+        ++cache->reads;++s->stat_reads;got=read_file(path,table,table_bytes);
     }
-    if(got!=(int)sizeof(s->table)) return 0;
-    for(unsigned i=0;i<TOTAL;i++) if(s->table[i]>1023 || (i%WORDS==WORDS-1 && s->table[i])) return 0;
+    if(got!=(int)table_bytes) return 0;
+    for(unsigned i=0;i<TOTAL;i++) if(table[i]>1023 || (i%WORDS==WORDS-1 && table[i])) return 0;
     if(!rc && !file_stamp(path,&after)) {
         if(!same_stamp(&before,&after)) return 0;
         save_stamp(&cache->stamp,&after);append(cache->path,path);
         cache->generation=s->generation;cache->branch=s->source_branch;cache->valid=1;
     }
+    s->loaded_slot=slot;
     return 1;
 }
 /* Keep status writes out of libc; only a complete channel triplet is published.
  * The pid-specific temporary path cannot collide with the preload adapter. */
+static u32 hash_text(u32 h,const char *s) {
+    while(*s) { h^=(unsigned char)*s++; h*=16777619U; }
+    return h;
+}
+static u32 hash_number(u32 h,u32 v) { return (h^v)*16777619U; }
 static void publish(struct context *s) {
     char text[1040],temp[96]; char *p=text;
+    struct file_stamp stamp;
+    struct publish_cache *cache=&publish_caches[s-contexts];
+    /* Identity of the published state, excluding the counters that only move
+     * with time. Derived stage/composition text is a function of these. */
+    u32 hash=hash_text(2166136261U,nx_lut_ram_config.root);
+    hash=hash_text(hash,s->path);
+    hash=hash_number(hash,s->generation);
+    hash=hash_number(hash,s->strength);
+    hash=hash_number(hash,s->active);
+    hash=hash_number(hash,s->active&&s->composed==COMPOSED);
+    if(cache->valid&&cache->hash==hash&&s->stat_updates-cache->updates<PUBLISH_REFRESH_UPDATES) {
+        /* Only an exact match with the file this hook last wrote may skip:
+         * removal or an independent replacement changes inode/mtime/ctime. */
+        if(!file_stamp("/var/run/nx300m-lut-status.json",&stamp)&&
+           same_stamp(&cache->stamp,&stamp)) { ++cache->skips; return; }
+    }
+    cache->valid=0;
     s->stat_publishes++;
     unsigned pid=(unsigned)sys3(20,0,0,0);
     p=append(p,"{\"guest_pid\":");p=number(p,pid);
@@ -278,9 +333,19 @@ static void publish(struct context *s) {
     p=number(p,s->stat_updates);
     p=append(p,",\"ipcs_completes\":");p=number(p,s->stat_ipcs_completes);
     p=append(p,",\"publishes\":");p=number(p,s->stat_publishes);
+    p=append(p,",\"publish_skips\":");p=number(p,cache->skips);
+    p=append(p,",\"branch\":");p=number(p,s->source_branch);
+    p=append(p,",\"cache_reads\":");p=number(p,s->stat_reads);
     p=append(p,"}}\n");
     char *q=append(temp,"/var/run/nx300m-lut-ram-");q=number(q,s->tid);append(q,".tmp");
-    if(!write_file(temp,text,(unsigned)(p-text))) sys3(38,(int)temp,(int)"/var/run/nx300m-lut-status.json",0);
+    if(write_file(temp,text,(unsigned)(p-text))) return;
+    if(sys3(38,(int)temp,(int)"/var/run/nx300m-lut-status.json",0)) return;
+    /* Remember exactly the file this call produced; a later update republishes
+     * as soon as that identity differs in any way. */
+    if(!file_stamp("/var/run/nx300m-lut-status.json",&stamp)) {
+        save_stamp(&cache->stamp,&stamp);
+        cache->hash=hash;cache->updates=s->stat_updates;cache->valid=1;
+    }
 }
 
 __attribute__((visibility("hidden")))
@@ -293,7 +358,8 @@ void nx_lut_ram_update(void *self,void *params) {
     for(unsigned i=0;i<SLOTS;i++) if(__sync_bool_compare_and_swap(&contexts[i].tid,0,tid)) {s=&contexts[i];break;}
     if(!s) {original(self,params);return;}
     selection(s);
-    table_caches[s-contexts].hit=0;
+    table_caches[s-contexts][0].hit=0;
+    table_caches[s-contexts][1].hit=0;
     s->source_branch=0;s->order_count=0;s->trace_enabled=(u32)tracing();
     s->stat_updates++;
     for(unsigned i=0;i<3;i++) {
@@ -320,11 +386,11 @@ void nx_lut_ram_ipcs(unsigned channel,const u16 *source) {
         s->active=0;s->composed=TABLE_ERROR;
     }
     if(s->active && s->strength==100) {
-        const u16 *table=s->table+channel*WORDS;
+        const u16 *table=s->tables[s->loaded_slot]+channel*WORDS;
         s->forwarded_ptrs[channel]=(u32)table;original(channel,table);
     } else if(s->active && s->strength) {
         u16 mixed[WORDS];
-        for(unsigned i=0;i<WORDS;i++) mixed[i]=(u16)(((u32)source[i]*(100-s->strength)+(u32)s->table[channel*WORDS+i]*s->strength+50)/100);
+        for(unsigned i=0;i<WORDS;i++) mixed[i]=(u16)(((u32)source[i]*(100-s->strength)+(u32)s->tables[s->loaded_slot][channel*WORDS+i]*s->strength+50)/100);
         s->forwarded_ptrs[channel]=(u32)mixed;original(channel,mixed);
     } else {s->forwarded_ptrs[channel]=(u32)source;original(channel,source);}
     s->forwarded|=1U<<channel;

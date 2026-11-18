@@ -7,7 +7,9 @@ reports per-stage paint timings plus the paint-schedule decisions.
 Per variant: painted frames, inter-paint P50/P95, longest interval without a
 paint, last-input-to-final-paint latency, consumed inputs, final tune value,
 CPU/wakeups and the median of each measured phase (event drain, reference
-rebuild, draw, damage scan, raster, rotated XImage upload).
+rebuild, draw, damage scan, raster, rotated XImage upload; binaries that emit
+the extended fields also report rotate/put/flush/sync stages — a binary
+without them reports those stages as absent, never as zero).
 
 Software rasterization in an ARM VM only: no physical FPS, LCD or camera claim.
 """
@@ -38,7 +40,10 @@ attempt=0
 until /perf/close.arm ping; do
     attempt=$((attempt+1)); [ "$attempt" -lt 100 ]; /rescue/busybox usleep 100000
 done
-/perf/close.arm stock-parent > /perf/stock-parent.log 2>&1 &
+# The native context scan matches /proc/<pid>/exe inode against
+# /usr/bin/di-camera-app-nx300, so the synthetic parent must BE that file.
+cp /perf/close.arm /usr/bin/di-camera-app-nx300
+/usr/bin/di-camera-app-nx300 stock-parent > /perf/stock-parent.log 2>&1 &
 stock=$!
 trap 'kill "$stock" 2>/dev/null || :' EXIT
 attempt=0
@@ -49,6 +54,7 @@ last_choice() { grep 'LUT_CHOICE event=select' "$1" | tail -n 1; }
 run_variant() { # label binary
     rm -f /var/run/nx300m-lut-selection /var/run/nx300m-lut-selection-session
     rm -rf /perf/mod/.state; mkdir -p /perf/mod/.state
+    printf '1 /perf/mod/looks/nx300-hard-mono/table.d4lut 100\n' > /var/run/nx300m-lut-selection
     NX_PANEL_TRACE=1 NX_STATE_DIR=/tmp/coalesce-$1 /rescue/busybox timeout 25 "$2" --live --lut \
         --root /perf/mod --recipes /perf/mod/looks.txt --engine /perf/recorder.sh \
         --font-file /usr/share/fonts/SDIC_GP_US_20120720.ttf \
@@ -58,11 +64,7 @@ run_variant() { # label binary
     until grep -q '^FIRST_FRAME ' /perf/coalesce-$1.log; do
         kill -0 "$panel"; attempt=$((attempt+1)); [ "$attempt" -lt 150 ]; /rescue/busybox usleep 100000
     done
-    attempt=0
-    until last_choice /perf/coalesce-$1.log | grep -q "key=nx300-hard-mono"; do
-        /perf/close.arm key KP_Down
-        attempt=$((attempt+1)); [ "$attempt" -lt 30 ]; /rescue/busybox usleep 80000
-    done
+    grep -q '^LUT_ENTRY .*key=nx300-hard-mono ' /perf/coalesce-$1.log
     /perf/close.arm key XF86HomePage
     /rescue/busybox usleep 300000
     /perf/close.arm key @BURST_ARGS@
@@ -70,6 +72,8 @@ run_variant() { # label binary
     @TAIL@
     /perf/close.arm key KP_Down
     /rescue/busybox usleep 250000
+    /perf/close.arm snapshot /perf/final-$1.ppm
+    /rescue/busybox sha256sum /perf/final-$1.ppm > /perf/pixels-$1.sha256
     wait "$panel" || :
 }
 @VARIANTS@
@@ -79,6 +83,38 @@ trap - EXIT
 
 PHASES = ('ref_ms', 'evt_ms', 'draw_ms', 'damage_us', 'raster_us', 'upload_us',
           'raster_px', 'upload_px')
+
+# Localise differing bytes between the two final frames inside the guest: the
+# ~1.15 MB PPMs do not fit the serial channel. The 480x800 P6 header is
+# "P6\n480\n800\n255\n" = 15 bytes, so cmp's 1-based offset o maps to row
+# int((o - 1 - 15) / (480 * 3)).
+PIXEL_DIFF_SH = b"""#!/bin/sh
+A=/perf/final-$1.ppm
+B=/perf/final-$2.ppm
+if [ ! -f "$A" ] || [ ! -f "$B" ]; then echo PPM_MISSING; exit 0; fi
+/rescue/busybox cmp -l "$A" "$B" | /rescue/busybox wc -l
+/rescue/busybox cmp -l "$A" "$B" | /rescue/busybox awk '
+    { o = $1 - 16; if (o < 0) o = 0;
+      r = int(o / 1440);
+      if (NR == 1) { first = r; firstoff = o; ps = r; pr = r }
+      else if (r != pr) { printf "rows %d-%d\\n", ps, pr; ps = r; pr = r } }
+    END { if (NR > 0) { printf "rows %d-%d\\n", ps, pr;
+                        printf "firstrow=%d firstoffset=%d differing=%d\\n", first, firstoff, NR }
+          else print "IDENTICAL" }'
+"""
+# Stage fields appended 2026-11-15: rotate/put are measured inside the rotated
+# XImage upload (rotate = tiled transpose + diff scan, put = XPutImage), flush
+# is the XFlush via nx_cpu_flush at the end of draw(), sync_us the existing
+# LUT_PAGE XSync (0 when that frame did not sync). A binary that predates the
+# fields emits PANEL_DRAW lines without them; those phases must be reported as
+# absent, never folded into the medians as zeros.
+EXTENDED_PHASES = ('rotate_us', 'put_us', 'flush_us', 'sync_us', 'clear_px')
+
+PANEL_DRAW_RE = re.compile(
+    r'PANEL_DRAW pid=\d+ ref_ms=(-?\d+) evt_ms=(-?\d+) draw_ms=(-?\d+) '
+    r'damage_us=(\d+) raster_us=(\d+) upload_us=(\d+) raster_px=(\d+) upload_px=(\d+)'
+    r'(?: rotate_us=(\d+) put_us=(\d+) flush_us=(\d+) sync_us=(-?\d+))?'   # stage fields
+    r'(?: clear_px=(\d+))?')                                              # clear-skip probe (optional; absent after the revert)
 
 # The saturated burst ends pinned at the parameter limit, so most of its paints
 # carry no changed pixels. The sweep workload oscillates the value in small
@@ -103,6 +139,24 @@ WORKLOADS = {
                   '/rescue/busybox usleep 80000; i=$((i+1)); done'),
         'tail': '/perf/close.arm key XF86ScrollUp XF86ScrollUp XF86ScrollUp',
         'inputs': 93,
+        'paced': True,
+    },
+    # Continuous unsaturated input: five same-direction keys every ~10 ms,
+    # alternating direction per group. The injection period stays well below
+    # the 40 ms paint slot, so fresh input is pending at every frame boundary
+    # (unlike the sweep, whose 80 ms group pause leaves the panel idle half the
+    # time), while the value only oscillates within -5..5 and never saturates
+    # (unlike the burst). This is the workload that measures the sustained
+    # changing-pixel paint cadence when input never runs dry.
+    'pingpong': {
+        'burst': ('i=0; while [ $i -lt 20 ]; do '
+                  'if [ $((i%2)) -eq 0 ]; then '
+                  '/perf/close.arm key XF86ScrollDown XF86ScrollDown XF86ScrollDown XF86ScrollDown XF86ScrollDown; else '
+                  '/perf/close.arm key XF86ScrollUp XF86ScrollUp XF86ScrollUp XF86ScrollUp XF86ScrollUp; fi; '
+                  '/rescue/busybox usleep 10000; i=$((i+1)); done'),
+        'tail': '/perf/close.arm key XF86ScrollUp XF86ScrollUp XF86ScrollUp',
+        'inputs': 103,
+        'paced': True,
     },
 }
 
@@ -111,9 +165,22 @@ def analyze(text, upload_active_only=False):
     frames = [dict(dequeued=int(m[0]), submitted=int(m[1]), painted=int(m[2]))
               for m in re.findall(r'PANEL_FRAME pid=\d+ dequeued_ms=(-?\d+) submitted_ms=(-?\d+) events=\d+ painted=(\d+) exposed=\d+', text)]
     painted = [f for f in frames if f['painted'] == 1]
-    draws = [{k: int(v) for k, v in zip(PHASES, m)} for m in
-             re.findall(r'PANEL_DRAW pid=\d+ ref_ms=(-?\d+) evt_ms=(-?\d+) draw_ms=(-?\d+) '
-                        r'damage_us=(\d+) raster_us=(\d+) upload_us=(\d+) raster_px=(\d+) upload_px=(\d+)', text)]
+    draws = []
+    for m in PANEL_DRAW_RE.finditer(text):
+        draw = {k: int(v) for k, v in zip(PHASES, m.groups()[:8])}
+        groups = m.groups()
+        if groups[8] is not None:
+            # Extended stage fields present; keep them separate from the
+            # pre-2026-11-15 phases so a missing stage never reads as zero.
+            draw.update({k: int(v) for k, v in zip(EXTENDED_PHASES[:4], groups[8:12])})
+            draw['extended_phases'] = True
+        else:
+            draw.update({k: None for k in EXTENDED_PHASES})
+            draw['extended_phases'] = False
+        # clear_px belongs to the reverted clear-skip probe: binaries before it
+        # and after its revert omit it. Absent stays None, never zero.
+        draw['clear_px'] = int(groups[12]) if groups[12] is not None else None
+        draws.append(draw)
     skips = re.findall(r'PANEL_SKIP pid=\d+ tick=(-?\d+) next_frame=(-?\d+) hold=(-?\d+) continuous=(\d+) discrete=(\d+)', text)
     out = dict(frames=len(frames), painted=len(painted), draw_lines=len(draws),
                skip_lines=len(skips))
@@ -137,6 +204,38 @@ def analyze(text, upload_active_only=False):
     if draws:
         out['phase_median'] = {p: statistics.median(d[p] for d in draws) for p in PHASES}
         out['phase_max'] = {p: max(d[p] for d in draws) for p in PHASES}
+        # Extended stages: median only over draws that actually carry them.
+        # The count and coverage make an old binary's absence explicit instead
+        # of silently reporting zero stages.
+        extended = [d for d in draws if d['extended_phases']]
+        out['extended_phase_draws'] = len(extended)
+        out['extended_phase_coverage'] = len(extended) / len(draws)
+        out['phase_median_extended'] = {
+            p: (statistics.median(d[p] for d in extended if d[p] is not None)
+                if extended and any(d[p] is not None for d in extended) else None)
+            for p in EXTENDED_PHASES}
+        out['phase_max_extended'] = {
+            p: (max(d[p] for d in extended if d[p] is not None)
+                if extended and any(d[p] is not None for d in extended) else None)
+            for p in EXTENDED_PHASES}
+        if extended:
+            # rotate + put are measured inside the upload span; a sum far above
+            # the enclosing upload_us would mean misattributed phases. The
+            # bound is loose: CLOCK_MONOTONIC reads add overhead and the VM
+            # scheduler jitters between the clock reads.
+            worst = max(d['rotate_us'] + d['put_us'] - d['upload_us'] for d in extended)
+            out['rotate_put_vs_upload_worst_excess_us'] = worst
+            out['phases_attribution_consistent'] = worst <= 1000
+            # clear-skip activation (only reported by the binaries that carried
+            # the probe): frames whose damage-box clear was skipped (clear_px >
+            # 0). Absent fields stay out of the accounting instead of reading 0.
+            carrying = [d for d in extended if d['clear_px'] is not None]
+            out['clear_px_carrying_draws'] = len(carrying)
+            if carrying:
+                active = [d for d in carrying if d['clear_px'] > 0]
+                out['clear_skip_frames'] = len(active)
+                out['clear_skip_rate'] = len(active) / len(carrying)
+                out['clear_skip_px_total'] = sum(d['clear_px'] for d in active)
     if skips:
         # A skipped dirty frame is only interesting when the hold (not the frame
         # deadline) was the gate; report both counts separately.
@@ -180,8 +279,8 @@ def main():
         binaries[label] = path.read_bytes()
     vm.OUT = out
     workload = WORKLOADS[args.workload]
-    # burst = one volley of keys; sweep = a short shell snippet that paces them.
-    if args.workload == 'sweep':
+    # burst = one volley of keys; the paced workloads are short shell snippets.
+    if workload.get('paced'):
         burst_line = workload['burst']
     else:
         burst_line = '/perf/close.arm key ' + workload['burst']
@@ -195,6 +294,7 @@ def main():
     vm.EXTRA_FILES = {
         'perf/recorder.sh': b'#!/bin/sh\nprintf \'%s\\n\' "$*" >> /perf/actions.txt\nprintf \'STAGED %s\\n\' "${2:-off}"\n',
         'perf/mod/fonts/mfw-font.charset': (ROOT / 'outputs/metol/mfw-font.charset').read_bytes(),
+        'perf/pixel-diff.sh': PIXEL_DIFF_SH,
     }
     vm.EXTRA_FILES.update({f'perf/{label}.arm': data for label, data in binaries.items()})
     vm.EXTRA_FILES.update({'perf/mod/' + name.removeprefix('nx300m-mod/'): data for name, data in looks.items()})
@@ -203,7 +303,9 @@ def main():
                   scope='Same VM, same wheel workload, per-stage paint timings; software rasterization only',
                   workload=args.workload,
                   input_sequence=('saturated 800-press run, 13 reverse keys, one KP_Down' if args.workload == 'burst'
-                                  else '30 x 3 keys alternating direction (triangle wave), 3 reverse keys, one KP_Down'),
+                                  else ('30 x 3 keys alternating direction (triangle wave), 3 reverse keys, one KP_Down'
+                                        if args.workload == 'sweep'
+                                        else '20 x 5 continuous keys alternating direction every ~10 ms, 3 reverse keys, one KP_Down')),
                   binaries={label: hashlib.sha256(data).hexdigest() for label, data in binaries.items()},
                   variants={})
     started = False
@@ -220,13 +322,27 @@ def main():
         arm_vm.write_json(out / 'execution.json', execution)
         for label, _ in variants:
             collect(out, f'coalesce-{label}.log')
+            collect(out, f'pixels-{label}.sha256')
+            # Boundary: a truncated or malformed serial collection must fail
+            # loudly instead of silently counting as a pixel mismatch later.
+            line = (out / f'pixels-{label}.sha256').read_text().strip()
+            if not re.fullmatch(r'[0-9a-f]{64}  /perf/final-[a-z0-9-]+\.ppm', line):
+                raise RuntimeError('truncated/corrupt sha256 collection for %s: %r' % (label, line[:120]))
+        if len(variants) == 2:
+            # Compact in-VM diff of the two final frames: the PPMs are ~1.15 MB
+            # and do not fit the serial channel, so localise the differences
+            # inside the guest instead of transferring them.
+            diff_exec = vm.call('exec', '/bin/sh /perf/pixel-diff.sh %s %s'
+                                % (variants[0][0], variants[1][0]))
+            report['final_pixel_diff_in_vm'] = diff_exec['output'][-2000:]
         if execution['exit_code']:
             raise RuntimeError('panel latency probe failed: ' + execution['output'][-3000:])
         for label, _ in variants:
             text = (out / f'coalesce-{label}.log').read_text(errors='replace')
             detail = co.details(text)
             report['variants'][label] = dict(
-                timing=analyze(text, upload_active_only=(args.workload == 'sweep')),
+                pixels_sha256=(out / f'pixels-{label}.sha256').read_text().split()[0],
+                timing=analyze(text, upload_active_only=(args.workload in ('sweep', 'pingpong'))),
                 final=detail['final'],
                 cpu_after_first_frame_ms=detail['cpu_after_first_frame_ms'],
                 wakeups=detail['wakeups'],
@@ -240,7 +356,7 @@ def main():
                              and detail['final']['tune'] == [3, 0, 0, 0, 0, 0, 0]),
                 final_latency=(report['variants'][label]['timing']['final_latency_ms'] or 10 ** 9) <= 150,
             )
-            if args.workload == 'sweep':
+            if args.workload in ('sweep', 'pingpong'):
                 # The point of the sweep is that the picture keeps changing: most
                 # painted frames must have uploaded real pixels.
                 timing = report['variants'][label]['timing']
@@ -250,6 +366,8 @@ def main():
                 report['variants'][label]['checks']['mid_burst_paints'] = (
                     detail['full_batches'] >= 20 and detail['painted_during_full_batches'] >= 5)
         report['passed'] = all(all(v['checks'].values()) for v in report['variants'].values())
+        report['final_pixels_identical'] = len({v['pixels_sha256'] for v in report['variants'].values()}) == 1
+        report['passed'] = report['passed'] and report['final_pixels_identical']
     except BaseException as error:
         report['failure'] = str(error)
         raise

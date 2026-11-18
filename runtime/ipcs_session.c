@@ -1,6 +1,6 @@
 #include "ipcs_session.h"
 
-#define NX_IPS_IDLE_MS 250U
+#define NX_IPS_IDLE_MS 350U
 static void lock(struct nx_ips *s) {
     while(__atomic_exchange_n(&s->mutex,1,__ATOMIC_ACQUIRE))
         s->api.wait(&s->mutex,1,1000);
@@ -30,6 +30,21 @@ static int acquire_locks(struct nx_ips *s) {
     }
     return 0;
 }
+/* Native sem_post never wakes s->event; shrink busy-wait on drain/recovery
+ * so capture and stop drains claim freed locks in ~1-2 ms instead of 20 ms
+ * steps, while backing off cleanly under sustained contention. */
+static unsigned lock_backoff_ms(unsigned streak,unsigned urgent) {
+    if(urgent) {
+        if(streak<8U) return 1U;
+        if(streak<16U) return 2U;
+        if(streak<32U) return 5U;
+        return 10U;
+    }
+    if(streak<4U) return 2U;
+    if(streak<8U) return 5U;
+    if(streak<16U) return 10U;
+    return 20U;
+}
 void nx_ips_init(struct nx_ips *s,const struct nx_ips_api *a) {
     unsigned char *p=(void *)s;
     for(unsigned i=0;i<sizeof *s;++i) p[i]=0;
@@ -37,7 +52,12 @@ void nx_ips_init(struct nx_ips *s,const struct nx_ips_api *a) {
 }
 void nx_ips_hold(struct nx_ips *s,unsigned reason) {
     if(reason>=NX_IPS_REASONS) return;
-    lock(s); ++s->blockers[reason]; s->requested=0; changed(s); unlock(s);
+    lock(s); ++s->blockers[reason]; s->requested=0;
+    /* Skip waking an already-idle owner so drains in stop/B2Y do not race
+     * with a spurious wake on s->mutex. */
+    if(s->held||s->active||s->state!=NX_IPS_IDLE) changed(s);
+    else ++s->event;
+    unlock(s);
 }
 void nx_ips_release(struct nx_ips *s,unsigned reason) {
     if(reason>=NX_IPS_REASONS) return;
@@ -75,7 +95,7 @@ void nx_ips_frame_leave(struct nx_ips *s) {
     changed(s); unlock(s);
 }
 int nx_ips_drain(struct nx_ips *s,unsigned timeout_ms) {
-    unsigned start=s->api.ms();
+    unsigned have_start=0,start=0;
     for(;;) {
         lock(s);
         unsigned event=s->event;
@@ -83,7 +103,9 @@ int nx_ips_drain(struct nx_ips *s,unsigned timeout_ms) {
         if(!s->active&&!s->held&&s->state!=NX_IPS_OPENING&&s->state!=NX_IPS_DRAINING) {
             unlock(s); return 0;
         }
-        unsigned elapsed=s->api.ms()-start;
+        unsigned now=s->api.ms();
+        if(!have_start) { start=now; have_start=1U; }
+        unsigned elapsed=now-start;
         if(elapsed>=timeout_ms) {
             ++s->drain_timeouts; unlock(s); return NX_IPS_TIMEOUT;
         }
@@ -95,6 +117,7 @@ void nx_ips_owner(struct nx_ips *s) {
     lock(s);
     if(s->running) { unlock(s); return; }
     s->owner_tid=s->api.tid(); s->running=1; changed(s); unlock(s);
+    unsigned busy_streak=0;
     for(;;) {
         lock(s);
         unsigned event=s->event;
@@ -109,8 +132,9 @@ void nx_ips_owner(struct nx_ips *s) {
                 lock(s); ++s->lock_busy;
                 if(rc<0) { ++s->unlock_errors; s->error=rc; }
                 changed(s); event=s->event; unlock(s);
-                s->api.wait(&s->event,event,20); continue;
+                s->api.wait(&s->event,event,lock_backoff_ms(busy_streak++,1U)); continue;
             }
+            busy_streak=0;
             lock(s);
             int cleanup=recoverable(s)&&!blocked(s)&&!s->active&&s->requested;
             if(cleanup) { ++s->recoveries; ++s->recovery_closes; }
@@ -125,14 +149,17 @@ void nx_ips_owner(struct nx_ips *s) {
             if(post_error) { ++s->unlock_errors; s->error=post_error; s->state=NX_IPS_FAILED; }
             changed(s); unlock(s); continue;
         }
-        int idle=s->requested&&s->api.ms()-s->last_frame_ms>=NX_IPS_IDLE_MS;
+        unsigned elapsed=s->requested?s->api.ms()-s->last_frame_ms:0;
+        int idle=s->requested&&elapsed>=NX_IPS_IDLE_MS;
         int want=s->requested&&!blocked(s)&&!s->error&&!idle;
         int opening=want&&!s->held&&!s->active;
         int closing=!want&&s->held==1&&!s->active;
         if(s->state==NX_IPS_FAILED||(!opening&&!closing)) {
-            /* A released/failed owner has no timed work. Wait for an actual
-             * admission event; only a retained idle reference needs a timer. */
-            unsigned timeout=(s->state==NX_IPS_FAILED||!s->held||s->active)?0:100;
+            busy_streak=0;
+            /* Sleep until the exact idle deadline rather than waking every 100 ms. */
+            unsigned timeout=0;
+            if(s->state!=NX_IPS_FAILED&&s->held&&!s->active&&s->requested&&!blocked(s)&&!s->error)
+                timeout=elapsed<NX_IPS_IDLE_MS?NX_IPS_IDLE_MS-elapsed:1U;
             unlock(s); s->api.wait(&s->event,event,timeout); continue;
         }
         s->state=opening?NX_IPS_OPENING:NX_IPS_DRAINING;
@@ -142,11 +169,13 @@ void nx_ips_owner(struct nx_ips *s) {
         int rc=acquire_locks(s);
         if(rc) {
             lock(s); ++s->lock_busy;
+            unsigned urgent=!opening||blocked(s);
             if(rc<0) { ++s->unlock_errors; s->error=rc; s->state=NX_IPS_FAILED; }
             else s->state=s->held?NX_IPS_READY:NX_IPS_IDLE;
             changed(s); event=s->event; unlock(s);
-            s->api.wait(&s->event,event,20); continue;
+            s->api.wait(&s->event,event,lock_backoff_ms(busy_streak++,urgent)); continue;
         }
+        busy_streak=0;
         lock(s);
         int fresh=s->requested&&!blocked(s)&&!s->error&&
                   s->api.ms()-s->last_frame_ms<NX_IPS_IDLE_MS;

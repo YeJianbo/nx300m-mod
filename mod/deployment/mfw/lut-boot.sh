@@ -84,7 +84,7 @@ if [ -f "$source_root/.state/lut-preview" ] && [ ! -L "$source_root/.state/lut-p
     IFS= read -r preview < "$source_root/.state/lut-preview" || preview=0
 fi
 case $preview in
-    1) /bin/sh "$HERE/smartfilter-preview.sh" enable-s2 ;;
+    1) /bin/sh "$HERE/smartfilter-preview.sh" enable-s2-stock ;;
     0) : ;;
     *) printf 'LUT_BOOT invalid preview preference; Still retained\n' >&2; exit 1 ;;
 esac

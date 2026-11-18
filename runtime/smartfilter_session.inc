@@ -71,6 +71,9 @@ static int session_start(void) {
 static int session_frame_begin(void) {
     struct nx_sfr_runtime *s=&nx_sfr_runtime;
     if(!nx_sfr_config.session_mode) return 0;
+    /* Reject incoming preview frames locklessly while stopping liveview or
+     * holding a capture lease so drain does not contend on s->session.mutex. */
+    if(get(&s->captures)||get(&s->b2y_leases)||get(&s->stream_stopped)==1) return NX_SF_BUSY;
     if(get(&s->session_initialized)!=2||session_start()) return NX_SF_BUSY;
     if(nx_ips_frame_enter(&s->session)) return NX_SF_BUSY;
     /* Native lifecycle precedes all channel locks. No owner lock survives a
@@ -98,9 +101,37 @@ static struct nx_sfr_capture_owner *capture_owner(int create) {
 static void capture_owner_free(struct nx_sfr_capture_owner *o) {
     if(o&&!o->native&&!o->skipped) put(&o->tid,0);
 }
+/* Record call count, cumulative ms and max ms once per stop/B2Y/start/refresh
+ * boundary without touching per-frame fast paths. */
+static void record_elapsed_ms(unsigned start,unsigned *calls,unsigned *total_ms,unsigned *max_ms) {
+    if(calls) __sync_fetch_and_add(calls,1);
+    unsigned ms=session_ms()-start;
+    if(ms) {
+        __sync_fetch_and_add(total_ms,ms);
+        unsigned prev;
+        while(ms>(prev=__atomic_load_n(max_ms,__ATOMIC_ACQUIRE))&&
+              !__sync_bool_compare_and_swap(max_ms,prev,ms)) {}
+    }
+}
+/* Record drain frequency, active waits and millisecond latency once per
+ * stop/B2Y boundary so device status/diag-export exposes real contention cost. */
+static int drain_observed(struct nx_sfr_runtime *s,unsigned *calls,unsigned *waits,
+                          unsigned *total_ms,unsigned *max_ms) {
+    struct nx_ips *p=&s->session;
+    unsigned st=__atomic_load_n(&p->state,__ATOMIC_ACQUIRE);
+    int might_wait=__atomic_load_n(&p->held,__ATOMIC_ACQUIRE)||
+        __atomic_load_n(&p->active,__ATOMIC_ACQUIRE)||
+        st==NX_IPS_OPENING||st==NX_IPS_DRAINING;
+    if(might_wait) __sync_fetch_and_add(waits,1);
+    unsigned start=session_ms();
+    int rc=nx_ips_drain(p,750);
+    record_elapsed_ms(start,calls,total_ms,max_ms);
+    return rc;
+}
 int nx_sfr_b2y_open(void *self) {
     enter(); struct nx_sfr_runtime *s=&nx_sfr_runtime;
     int rc=0;
+    unsigned lease_start=0;
     if(nx_sfr_config.session_mode&&get(&s->session_initialized)==2) {
         struct nx_sfr_capture_owner *o=capture_owner(1);
         if(!o) {
@@ -110,7 +141,7 @@ int nx_sfr_b2y_open(void *self) {
         if(o->native) { ++o->skipped; leave(); return -16; }
         /* This is BEFORE the original takes +0x44. Prepare is too late. */
         nx_ips_hold(&s->session,NX_IPS_CAPTURE);
-        rc=nx_ips_drain(&s->session,750);
+        rc=drain_observed(s,&s->b2y_drain_calls,&s->b2y_drain_waits,&s->b2y_drain_total_ms,&s->b2y_drain_max_ms);
         if(rc&&rc!=NX_IPS_TIMEOUT) {
             ++o->skipped; nx_ips_release(&s->session,NX_IPS_CAPTURE); leave(); return rc;
         }
@@ -119,11 +150,15 @@ int nx_sfr_b2y_open(void *self) {
          * let the original +0x44 wait serialize with the complete frame.
          * The owner may retain its power reference until native Close, but
          * cannot admit another frame or close it across the native lease. */
+        lease_start=session_ms();
+        o->opened_ms=lease_start;
         ++o->native;
         __sync_fetch_and_add(&s->b2y_leases,1);
-    }
+    } else lease_start=session_ms();
     int (*original)(void *)=(void *)nx_sfr_config.original[NX_SFR_B2Y_OPEN];
-    rc=original(self); leave(); return rc;
+    rc=original(self);
+    record_elapsed_ms(lease_start,&s->b2y_open_calls,&s->b2y_open_total_ms,&s->b2y_open_max_ms);
+    leave(); return rc;
 }
 int nx_sfr_b2y_close(void *self) {
     enter();
@@ -135,7 +170,12 @@ int nx_sfr_b2y_close(void *self) {
     int (*original)(void *)=(void *)nx_sfr_config.original[NX_SFR_B2Y_CLOSE];
     int rc=original(self); struct nx_sfr_runtime *s=&nx_sfr_runtime;
     if(o&&o->native) {
+        record_elapsed_ms(o->opened_ms,&s->b2y_lease_calls,&s->b2y_lease_total_ms,&s->b2y_lease_max_ms);
         --o->native; __sync_fetch_and_sub(&s->b2y_leases,1);
+        if(!get(&s->b2y_leases)&&!get(&s->captures)) {
+            unsigned t=session_ms();
+            put(&s->capture_hold_ms,t?t:1U);
+        }
         nx_ips_release(&s->session,NX_IPS_CAPTURE); capture_owner_free(o);
     }
     leave(); return rc;
@@ -147,6 +187,18 @@ static void cancel_refresh(void) {
     put(&nx_sfr_runtime.refresh_pending,0);
     put(&nx_sfr_runtime.refresh_queued,0);
     put(&nx_sfr_runtime.refresh_attempt,0);
+    put(&nx_sfr_runtime.capture_hold_ms,0);
+}
+/* stream_stopped is an admission phase: 1 stopped, 2 accepted Start awaiting
+ * native running, 3 inside Start. A later Stop writes 1 and cancels the pending
+ * acknowledgement; a successful Start return alone is not frame ownership. */
+static void session_resume_stream(void) {
+    struct nx_sfr_runtime *s=&nx_sfr_runtime;
+    if(get(&s->stream_stopped)!=2) return;
+    unsigned *liveview=nx_sfr_config.liveview_instance();
+    if(get(liveview+0x34/4)!=7||get(liveview+0x38/4)) return;
+    if(__sync_bool_compare_and_swap(&s->stream_stopped,2,0)&&get(&s->session_initialized)==2)
+        nx_ips_release(&s->session,NX_IPS_STREAM);
 }
 int nx_sfr_stop(void *self,unsigned state,unsigned flag) {
     enter(); struct nx_sfr_runtime *s=&nx_sfr_runtime;
@@ -155,7 +207,7 @@ int nx_sfr_stop(void *self,unsigned state,unsigned flag) {
     if(get(&s->session_initialized)==2&&!was_stopped)
         nx_ips_hold(&s->session,NX_IPS_STREAM);
     if(get(&s->session_initialized)==2) {
-        int rc=nx_ips_drain(&s->session,750);
+        int rc=drain_observed(s,&s->stop_drain_calls,&s->stop_drain_waits,&s->stop_drain_total_ms,&s->stop_drain_max_ms);
         if(rc) {
             /* BringDownNode/videoStreamOff may retire buffers still used by
              * the in-flight worker. Keep admission stopped and do not enter
@@ -166,15 +218,28 @@ int nx_sfr_stop(void *self,unsigned state,unsigned flag) {
         }
     }
     int (*original)(void *,unsigned,unsigned)=(void *)nx_sfr_config.original[NX_SFR_STOP];
-    int rc=original(self,state,flag); leave(); return rc;
+    unsigned stop_start=session_ms();
+    int rc=original(self,state,flag);
+    record_elapsed_ms(stop_start,&s->stop_native_calls,&s->stop_native_total_ms,&s->stop_native_max_ms);
+    leave(); return rc;
 }
 int nx_sfr_start(void *self,int mode,unsigned rate) {
     enter();
-    cancel_refresh();
+    struct nx_sfr_runtime *s=&nx_sfr_runtime;
+    /* Start can queue behind our already-dispatched changeProcess. Its stop
+     * callback still needs the pending marker to leave native memory wait. */
+    if(!get(&s->refresh_pending)) cancel_refresh();
+    unsigned stopped=get(&s->stream_stopped);
+    int armed=(stopped==1||stopped==2)&&__sync_bool_compare_and_swap(&s->stream_stopped,stopped,3);
     int (*original)(void *,int,unsigned)=(void *)nx_sfr_config.original[NX_SFR_START];
-    int rc=original(self,mode,rate); struct nx_sfr_runtime *s=&nx_sfr_runtime;
-    if(rc&&__atomic_exchange_n(&s->stream_stopped,0,__ATOMIC_ACQ_REL)&&get(&s->session_initialized)==2)
-        nx_ips_release(&s->session,NX_IPS_STREAM);
+    unsigned start_begin=session_ms();
+    int rc=original(self,mode,rate);
+    record_elapsed_ms(start_begin,&s->start_calls,&s->start_total_ms,&s->start_max_ms);
+    if(armed) __sync_bool_compare_and_swap(&s->stream_stopped,3,rc?2:stopped);
+    /* startLiveviewProcess accepts queued starts during native state 8..11.
+     * Its stop callback later runs startProcess directly, without another
+     * Start call. Keep the gate until that transition actually reaches 7. */
+    session_resume_stream();
     /* No reference is acquired here: an actual subsequent frame requests it. */
     leave(); return rc;
 }

@@ -28,10 +28,33 @@
 #define NX_LUT_SESSION "/var/run/nx300m-lut-selection-session"
 #define NX_LUT_MAX_LOOKS 256
 #define NX_LUT_RAM_MARKER "/var/run/nx300m-lut-ram-hook"
+#define NX_LUT_JOURNAL "/var/run/nx300m-lut-journal.log"
 struct nx_lut_look { char id[64],label[192];int table_valid,composed_available; };
 static inline unsigned long long nx_lut_control_ms(void) {
     struct timespec t={0,0};syscall(SYS_clock_gettime,CLOCK_MONOTONIC,&t);
     return (unsigned long long)t.tv_sec*1000+(unsigned long long)t.tv_nsec/1000000;
+}
+/* One persistent RAM line per user control event (apply, restore, disable,
+ * boot, panel entry). The capture-path hook in lut_ram_blob never writes here,
+ * so the published-state throttling from the 2026-11-15 capture round keeps
+ * its per-Update syscall budget. Failures must survive the panel's stderr
+ * redirect so a failed apply can be triaged after the fact. */
+static inline void nx_lut_journal(const char *event,const char *detail) {
+    int fd=open(NX_LUT_JOURNAL,O_WRONLY|O_APPEND|O_CREAT|O_CLOEXEC,0600);
+    if (fd<0) return;
+    struct stat info;
+    if (!fstat(fd,&info) && info.st_size>32768) {
+        /* Keep the newest half so a long session cannot grow the file. */
+        char tail[16384];
+        off_t keep=info.st_size>(off_t)sizeof tail?(off_t)sizeof tail:info.st_size;
+        if (pread(fd,tail,(size_t)keep,info.st_size-keep)==keep &&
+            ftruncate(fd,0)==0 && pwrite(fd,tail,(size_t)keep,0)==keep)
+            fdatasync(fd);
+    }
+    char line[256];
+    int len=snprintf(line,sizeof line,"%llu %s %s\n",nx_lut_control_ms(),event,detail?detail:"");
+    if (len>0) { ssize_t ignored=write(fd,line,(size_t)len);(void)ignored; }
+    close(fd);
 }
 
 static inline int nx_lut_id_valid(const char *key) {
@@ -209,7 +232,8 @@ static inline int nx_lut_ram_hook_ready(int camera_pid,int host_pid,const char *
         h.ipcs_entry<sizeof h || h.ipcs_entry>=h.code_size || h.update_entry==h.ipcs_entry || h.update_entry%4 || h.ipcs_entry%4) {why="entry-layout";goto done;}
     if (h.reserved[0]<h.data_offset || h.reserved[0]>size ||
         (h.reserved[1]!=NX_LUT_RAM_CONTEXT_STRIDE_V1 && h.reserved[1]!=NX_LUT_RAM_CONTEXT_STRIDE_DIAGNOSTIC_V1 &&
-            h.reserved[1]!=NX_LUT_RAM_CONTEXT_STRIDE_STATS_V3) || h.reserved[2]!=8 ||
+            h.reserved[1]!=NX_LUT_RAM_CONTEXT_STRIDE_STATS_V3 &&
+            h.reserved[1]!=NX_LUT_RAM_CONTEXT_STRIDE_DUAL_V4) || h.reserved[2]!=8 ||
         h.reserved[1]*h.reserved[2]>size-h.reserved[0]) {why="context-layout";goto done;}
     if (!nx_lut_mem(fd,base+h.config_offset,&config,sizeof config)) {why="config-unreadable";goto done;}
     if (config.abi!=NX_LUT_RAM_ABI || config.size!=sizeof config || config.enabled!=1 ||
@@ -604,7 +628,31 @@ static inline int nx_lut_lock(int nonblocking,int exclusive) {
      * keep the flock after this engine exits. Ownership stays with the
      * engine process only. */
     int fd=open("/var/run/nx300m-lut-engine.lock",O_RDONLY|O_CREAT|O_CLOEXEC,0600);if (fd<0) return -1;
-    if (flock(fd,(exclusive?LOCK_EX:LOCK_SH)|(nonblocking?LOCK_NB:0))) { int error=errno;close(fd);errno=error;return -1; }
-    return fd;
+    int flags=(exclusive?LOCK_EX:LOCK_SH)|(nonblocking?LOCK_NB:0);
+    if (!flock(fd,flags)) return fd;
+    int error=errno;
+    if (nonblocking||(error!=EWOULDBLOCK&&error!=EINTR)) { close(fd);errno=error;return -1; }
+    /* The panel blocks here while another engine owns the control lock. A
+     * plain blocking flock has no bound: an orphaned control chain left
+     * behind by an abandoned apply (see service_control's "abandon, do not
+     * signal" path) keeps the lock until it finishes, and the panel then
+     * hangs with no log line at all. Wait a bounded time, printing one line
+     * so the next occurrence is diagnosable, then fail instead of hanging. */
+    unsigned elapsed=0;
+    int announced=0;
+    while (elapsed<15000) {
+        struct timespec pause={0,50000000};
+        nanosleep(&pause,0);
+        elapsed+=50;
+        if (!flock(fd,flags)) return fd;
+        error=errno;
+        if (error!=EWOULDBLOCK&&error!=EINTR) { close(fd);errno=error;return -1; }
+        if (!announced&&elapsed>=1000) {
+            announced=1;
+            fputs("LUT_LOCK waiting owner=another-engine elapsed_ms=1000\n",stderr);
+        }
+    }
+    fputs("LUT_LOCK timeout elapsed_ms=15000; control lock still held by another engine\n",stderr);
+    close(fd);errno=ETIMEDOUT;return -1;
 }
 #endif
