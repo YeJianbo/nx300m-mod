@@ -18,6 +18,7 @@ UPGRADE_BASELINES = (
     ('preview.8', ROOT/'outputs/releases/v0.1.0-preview.8/NX300M-MOD-SD-v0.1.0-preview.8.zip'),
     ('preview.9', ROOT/'outputs/releases/v0.1.0-preview.9/NX300M-MOD-SD-v0.1.0-preview.9.zip'),
     ('preview.10', ROOT/'outputs/releases/v0.1.0-preview.10/NX300M-MOD-SD-v0.1.0-preview.10.zip'),
+    ('preview.11', ROOT/'outputs/releases/v0.1.0-preview.11/NX300M-MOD-SD-v0.1.0-preview.11.zip'),
 )
 
 

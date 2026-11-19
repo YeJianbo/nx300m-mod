@@ -20,7 +20,7 @@ LOG_PREFIX = PREFIX + 'logs/'
 PERSONAL_LOOK_PREFIX = PREFIX + 'looks/'
 PREVIOUS_VERSION = 'v0.1.0-preview.8'
 PREVIOUS_RELEASE = ROOT / 'outputs/releases' / PREVIOUS_VERSION
-ACCEPTED_BASELINES = ('v0.1.0-preview.8', 'v0.1.0-preview.9', 'v0.1.0-preview.10')
+ACCEPTED_BASELINES = ('v0.1.0-preview.8', 'v0.1.0-preview.9', 'v0.1.0-preview.10', 'v0.1.0-preview.11')
 
 
 def digest(data: bytes) -> str:

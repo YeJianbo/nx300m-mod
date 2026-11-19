@@ -12,6 +12,12 @@ BACKEND_FILES = {
     'smartfilter-preview.sh': '6fc627df3ef2bd8579db9163c825ddfd9cb873f54914eb7914742447e37f9e2c',
 }
 BACKEND_PROFILES = {
+    'v0.1.0-preview.12': {
+        'ipcs-diagnostic/lib/smartfilter_ram.bin': '0421789035ac3fd73a631a08c3e8b1a560135e1fd9256074aad943c91249ebd2',
+        'ipcs-diagnostic/bin/smartfilter_loader.arm': 'e8b94000c6b60ba3b7d52196017190a11e9c2c44928228248bf7d75dfac95f32',
+        'ipcs-diagnostic/bin/smartfilter_probe_launcher.arm': '19c9b2d8150baa29f4d2b287331b0450ff5d429364d5f2e2a973eb9fecb4e632',
+        'smartfilter-preview.sh': '4350c21c162276b842cb0c69b9466cce21aecdd5799d2c282fef802ec82610c6',
+    },
     'v0.1.0-preview.11': {
         'ipcs-diagnostic/lib/smartfilter_ram.bin': '674bf2897f66347cdd7332a495fc8a7e34aea30b105de85dead2ae1bb26fee8f',
         'ipcs-diagnostic/bin/smartfilter_loader.arm': 'e1edaddfd147afa6d3f8a1e21d28d204318d4da60fdc092ae53ca83aea16dc45',
@@ -45,6 +51,7 @@ BACKEND_PROFILES = {
     },
 }
 BACKEND_BUILDS = {name: 3392396409 for name in BACKEND_PROFILES}
+BACKEND_BUILDS['v0.1.0-preview.12'] = 578882475
 BACKEND_BUILDS['v0.1.0-preview.11'] = 3580398190
 BACKEND_BUILDS['abi7-capture-handoff'] = 345225401
 BACKEND_BUILDS['abi7-user-verified-card'] = 2965073795
