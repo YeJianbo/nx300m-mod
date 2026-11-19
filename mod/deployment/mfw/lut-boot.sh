@@ -83,11 +83,20 @@ preview=0
 if [ -f "$source_root/.state/lut-preview" ] && [ ! -L "$source_root/.state/lut-preview" ]; then
     IFS= read -r preview < "$source_root/.state/lut-preview" || preview=0
 fi
+restored_preview=0
 case $preview in
-    1) /bin/sh "$HERE/smartfilter-preview.sh" enable-s2-stock ;;
+    1)
+        # The engine leaves no RAM selection when the saved choice is LUT Off.
+        # Keep the preference for the next look, or enable the restored look now.
+        selection=/var/run/nx300m-lut-selection
+        [ ! -L "$selection" ] || exit 1
+        if [ -f "$selection" ]; then
+            /bin/sh "$HERE/smartfilter-preview.sh" enable-s2
+            restored_preview=1
+        fi ;;
     0) : ;;
     *) printf 'LUT_BOOT invalid preview preference; Still retained\n' >&2; exit 1 ;;
 esac
 boot_status ready
 boot_done=1
-boot_note "restored preview=$preview (control acknowledged; frames not measured)"
+boot_note "restored preview=$restored_preview (control acknowledged; frames not measured)"

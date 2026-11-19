@@ -22,6 +22,7 @@
 #include "../../runtime/lut_ram_blob.h"
 #include "../../runtime/lut_ram_blob_build.h"
 
+#include <dirent.h>
 #define NX_LUT_SELECTION "/var/run/nx300m-lut-selection"
 #define NX_LUT_BACKUP "/var/run/nx300m-lut-panel-backup"
 #define NX_LUT_COUNTER "/var/run/nx300m-lut-generation"
@@ -29,6 +30,12 @@
 #define NX_LUT_MAX_LOOKS 256
 #define NX_LUT_RAM_MARKER "/var/run/nx300m-lut-ram-hook"
 #define NX_LUT_JOURNAL "/var/run/nx300m-lut-journal.log"
+/* Deferred preview sync owed by an apply made while the stock UI was in
+ * playback or a menu (no live view to attach to). RAM state, one line:
+ * staged_generation state synced_generation. Advisory only: no consumer
+ * gates a control on it, and it dies with the camera at power-off. */
+#define NX_LUT_PREVIEW_PENDING "/var/run/nx300m-lut-preview-pending"
+#define NX_LUT_PREVIEW_PENDING_LOG "/var/run/nx300m-lut-preview-pending.log"
 struct nx_lut_look { char id[64],label[192];int table_valid,composed_available; };
 static inline unsigned long long nx_lut_control_ms(void) {
     struct timespec t={0,0};syscall(SYS_clock_gettime,CLOCK_MONOTONIC,&t);
@@ -55,6 +62,51 @@ static inline void nx_lut_journal(const char *event,const char *detail) {
     int len=snprintf(line,sizeof line,"%llu %s %s\n",nx_lut_control_ms(),event,detail?detail:"");
     if (len>0) { ssize_t ignored=write(fd,line,(size_t)len);(void)ignored; }
     close(fd);
+}
+/* The RAM journal dies with the camera. A deferred preview sync ends after
+ * the panel closed, so its outcome also lands as one bounded control-event
+ * line on the card log (same guard lut-boot.sh uses) for triage after
+ * power-off. Never frame I/O, never a retry loop. */
+static inline void nx_lut_card_log(const char *event,const char *detail) {
+    const char *log=getenv("NX_FN_KEY_LOG");
+    struct stat state;
+    if (!log || !*log || lstat(log,&state) || !S_ISREG(state.st_mode)) return;
+    int fd=open(log,O_WRONLY|O_APPEND|O_CLOEXEC);
+    if (fd<0) return;
+    char line[256];
+    int len=snprintf(line,sizeof line,"%llu %s %s\n",nx_lut_control_ms(),event,detail?detail:"");
+    if (len>0) { ssize_t ignored=write(fd,line,(size_t)len);(void)ignored; }
+    close(fd);
+}
+/* Independent record of the preview sync a playback apply still owes: saved
+ * (card record + staged selection) and pending (preview table) stay separate
+ * facts, each with its own state: pending/syncing/synced/failed/uncertain/
+ * cancelled/expired. */
+static inline int nx_lut_preview_pending_write(unsigned staged,const char *state,unsigned synced) {
+    if (!state || !*state) return 0;
+    char tmp[128],body[96];
+    if (snprintf(tmp,sizeof tmp,NX_LUT_PREVIEW_PENDING ".tmp.%ld",(long)getpid())>=(int)sizeof tmp) return 0;
+    int len=snprintf(body,sizeof body,"%u %s %u\n",staged,state,synced);
+    if (len<0||len>=(int)sizeof body) return 0;
+    FILE *out=fopen(tmp,"w");if (!out) return 0;
+    int ok=fwrite(body,1,(size_t)len,out)==(size_t)len;
+    if (fclose(out)) ok=0;
+    if (!ok||rename(tmp,NX_LUT_PREVIEW_PENDING)) { unlink(tmp);return 0; }
+    return 1;
+}
+static inline int nx_lut_preview_pending_read(unsigned *staged,char *state,size_t cap,unsigned *synced) {
+    FILE *in=fopen(NX_LUT_PREVIEW_PENDING,"r");if (!in) return 0;
+    char body[128];
+    int got=fgets(body,sizeof body,in)!=NULL;fclose(in);
+    if (!got) return 0;
+    body[strcspn(body,"\r\n")]=0;
+    unsigned parsed_staged=0,parsed_synced=0;char parsed_state[24];
+    int fields=sscanf(body,"%u %23s %u",&parsed_staged,parsed_state,&parsed_synced);
+    if (fields<2) return 0;
+    *staged=parsed_staged;
+    snprintf(state,cap,"%s",parsed_state);
+    if (synced) *synced=parsed_synced;
+    return 1;
 }
 
 static inline int nx_lut_id_valid(const char *key) {
@@ -191,6 +243,94 @@ static inline int nx_lut_starttime(int pid,unsigned long long *start) {
 }
 static inline int nx_lut_mem(int fd,unsigned int address,void *data,size_t size) {
     return pread(fd,data,size,(off_t)address)==(ssize_t)size;
+}
+/* Named-thread census, same protocol as runtime/live_loader_core.h and the
+ * panel's liveview snapshot: videosrc plus udd_intr_handle. */
+static inline int nx_lut_comm_count(int pid,const char *wanted,unsigned *count) {
+    char path[64],line[128];
+    snprintf(path,sizeof path,"/proc/%d/task",pid);
+    DIR *directory=opendir(path);if (!directory) return 0;
+    *count=0;int ok=1;errno=0;
+    struct dirent *entry;
+    while ((entry=readdir(directory))) {
+        char *end;long tid=strtol(entry->d_name,&end,10);
+        if (!*entry->d_name||*end||tid<=0) continue;
+        snprintf(path,sizeof path,"/proc/%d/task/%ld/comm",pid,tid);
+        FILE *comm=fopen(path,"r");if (!comm) {ok=0;break;}
+        int got=fgets(line,sizeof line,comm)!=NULL,failed=ferror(comm);fclose(comm);
+        if (!got||failed) {ok=0;break;}
+        line[strcspn(line,"\r\n")]=0;
+        if (!strcmp(line,wanted))++*count;
+        errno=0;
+    }
+    if (errno) ok=0;
+    closedir(directory);return ok;
+}
+static inline int nx_lut_mem_read(int pid,unsigned int address,void *data,size_t size) {
+    char file[64];snprintf(file,sizeof file,"/proc/%d/mem",pid);
+    int fd=open(file,O_RDONLY|O_CLOEXEC);if (fd<0) return 0;
+    int ok=pread(fd,data,size,(off_t)address)==(ssize_t)size;
+    close(fd);return ok;
+}
+/* Observation only — never a control. 1=live view ready, 0=not yet
+ * (playback, menus, transition), -1=cannot observe. Same addresses and
+ * thread checks the loader's admission and the panel's pre-show gate use. */
+static inline int nx_lut_liveview_snapshot(int pid,unsigned *videosrc,unsigned *udd) {
+    uint32_t application=0,state=0,preview=0,native=0;
+    *videosrc=*udd=0;
+    if (!nx_lut_mem_read(pid,0x4c9c5c,&application,4) || application!=0x24c0b8) return -1;
+    if (!nx_lut_comm_count(pid,"videosrc",videosrc) || !nx_lut_comm_count(pid,"udd_intr_handle",udd)) return -1;
+    if (!nx_lut_mem_read(pid,0x4c9c64,&state,4)) return -1;
+    if (state!=0x4c9f04) return 0;
+    if (!nx_lut_mem_read(pid,0x4c9f04,&preview,4) || preview!=0x24c838 || preview>UINT32_MAX-0x34) return -1;
+    if (!nx_lut_mem_read(pid,preview+0x34,&native,4)) return -1;
+    /* Healthy NX300M 1.15 liveview runs native_state=2231780; 7 is the ARM
+     * fixture marker (live_loader_core.h). */
+    return (native==7||native==2231780)&&*videosrc>=1&&*udd>=2?1:0;
+}
+/* Locate the original camera process by its executable identity, the same
+ * names panel_is_stock_parent and the preview wrappers accept. Fixture mode
+ * may pin the candidate through NX_LUT_CAMERA_PID: qemu's -L prefix rewrites
+ * top-level /proc listing to the firmware dump, so user-space fixtures pin
+ * the state double's pid instead. The snapshot below still rejects a pin
+ * that does not carry the stock application identity, and the sync chain
+ * re-verifies identity on every control. */
+static inline int nx_lut_camera_pid_scan(void) {
+    const char *fixture=getenv("NX_SF_PROBE_FIXTURE");
+    if (fixture && !strcmp(fixture,"1")) {
+        const char *override=getenv("NX_LUT_CAMERA_PID");
+        if (override && *override) {
+            unsigned long long value=0;
+            if (nx_lut_u64(override,&value) && value>1 && value<=INT_MAX) return (int)value;
+        }
+    }
+    DIR *tasks=opendir("/proc");if (!tasks) return 0;
+    struct dirent *entry;int pid=0;
+    while ((entry=readdir(tasks))) {
+        char *end;long value=strtol(entry->d_name,&end,10);
+        if (*entry->d_name && !*end && value>1) {
+            char path[64],exe[128];ssize_t len;
+            snprintf(path,sizeof path,"/proc/%ld/exe",value);
+            len=readlink(path,exe,sizeof exe-1);
+            if (len>0) { exe[len]=0;
+                char *name=strrchr(exe,'/');name=name?name+1:exe;
+                if (!strcmp(name,"di-camera-app-nx300")||!strcmp(name,"di-camera-app")) {pid=(int)value;break;}
+            }
+        }
+    }
+    closedir(tasks);return pid;
+}
+static inline int nx_lut_liveview_ready(int pid) {
+    unsigned videosrc=0,udd=0;
+    int observed=nx_lut_liveview_snapshot(pid,&videosrc,&udd);
+    if (observed>=0) return observed;
+    /* Fixture parity with the loader's admission: an unobservable target in
+     * fixture mode counts as ready so existing chain-level fixtures keep
+     * running their inline sync. Production stays conservative: the deferred
+     * worker re-polls, and every sync still passes the full chain admission. */
+    const char *fixture=getenv("NX_SF_PROBE_FIXTURE");
+    if (fixture && !strcmp(fixture,"1")) return 1;
+    return 0;
 }
 /* The caller has already verified the camera identity and translated its PID
  * through /proc when running under QEMU. RAM markers add a lifetime, layout,
@@ -438,7 +578,12 @@ static inline int nx_lut_preview_pref_value(void) {
     int first=fgetc(in);fclose(in);
     return first=='1';
 }
-static inline int nx_lut_sync_preview(void) {
+/* Defined after nx_lut_lock; forward-declared so the playback deferral can
+ * hand the sync to the detached worker from inside the sync entry point. */
+static inline int nx_lut_lock(int nonblocking,int exclusive);
+static inline int nx_lut_deferred_sync_start(unsigned staged,const char *runtime,
+    const char *state_dir,const char *script,const char *source_root,const char *source_id);
+static inline int nx_lut_sync_preview_ex(int allow_defer) {
     const char *skip=getenv("NX300M_LUT_SKIP_PREVIEW_SYNC");
     if (skip && !strcmp(skip,"1")) return 0;
     char backend[32]="";int have_backend=0;
@@ -505,10 +650,49 @@ static inline int nx_lut_sync_preview(void) {
         fputs("PREVIEW-WARNING verified RAM SmartFilter sync unavailable; still selection retained\n",stderr);return 6;
     }
     snprintf(source_id,sizeof source_id,"%llu:%llu",(unsigned long long)source.st_dev,(unsigned long long)source.st_ino);
+    /* Playback apply (2026-11-18 card log): the admission wait inside the
+     * chain cannot succeed without a live view and occupied the panel for
+     * the whole 12 s while the selection was already saved. Separate the two
+     * facts: return the saved outcome now, hand the preview table sync to a
+     * bounded detached worker, and let it sync the LATEST saved request once
+     * the stock viewfinder is back. Deferred only when a selection exists
+     * (a sync without one is the stock path, which disable owns). */
+    unsigned defer_generation=0;
+    if (allow_defer) {
+        unsigned read_generation=0,strength=0;char path[256];
+        int have_selection=nx_lut_read_selection_with_strength(NX_LUT_SELECTION,&read_generation,path,&strength);
+        if (have_selection && !nx_lut_liveview_ready(nx_lut_camera_pid_scan())) {
+            defer_generation=read_generation;
+            unsigned synced_generation=0;char pending_state[24];
+            unsigned pending_staged=0;
+            int already_synced=nx_lut_preview_pending_read(&pending_staged,pending_state,sizeof pending_state,&synced_generation) &&
+                synced_generation>=defer_generation;
+            nx_lut_preview_pending_write(defer_generation,already_synced?"synced":"pending",synced_generation);
+            if (!already_synced) {
+                char detail[96];
+                snprintf(detail,sizeof detail,"generation=%u state=pending",defer_generation);
+                nx_lut_journal("preview-pending",detail);
+                nx_lut_card_log("LUT_PREVIEW_PENDING",detail);
+                if (!nx_lut_deferred_sync_start(defer_generation,runtime,control_state,script,root,source_id)) {
+                    fprintf(stderr,"LUT_PREVIEW_DEFERRED reason=no-liveview generation=%u\n",defer_generation);
+                    return 0;
+                }
+                fputs("PREVIEW-WARNING cannot start the deferred sync worker; syncing inline\n",stderr);
+            } else {
+                fprintf(stderr,"LUT_PREVIEW_DEFERRED reason=already-synced generation=%u\n",defer_generation);
+                return 0;
+            }
+        } else if (have_selection) defer_generation=read_generation;
+    }
     pid_t child=fork();
     if (!child) {
+        /* Engine-owned sync: the chain passes an armed-but-unapplied mailbox
+         * through as rc 76 (2026-11-19 acceptance A2) so this engine records
+         * the honest pending fact instead of the wrapper's panel-facing
+         * exit 0 being misread as a synced preview. */
         if (setenv("NX300M_MOD_ROOT",runtime,1) || setenv("NX_MOD_ROOT",runtime,1) ||
                 setenv("NX300M_MOD_SOURCE_ROOT",root,1) || setenv("NX300M_MOD_SOURCE_ID",source_id,1) ||
+                setenv("NX300M_SF_ENGINE_SYNC","1",1) ||
                 (control_state && setenv("NX_STATE_DIR",control_state,1))) _exit(126);
         char *const args[]={"sh",script,(char*)operation,NULL};
         extern char **environ;
@@ -544,15 +728,34 @@ static inline int nx_lut_sync_preview(void) {
             fputs("PREVIEW-UNCERTAIN outer deadline reached; SmartFilter chain left running for its recovery owner\n",stderr);
             if(!access("/tmp/nx300m-smartfilter-preview.uncertain",F_OK))
                 fputs("PREVIEW-UNCERTAIN uncertainty guard already published by the launcher\n",stderr);
+            if (allow_defer && defer_generation) nx_lut_preview_pending_write(defer_generation,"uncertain",0);
             return 6;
         }
+    }
+    if (child>0 && done==child && WIFEXITED(status) && WEXITSTATUS(status)==76 && defer_generation) {
+        /* The chain armed the resident mailbox (hot-apply honest pending):
+         * the request applies at the next safe frame boundary without this
+         * engine. Record pending — never a synced preview — and report the
+         * saved outcome; the wrapper's BUSY_PENDING marker on the inherited
+         * output drives the panel message. */
+        unsigned prev_staged=0,prev_synced=0;char prev_state[24];
+        unsigned keep=nx_lut_preview_pending_read(&prev_staged,prev_state,sizeof prev_state,&prev_synced)?prev_synced:0;
+        nx_lut_preview_pending_write(defer_generation,"pending",keep);
+        fprintf(stderr,"LUT_PREVIEW_BUSY_PENDING reason=mailbox-armed generation=%u\n",defer_generation);
+        return 0;
     }
     if (child<0 || done!=child || !WIFEXITED(status) || WEXITSTATUS(status)) {
         if(!access("/tmp/nx300m-smartfilter-preview.uncertain",F_OK))
             fputs("PREVIEW-UNCERTAIN script failed and the launcher uncertainty guard is present; do not re-arm before it is resolved\n",stderr);
-        fprintf(stderr,"PREVIEW-WARNING SmartFilter preview %s failed; still selection retained\n",operation);return 6;
+        fprintf(stderr,"PREVIEW-WARNING SmartFilter preview %s failed; still selection retained\n",operation);
+        if (allow_defer && defer_generation) nx_lut_preview_pending_write(defer_generation,"failed",0);
+        return 6;
     }
+    if (allow_defer && defer_generation) nx_lut_preview_pending_write(defer_generation,"synced",defer_generation);
     return 0;
+}
+static inline int nx_lut_sync_preview(void) {
+    return nx_lut_sync_preview_ex(0);
 }
 static inline int nx_lut_stage_with_strength(const char *path,unsigned int strength,unsigned int *staged_generation) {
     unsigned long long started=nx_lut_control_ms();
@@ -577,7 +780,10 @@ static inline int nx_lut_stage_with_strength(const char *path,unsigned int stren
     fprintf(stderr,"LUT_CONTROL phase=card-persist elapsed_ms=%llu\n",nx_lut_control_ms()-started);
     if (staged_generation) *staged_generation=generation;
     started=nx_lut_control_ms();
-    int result=nx_lut_sync_preview();
+    /* Stage owns the deferral: a playback apply must return promptly so the
+     * panel can hand focus back to the stock UI. Disable (nx_lut_stock)
+     * keeps its synchronous pause semantics. */
+    int result=nx_lut_sync_preview_ex(1);
     fprintf(stderr,"LUT_CONTROL phase=preview-sync rc=%d elapsed_ms=%llu\n",result,nx_lut_control_ms()-started);
     return result;
 }
@@ -654,5 +860,196 @@ static inline int nx_lut_lock(int nonblocking,int exclusive) {
     }
     fputs("LUT_LOCK timeout elapsed_ms=15000; control lock still held by another engine\n",stderr);
     close(fd);errno=ETIMEDOUT;return -1;
+}
+/* Detached body of the playback-deferred preview sync. Runs after the engine
+ * and the panel have exited, so every outcome goes to the journal, the
+ * pending record and the card log instead of a pipe nobody reads.
+ * Wait is bounded; the sync chain is never killed — a deadline leaves it to
+ * its recovery owner and records uncertainty. */
+static inline void nx_lut_deferred_sync_worker(unsigned staged,const char *runtime,
+        const char *state_dir,const char *script,const char *source_root,const char *source_id) {
+    /* Forked, never exec'd: CLOEXEC does not cover fork, so every fd the
+     * engine owned must go. That drops the inherited engine lock copy, the
+     * panel's stderr pipe and the X connection before any wait begins. */
+    DIR *fds=opendir("/proc/self/fd");
+    if (fds) {
+        int own=dirfd(fds);struct dirent *entry;
+        while ((entry=readdir(fds))) {
+            char *end;long fd=strtol(entry->d_name,&end,10);
+            if (*entry->d_name && !*end && fd>2 && fd!=own) close((int)fd);
+        }
+        closedir(fds);
+    }
+    int devnull=open("/dev/null",O_RDWR);
+    if (devnull>=0) { dup2(devnull,0);dup2(devnull,1);dup2(devnull,2);if (devnull>2) close(devnull); }
+    unsigned long long budget=120000;
+    { const char *override=getenv("NX_LUT_DEFERRED_SYNC_WAIT_MS");
+      if (override && *override) { long v=atol(override);if (v>=100) budget=(unsigned long long)v; } }
+    /* Bounded post-expiry tail (2026-11-19 late-liveview acceptance): a
+     * playback longer than the main budget still leaves the selection saved,
+     * and the viewfinder's return must sync the latest saved request without
+     * any new user action. The tail keeps the same cancellation checks and
+     * the cached camera identity at a slow tick — no unbounded worker and no
+     * continuous /proc enumeration; the tail itself is hard-capped. */
+    unsigned long long tail=300000;
+    { const char *override=getenv("NX_LUT_DEFERRED_SYNC_TAIL_MS");
+      if (override && *override) { long v=atol(override);if (v>=1000) tail=(unsigned long long)v; } }
+    char note[160];
+    unsigned long long waited=0,tail_waited=0;
+    int expired=0,cam_pid=0;
+    for (;;) {
+        /* Cancellation first: the user may have closed preview or selected
+         * stock while this worker waited. */
+        char backend[32]="";
+        FILE *flag=fopen("/var/run/nx300m-preview-backend","r");
+        if (flag) { (void)fgets(backend,sizeof backend,flag);fclose(flag); }
+        if (strcmp(backend,"smartfilter\n")) {
+            nx_lut_preview_pending_write(staged,"cancelled",0);
+            nx_lut_journal("preview-cancelled","backend no longer smartfilter");
+            snprintf(note,sizeof note,"generation=%u reason=backend-stopped",staged);
+            nx_lut_card_log("LUT_PREVIEW_CANCELLED",note);
+            _exit(0);
+        }
+        if (access(NX_LUT_SELECTION,F_OK)) {
+            nx_lut_preview_pending_write(staged,"cancelled",0);
+            nx_lut_journal("preview-cancelled","selection removed");
+            snprintf(note,sizeof note,"generation=%u reason=selection-removed",staged);
+            nx_lut_card_log("LUT_PREVIEW_CANCELLED",note);
+            _exit(0);
+        }
+        /* The camera process is a singleton; cache the scan and re-scan only
+         * when the cached identity is gone. */
+        if (cam_pid && kill(cam_pid,0)) cam_pid=0;
+        if (!cam_pid) cam_pid=nx_lut_camera_pid_scan();
+        if (cam_pid && nx_lut_liveview_ready(cam_pid)) break;
+        { const char *fixture=getenv("NX_SF_PROBE_FIXTURE");
+          if (!cam_pid && fixture && !strcmp(fixture,"1")) break; }
+        if (waited>=budget) {
+            if (!expired) {
+                expired=1;
+                nx_lut_preview_pending_write(staged,"expired",0);
+                nx_lut_journal("preview-expired","liveview never returned; selection stays saved");
+                snprintf(note,sizeof note,"generation=%u waited_ms=%llu",staged,waited);
+                nx_lut_card_log("LUT_PREVIEW_EXPIRED",note);
+            }
+            if (tail_waited>=tail) {
+                nx_lut_journal("preview-tail-expired","tail budget exhausted; selection stays saved");
+                snprintf(note,sizeof note,"generation=%u waited_ms=%llu tail_ms=%llu",staged,waited,tail);
+                nx_lut_card_log("LUT_PREVIEW_EXPIRED",note);
+                _exit(0);
+            }
+            usleep(200000);waited+=200;tail_waited+=200;
+            continue;
+        }
+        usleep(50000);waited+=50;
+    }
+    /* Serialize against any newer control, then re-read the LATEST saved
+     * request so rapid re-selection during playback converges on one sync of
+     * the newest generation. */
+    int lock=nx_lut_lock(0,1);
+    if (lock<0) {
+        nx_lut_preview_pending_write(staged,"uncertain",0);
+        nx_lut_journal("preview-uncertain","engine lock unavailable for the deferred sync");
+        snprintf(note,sizeof note,"generation=%u reason=engine-lock",staged);
+        nx_lut_card_log("LUT_PREVIEW_UNCERTAIN",note);
+        _exit(6);
+    }
+    char backend[32]="";
+    FILE *flag=fopen("/var/run/nx300m-preview-backend","r");
+    if (flag) { (void)fgets(backend,sizeof backend,flag);fclose(flag); }
+    unsigned generation=0,strength=0;char path[256];
+    if (strcmp(backend,"smartfilter\n") ||
+        !nx_lut_read_selection_with_strength(NX_LUT_SELECTION,&generation,path,&strength)) {
+        nx_lut_preview_pending_write(staged,"cancelled",0);
+        nx_lut_journal("preview-cancelled","state changed while waiting");
+        snprintf(note,sizeof note,"generation=%u reason=state-changed",staged);
+        nx_lut_card_log("LUT_PREVIEW_CANCELLED",note);
+        close(lock);_exit(0);
+    }
+    unsigned synced_generation=0;char pending_state[24];unsigned pending_staged=0;
+    if (nx_lut_preview_pending_read(&pending_staged,pending_state,sizeof pending_state,&synced_generation) &&
+        synced_generation>=generation) {
+        nx_lut_preview_pending_write(pending_staged>staged?pending_staged:staged,"synced",synced_generation);
+        nx_lut_journal("preview-sync-skipped","a newer control already synced the current request");
+        close(lock);_exit(0);
+    }
+    nx_lut_preview_pending_write(staged,"syncing",synced_generation);
+    unsigned long long started=nx_lut_control_ms();
+    pid_t child=fork();
+    if (!child) {
+        /* Engine-owned sync: the chain passes an armed-but-unapplied mailbox
+         * through as rc 76 (2026-11-19 acceptance A3) so this worker records
+         * the honest pending fact instead of a synced preview that never
+         * happened. */
+        if (setenv("NX300M_MOD_ROOT",runtime,1) || setenv("NX_MOD_ROOT",runtime,1) ||
+                setenv("NX300M_MOD_SOURCE_ROOT",source_root,1) || setenv("NX300M_MOD_SOURCE_ID",source_id,1) ||
+                setenv("NX300M_SF_ENGINE_SYNC","1",1) ||
+                (state_dir && setenv("NX_STATE_DIR",state_dir,1))) _exit(126);
+        int logfd=open(NX_LUT_PREVIEW_PENDING_LOG,O_WRONLY|O_APPEND|O_CREAT|O_CLOEXEC,0600);
+        if (logfd>=0) { dup2(logfd,1);dup2(logfd,2);if (logfd>2) close(logfd); }
+        char *const args[]={"sh",(char *)script,"sync",NULL};
+        extern char **environ;
+        execve("/bin/sh",args,environ);_exit(127);
+    }
+    int status=0;pid_t done=-1;int uncertain=child<0;
+    if (child>0) {
+        /* Same abandonment contract as service_control: the outer deadline
+         * never signals the chain. The launcher publishes its uncertainty
+         * guard on its own budget and the scripts refuse re-entry while it
+         * exists. */
+        unsigned long long budget=20000;
+        { const char *override=getenv("NX_LUT_CONTROL_BUDGET_MS");
+          if (override && *override) { long v=atol(override);if (v>=100) budget=(unsigned long long)v; } }
+        unsigned long long deadline=nx_lut_control_ms()+budget;
+        while (done<0) {
+            done=waitpid(child,&status,WNOHANG);
+            if (done==child) break;
+            if (done<0 && errno!=EINTR) break;
+            if (done==0) { done=-1;if (nx_lut_control_ms()>=deadline) break;usleep(20000); }
+        }
+        if (done!=child) uncertain=1;
+    }
+    if (uncertain) {
+        nx_lut_preview_pending_write(staged,"uncertain",synced_generation);
+        nx_lut_journal("preview-uncertain","deferred sync chain left running for its recovery owner");
+        snprintf(note,sizeof note,"generation=%u reason=chain-deadline",staged);
+        nx_lut_card_log("LUT_PREVIEW_UNCERTAIN",note);
+        _exit(6);
+    }
+    int rc=WIFEXITED(status)?WEXITSTATUS(status):4;
+    unsigned long long elapsed=nx_lut_control_ms()-started;
+    if (rc==76) {
+        /* Armed, not applied (hot-apply honest pending): the resident
+         * consumes the request at the next safe frame boundary on its own.
+         * Keep the pending record pending — never synced. */
+        nx_lut_preview_pending_write(staged,"pending",synced_generation);
+        snprintf(note,sizeof note,"generation=%u armed elapsed_ms=%llu",generation,elapsed);
+        nx_lut_journal("preview-armed",note);
+        nx_lut_card_log("LUT_PREVIEW_ARMED",note);
+        _exit(0);
+    }
+    if (rc) {
+        nx_lut_preview_pending_write(staged,"failed",synced_generation);
+        snprintf(note,sizeof note,"generation=%u rc=%d elapsed_ms=%llu",generation,rc,elapsed);
+        nx_lut_journal("preview-failed",note);
+        nx_lut_card_log("LUT_PREVIEW_FAILED",note);
+        _exit(6);
+    }
+    nx_lut_preview_pending_write(staged,"synced",generation);
+    snprintf(note,sizeof note,"generation=%u strength=%u elapsed_ms=%llu",generation,strength,elapsed);
+    nx_lut_journal("preview-sync-complete",note);
+    nx_lut_card_log("LUT_PREVIEW_SYNCED",note);
+    _exit(0);
+}
+static inline int nx_lut_deferred_sync_start(unsigned staged,const char *runtime,
+        const char *state_dir,const char *script,const char *source_root,const char *source_id) {
+    pid_t worker=fork();
+    if (worker<0) return -1;
+    if (!worker) {
+        setsid();
+        nx_lut_deferred_sync_worker(staged,runtime,state_dir,script,source_root,source_id);
+        _exit(0);
+    }
+    return 0;
 }
 #endif

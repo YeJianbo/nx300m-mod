@@ -514,30 +514,70 @@ static int refresh_running(void) {
     return !get(&nx_sfr_runtime.stream_stopped)&&get(liveview+0x34/4)==7&&
         !get(liveview+0x38/4);
 }
-/* Clamp liveview sensor framerate to 30 fps while S2 LUT rendering is desired,
- * and restore the native rate once SmartFilter returns to stock. */
+/* Clamp the liveview sensor framerate to the configured cap while S2 LUT
+ * rendering is desired, and restore the factory rate once SmartFilter returns
+ * to stock. The cap is control-stage input (loader --fps-limit 30/45/60); 0
+ * keeps the previous 30 fps default. Ownership model: saved_sensor_fps holds
+ * the factory value for as long as we own the rate, so 30->45->60 switches
+ * never mistake an applied cap for the stock value; a stock-side rate change
+ * (cur != the value we last left) releases it instead of restoring over it. */
 static void sync_sensor_fps(unsigned s2_active) {
     struct nx_sfr_config *c=&nx_sfr_config;
     struct nx_sfr_runtime *s=&nx_sfr_runtime;
     if(c->profile!=NX_SFR_S2||c->probe_once) return;
     volatile unsigned *common=(volatile unsigned *)c->common_instance();
     if(!common) return;
+    unsigned limit=c->fps_limit?c->fps_limit:30U;
     unsigned cur=get(&common[0x14/4]);
+    unsigned saved=get(&s->saved_sensor_fps);
+    unsigned active=get(&s->active_sensor_fps);
+    if(saved&&cur!=active) {
+        put(&s->saved_sensor_fps,0);
+        saved=0;
+    }
     if(s2_active) {
-        if(cur>30U) {
-            if(!get(&s->saved_sensor_fps)) put(&s->saved_sensor_fps,cur);
-            put(&common[0x14/4],30U);
-            cur=30U;
+        if(!saved&&cur>limit) {
+            /* First cap of this ownership; captured once, never overwritten
+             * by a later cap, so it stays the pre-preview factory value. */
+            put(&s->saved_sensor_fps,cur);
+            saved=cur;
         }
-    } else {
-        unsigned saved=get(&s->saved_sensor_fps);
-        if(saved>30U&&cur==30U) {
-            put(&common[0x14/4],saved);
-            put(&s->saved_sensor_fps,0);
-            cur=saved;
+        if(saved) {
+            /* Only lower to the cap; a factory rate below it is kept. Raising
+             * the cap here runs inside the rebuild's Create, the same safe
+             * boundary the initial cap uses. */
+            unsigned target=saved<limit?saved:limit;
+            if(cur!=target) { put(&common[0x14/4],target); cur=target; }
         }
+    } else if(saved) {
+        if(cur==active&&cur!=saved) { put(&common[0x14/4],saved); cur=saved; }
+        put(&s->saved_sensor_fps,0);
+        saved=0;
     }
     put(&s->active_sensor_fps,cur);
+}
+/* Pending means the observed sensor rate is not the target for the current
+ * goal, so the stock ChangeUserInfo(0x39) topology rebuild must run; the rate
+ * is only written at Create inside that rebuild, never on the frame thread.
+ * Both the frame-callback queue and the controller dispatch must use this one
+ * predicate, or a queued request would be dropped without a rebuild. */
+static int fps_pending(unsigned wanted) {
+    struct nx_sfr_config *c=&nx_sfr_config;
+    struct nx_sfr_runtime *s=&nx_sfr_runtime;
+    if(c->profile!=NX_SFR_S2||c->probe_once) return 0;
+    volatile unsigned *common=(volatile unsigned *)c->common_instance();
+    if(!common) return 0;
+    unsigned limit=c->fps_limit?c->fps_limit:30U;
+    unsigned cur=get(&common[0x14/4]);
+    unsigned saved=get(&s->saved_sensor_fps);
+    /* A zero observed rate means the liveview rate is not established (or not
+     * modeled by a fixture); there is nothing to converge and the initial cap
+     * still happens at Create. */
+    if(!cur) return 0;
+    if(!wanted) return saved&&cur!=saved;
+    /* Above the cap: lower it. Factory already lower: keep the factory value. */
+    unsigned target=saved&&saved<limit?saved:limit;
+    return target!=cur;
 }
 /* Defer post-capture LUT rebuild until still RAW/YCC/JPEG encoding counters
  * finish and a brief write-start window elapses, preventing 0x39 teardown from
@@ -560,6 +600,56 @@ static int capture_settling(const struct nx_sfr_config *c,struct nx_sfr_runtime 
     put(&s->capture_hold_ms,0);
     return 0;
 }
+/* Hot-swap mailbox: same identity/validation rules as the loader's apply
+ * path, re-checked here at the safe frame boundary before anything commits.
+ * Table and identity land first, generation last (release), so the existing
+ * select-on-generation-change logic in ensure_body consumes a complete
+ * request and never a torn one. A rejected request is dropped, never
+ * half-applied; the loader observes the stalled generation and reports
+ * honestly instead of claiming the new look is displayed. */
+static unsigned mail_hash(const struct nx_sfr_mailbox *m) {
+    /* FNV-1a over the contiguous payload: generation..table end. The struct
+     * layout has no padding in this range and the loader zeroes it first. */
+    const unsigned char *p=(const unsigned char *)&m->generation;
+    const unsigned char *end=(const unsigned char *)(m->table+NX_SF_TABLE_WORDS);
+    unsigned h=2166136261U;
+    while(p<end) { h^=*p++; h*=16777619U; }
+    return h;
+}
+static int mail_id_valid(const char *id) {
+    unsigned n=0; if(!id||!id[0]) return 0;
+    for(;id[n];++n) if(n>=NX_SF_LOOK_ID_SIZE-1||!((id[n]>='a'&&id[n]<='z')||(id[n]>='0'&&id[n]<='9')||id[n]=='_'||id[n]=='-')) return 0;
+    return 1;
+}
+static int mail_table_valid(const unsigned short *table) {
+    for(unsigned i=0;i<NX_SF_TABLE_WORDS;++i)
+        if(table[i]>1023||(i%NX_SF_CHANNEL_WORDS==729&&table[i])) return 0;
+    return 1;
+}
+static void mail_consume(struct nx_sfr_config *c,struct nx_sfr_runtime *s) {
+    struct nx_sfr_mailbox *m=&s->mail;
+    unsigned generation=get(&m->seq);
+    int ok=generation&&generation!=c->generation&&m->checksum==mail_hash(m)&&
+        mail_id_valid(m->look_id)&&mail_table_valid(m->table)&&m->strength<=100&&
+        (m->fps_limit==0||m->fps_limit==30||m->fps_limit==45||m->fps_limit==60);
+    if(!ok) { __sync_fetch_and_add(&s->mail_rejected,1); put(&m->seq,0); return; }
+    copy(c->look_id,m->look_id,sizeof c->look_id);
+    copy(c->table,m->table,sizeof c->table);
+    c->strength=m->strength;
+    c->fps_limit=m->fps_limit;
+    c->enabled=1;
+    c->insert_enabled=1;
+    /* Keep the diagnostic ledger consistent with the consumed request: the
+     * loader's resident validation requires timing generation/strength/look
+     * to match the committed config. Same frame thread, ordered before the
+     * generation release store. */
+    s->timing.generation=generation;
+    s->timing.strength=m->strength;
+    copy(s->timing.look_id,m->look_id,sizeof s->timing.look_id);
+    __atomic_store_n(&c->generation,generation,__ATOMIC_RELEASE);
+    __sync_fetch_and_add(&s->mail_consumed,1);
+    put(&m->seq,0);
+}
 /* Queue at the completed IPCM callback, before any SmartFilter node exists.
  * The frame thread never calls a stop/restart routine or waits for a rebuild. */
 void nx_sfr_frame_callback(void *self,int which,void *image,void *data,unsigned tag) {
@@ -571,11 +661,26 @@ void nx_sfr_frame_callback(void *self,int which,void *image,void *data,unsigned 
     session_resume_stream();
     struct nx_sfr_config *c=&nx_sfr_config;
     struct nx_sfr_runtime *s=&nx_sfr_runtime;
+    /* Consume the latest hot-swap request before the topology decision so the
+     * new generation's goal drives the same queued 0x39 rebuild path. The
+     * boundary needs the preview path idle (no capture, no pending topology
+     * operation, healthy session) — exactly where the refresh queue below is
+     * allowed to act. */
+    if(which==1&&c->profile==NX_SFR_S2&&!c->probe_once&&get(&s->initialized)==2&&
+       !get(&s->control_pause)&&!get(&s->captures)&&!get(&s->b2y_leases)&&
+       !get(&s->refresh_pending)&&!get(&s->refresh_queued)) {
+        unsigned st=s->session.state,seq=get(&s->mail.seq);
+        if(seq&&seq!=c->generation&&
+           (st==NX_IPS_IDLE||st==NX_IPS_READY)&&s->session.held<2) mail_consume(c,s);
+    }
     if(which==1&&c->profile==NX_SFR_S2&&!c->probe_once&&!get(&s->control_pause)&&
        !get(&s->captures)&&!get(&s->b2y_leases)&&!get(&s->refresh_pending)) {
         unsigned wanted=refresh_goal(),key=(c->generation<<1)|wanted;
-        int need_fps_restore=!wanted&&!get(&s->s2_path)&&get(&s->saved_sensor_fps)>30U;
-        if((wanted!=get(&s->s2_path)||need_fps_restore)&&get(&s->refresh_attempt)!=key&&
+        /* A cap change arrives as a config poke (generation++), so the rate
+         * difference is the only signal; the safe switch point is the same
+         * queued 0x39 rebuild, deferred while capture/encoding is settling. */
+        int need_fps=fps_pending(wanted);
+        if((wanted!=get(&s->s2_path)||need_fps)&&get(&s->refresh_attempt)!=key&&
            real_mode()==15&&refresh_running()&&(!wanted||!capture_settling(c,s))&&
            __sync_bool_compare_and_swap(&s->refresh_queued,0,1)) {
             /* Same 12-byte payload as ChangeUserInfo(0x39), with IPC_NOWAIT.
@@ -632,7 +737,7 @@ int nx_sfr_message_handle(void *self) {
            c->profile==NX_SFR_S2&&!c->probe_once&&real_mode()==15&&refresh_running()) {
             unsigned wanted=refresh_goal();
             put(&s->refresh_attempt,(c->generation<<1)|wanted);
-            if(wanted!=get(&s->s2_path)||(!wanted&&!get(&s->s2_path)&&get(&s->saved_sensor_fps)>30U)) {
+            if(wanted!=get(&s->s2_path)||fps_pending(wanted)) {
                 void *liveview=c->liveview_instance();
                 /* Native Start does not refresh its cached SmartFilter mode.
                  * After a native-first Create that cache can already equal

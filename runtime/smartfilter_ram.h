@@ -71,6 +71,10 @@ struct nx_sfr_config {
     void (*liveview_memory_restart)(void *,int);
     int (*liveview_restart_allowed)(void *);
     void *const volatile *capture_counter_ptr;
+    /* Liveview sensor rate cap written only by the control stage (loader
+     * --fps-limit 30/45/60). 0 keeps the original 30 fps default; the blob
+     * never reads card state on a frame path. */
+    unsigned fps_limit;
 #endif
 };
 enum nx_sfr_probe_state {
@@ -90,6 +94,17 @@ struct nx_sfr_probe {
 struct nx_sfr_origin { volatile unsigned tid, pending, active; };
 #ifdef NX_SFR_SESSION
 struct nx_sfr_capture_owner { volatile unsigned tid; unsigned native,skipped,opened_ms; };
+/* Latest full hot-swap request, published stop-free by the loader while the
+ * camera keeps running: the loader writes everything after seq first and seq
+ * (the target generation) last, so the mailbox stays inert until the request
+ * is complete. The frame callback consumes it at a safe frame boundary after
+ * its own full re-validation; the loader never writes config directly here. */
+struct nx_sfr_mailbox {
+    volatile unsigned seq;
+    unsigned checksum, generation, strength, fps_limit;
+    char look_id[NX_SF_LOOK_ID_SIZE];
+    unsigned short table[NX_SF_TABLE_WORDS];
+};
 #endif
 struct nx_sfr_runtime {
     volatile unsigned inflight, initialized, backend_active, captures, control_pause;
@@ -119,6 +134,8 @@ struct nx_sfr_runtime {
     int refresh_error;
     volatile unsigned refresh_pending, refresh_resumes, refresh_state, refresh_wakeups;
     volatile unsigned create_calls, create_native_state, create_deferred;
+    struct nx_sfr_mailbox mail;
+    volatile unsigned mail_consumed, mail_rejected;
     unsigned stop_drain_calls, stop_drain_waits, stop_drain_total_ms, stop_drain_max_ms;
     unsigned b2y_drain_calls, b2y_drain_waits, b2y_drain_total_ms, b2y_drain_max_ms;
     unsigned stop_native_calls, stop_native_total_ms, stop_native_max_ms;

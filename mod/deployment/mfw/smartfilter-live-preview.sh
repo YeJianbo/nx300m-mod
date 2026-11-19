@@ -93,9 +93,7 @@ job=$(mktemp -d /tmp/nx300m-sf-job.XXXXXX) || fail 'cannot allocate private RAM 
 copy_tool=$HERE/bin/ram_asset_verify.arm
 [ -f "$copy_tool" ] && [ ! -L "$copy_tool" ] && [ -x "$copy_tool" ] || fail 'RAM asset copy verifier unavailable'
 set -- --copy "$HERE" "$job"
-pairs='bin/smartfilter_probe_launcher.arm:launcher bin/smartfilter_loader.arm:loader.arm lib/smartfilter_ram.bin:blob.bin'
-[ "$command" != probe-once ] || pairs="$pairs smartfilter-probe-collector.sh:collector.sh"
-for pair in $pairs; do
+for pair in bin/smartfilter_probe_launcher.arm:launcher bin/smartfilter_loader.arm:loader.arm lib/smartfilter_ram.bin:blob.bin smartfilter-probe-collector.sh:collector.sh; do
     resource=${pair%:*}; destination=${pair#*:}
     if [ "$open_diagnostic" = 1 ]; then
         case $resource in bin/*|lib/*) resource=ipcs-diagnostic/$resource ;; esac
@@ -124,6 +122,25 @@ flock -s -n 6 || fail 'media access is paused or draining'
 [ ! -e "$state/media-paused" ] || fail 'media access is paused'
 [ ! -L "$source_root" ] && [ -d "$source_root" ] &&
     [ "$(stat -c '%d:%i' "$source_root")" = "$source_id" ] || fail 'source identity changed'
+# LUT liveview fps cap (control-stage input only; never read on a frame path).
+# Old cards without the preference keep 30 fps; any value outside the verified
+# 30/45/60 enum falls back to 30 here, and the loader re-validates strictly.
+fps_limit=30
+fps_pref=$source_root/.state/lut-fps
+[ ! -L "$fps_pref" ] || fail 'LUT fps preference is a symbolic link'
+if [ -e "$fps_pref" ]; then
+    [ -f "$fps_pref" ] || fail 'invalid LUT fps preference'
+    # Same grammar as the settings UI (nxui_feature_pages.h): the whole file
+    # is exactly one enum value followed by a single LF — 3 bytes. Anything
+    # else (trailing text, leading spaces, a missing newline, extra lines)
+    # falls back to 30 here, and the loader re-validates strictly.
+    fps_value=
+    if IFS= read -r fps_value < "$fps_pref" && [ "$(wc -c < "$fps_pref")" -eq 3 ]; then
+        case $fps_value in
+            30|45|60) fps_limit=$fps_value ;;
+        esac
+    fi
+fi
 # Before the preview lock: the engine owns the selection lock, and its normal
 # sync callback acquires the preview lock in that order. Do not recurse here.
 if [ "$command" = enable-s2 ]; then
@@ -178,6 +195,12 @@ case $command in
             [ ! -L "$source_root/looks" ] && [ ! -L "$source_root/looks/$look" ] || fail 'look directory is a symbolic link'
             table=$selected
             operation=apply
+            # An already-installed, enabled preview takes the stop-free hot
+            # path: same values are confirmed without touching the target, and
+            # a table change is published to the resident mailbox for the safe
+            # frame boundary. Anything else falls back to the full transaction
+            # inside the loader, so first install and recovery stay guarded.
+            [ "$command" != sync ] || operation=hot-apply
         fi ;;
 esac
 if [ -n "$table" ]; then
@@ -195,8 +218,8 @@ if [ -n "$table" ]; then
 fi
 set -- "$operation" --pid "$camera_pid" --blob "$job/blob.bin"
 case $command in
-    enable-s2|test-monochrome|enable-s2-stock|stock|sync) set -- "$@" --s2 --timing 0 ;;
-    test-monochrome-timing) set -- "$@" --s2 --timing 1 ;;
+    enable-s2|test-monochrome|enable-s2-stock|stock|sync) set -- "$@" --s2 --fps-limit "$fps_limit" --timing 0 ;;
+    test-monochrome-timing) set -- "$@" --s2 --fps-limit "$fps_limit" --timing 1 ;;
     restore) set -- "$@" --keep-timing ;;
 esac
 if [ "$open_diagnostic" = 1 ]; then
@@ -223,7 +246,29 @@ fi
 rc=0
 "$job/launcher" --run 30 "$job/control.json" "$job/control.stderr" "$guard" "$job/loader.arm" "$@" || rc=$?
 sf_stage launcher
+# Include the native admission/stop-window timings on successful controls too.
+# They were previously stranded in a private RAM job, hiding the cause of a
+# slow switch after power-off. This is control-event output, never frame I/O.
+[ ! -f "$job/control.stderr" ] || while IFS= read -r line; do
+    case $line in 'Control admission:'*|'Target stop window:'*|'Pause attempt:'*|'Control attempts:'*|'Hot transaction:'*) printf '%s\n' "$line" >&2 ;; esac
+done < "$job/control.stderr"
 [ ! -f "$job/control.json" ] || while IFS= read -r line; do printf '%s\n' "$line"; done < "$job/control.json"
+if [ "$rc" -eq 76 ]; then
+    # The latest full request is published and armed; consumption defers while
+    # a capture or topology operation holds the frame boundary. This is an
+    # honest pending, not a failure: the selection is saved and stays the
+    # authority, and the next control supersedes the armed request.
+    pending_generation=$(sed -n 's/^.*"generation":\([0-9]*\).*$/\1/p' "$job/control.json" | head -n 1)
+    printf 'LUT_PREVIEW_BUSY_PENDING generation=%s\n' "${pending_generation:-0}"
+    printf 'LUT 已保存；拍摄或场景切换结束后自动生效（generation=%s）。\n' "${pending_generation:-0}"
+    # The engine's inline and deferred sync calls own the pending record for
+    # the saved selection: converting this to exit 0 there was recorded as a
+    # synced preview that never happened (2026-11-19 acceptance A2/A3). Pass
+    # the honest 76 through only to the engine; ordinary controls keep the
+    # original success exit for the BUSY_PENDING panel message.
+    [ "${NX300M_SF_ENGINE_SYNC:-}" != 1 ] || exit 76
+    exit 0
+fi
 if [ "$rc" -ne 0 ]; then
     # The loader's stderr contains the actual rejection. Preserve it before
     # the user powers down; the menu output is bounded and RAM is transient.
@@ -243,15 +288,7 @@ if [ "$rc" -ne 0 ]; then
     fi
     fail "操作失败或超时 rc=$rc；未自动重试，RAM=$job"
 fi
-# Include the native admission/stop-window timings on successful controls too.
-# They were previously stranded in a private RAM job, hiding the cause of a
-# slow switch after power-off. This is control-event output, never frame I/O.
 sf_stage output
-if [ -f "$job/control.stderr" ]; then
-    while IFS= read -r line; do
-        case $line in 'Control admission:'*|'Target stop window:'*) printf '%s\n' "$line" >&2 ;; esac
-    done < "$job/control.stderr"
-fi
 if [ "$open_diagnostic:$command" = 1:restore ]; then
     # Stop is already committed. A failed export must not undo it or prevent
     # the menu from reopening; retain both outputs in the private RAM job.
@@ -324,21 +361,4 @@ if [ "$open_diagnostic:$command" = 1:test-monochrome-timing ]; then
                 printf 'KDD 短采样未启动；原 Open 诊断仍然有效。\n' >&2
         fi
     fi
-fi
-
-# Temporary playback-freeze diagnostic: opt-in only via LIVEVIEW_WATCH marker or
-# NX_LIVEVIEW_WATCH=1 to avoid continuous /proc/mem polling and SD log I/O.
-if [ "${NX_LIVEVIEW_WATCH:-0}" = 1 ] || [ -f "$source_root/LIVEVIEW_WATCH" ]; then
-    case $open_diagnostic:$command in
-        1:sync|1:enable-s2)
-            observer=$HERE/bin/liveview_observer.arm
-            if [ -f "$observer" ] && [ ! -L "$observer" ]; then
-                if cp "$observer" "$job/liveview-observer.arm" && chmod 500 "$job/liveview-observer.arm"; then
-                    (
-                        exec 9>&- 6>&-
-                        exec setsid "$job/liveview-observer.arm" "$camera_pid" "$camera_start" "$job/blob.bin" "$source_id"
-                    ) </dev/null > "$job/watch-launch.log" 2>&1 &
-                fi
-            fi ;;
-    esac
 fi

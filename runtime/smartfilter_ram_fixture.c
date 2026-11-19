@@ -223,6 +223,46 @@ static void ram_refresh(void) {
            ram_runtime->refresh_requests,ram_controller_dispatches,ram_topology_rebuilds,
            ram_runtime->s2_path,ram_frame_tid,ram_controller_tid,ram_runtime->refresh_error);
 }
+/* Autonomous frame pump: one frame callback plus one preview frame per tick,
+ * like the real per-frame camera cadence. The loader's stop-free hot path
+ * relies on frames flowing while it polls the applied generation. */
+static void ram_off_prepare(int queue);
+static void ram_off_worker(void);
+static volatile unsigned ram_pump;
+static pthread_t ram_pump_thread;
+static void *ram_pump_worker(void *unused) {
+    (void)unused;
+    while(__atomic_load_n(&ram_pump,__ATOMIC_ACQUIRE)) {
+        filter_mode=15;
+        ram_refresh_callback();
+        ram_off_prepare(1); ram_off_worker();
+        usleep(4000);
+    }
+    return NULL;
+}
+/* Deterministic busy injection for the stop-based drain/retry scenarios:
+ * hold inflight/backend_active so the first control attempt is busy, and
+ * release them shortly after the loader's pause request lands (the same
+ * release-on-control-pause contract as the held-frame watcher, without the
+ * stock node's non-reentrant frame machinery). Counters return to the saved
+ * baseline before the next attempt commits. */
+static volatile unsigned ram_synth_busy;
+static pthread_t ram_synth_thread;
+static unsigned ram_synth_inflight,ram_synth_backend;
+static void *ram_synth_busy_worker(void *unused) {
+    (void)unused;
+    while(__atomic_load_n(&ram_synth_busy,__ATOMIC_ACQUIRE)) {
+        if(__atomic_load_n(&ram_runtime->control_pause,__ATOMIC_ACQUIRE)) {
+            usleep(50000);
+            __sync_fetch_and_sub(&ram_runtime->inflight,1);
+            __sync_fetch_and_sub(&ram_runtime->backend_active,1);
+            __atomic_store_n(&ram_synth_busy,0,__ATOMIC_RELEASE);
+            return NULL;
+        }
+        usleep(1000);
+    }
+    return NULL;
+}
 #endif
 static void ram_off_prepare(int queue) {
     reset(); filter_mode=15; work_available=0; case_name="s2-off";
@@ -543,6 +583,18 @@ int main(void) {
     unsigned offset=threaded?stock_slot_alternatives[0].address:stock_slots[NX_SFR_DEVICE_OPEN].address;
     REQUIRE(ram_device_open_original==(unsigned)opened.dli_fbase+offset);
     *ram_slots[NX_SFR_DEVICE_OPEN]=ram_device_open_original;
+#endif
+#ifdef NX_SFR_SESSION
+    /* Optional factory sensor-rate model for the fps-cap suites. Without the
+     * variable the field stays 0 and every pre-existing suite keeps its exact
+     * prior behavior (cur>limit is never true, nothing is capped). Digits only:
+     * the toolchain's strtoul resolves to a glibc-2.38 symbol. */
+    { const char *factory_fps=getenv("NX_SFR_FIXTURE_FACTORY_FPS");
+      if(factory_fps&&*factory_fps) {
+          const char *digit=factory_fps; unsigned value=0;
+          while(*digit>='0'&&*digit<='9') { value=value*10U+(unsigned)(*digit-'0'); ++digit; }
+          if(!*digit) common[0x14/4]=value;
+      } }
 #endif
     FILE *ready=fopen("/tmp/smartfilter-ram.ready","w"); REQUIRE(ready);
     fprintf(ready,"%u\n",(unsigned)getpid()); REQUIRE(!fclose(ready));
@@ -893,6 +945,125 @@ int main(void) {
                 int fd=device_open("/dev/null",O_RDONLY,0); REQUIRE(fd>=0&&!close(fd));
                 printf("{\"type\":\"fixture_open_binding\",\"owner\":\"%s\",\"original\":%u,\"forwarded_original\":%u,\"enabled\":%u,\"native_open_succeeded\":true}\n",
                        ram_device_open_owner,ram_device_open_original,cfg->original[NX_SFR_DEVICE_OPEN],cfg->enabled);
+                REQUIRE(!fflush(stdout));
+            }
+            else if(command==150) {
+                struct nx_sfr_config *cfg=(void *)((unsigned)h+h->config_offset);
+                printf("{\"type\":\"fixture_fps\",\"sensor\":%u,\"saved\":%u,\"active\":%u,\"limit\":%u,"
+                       "\"s2_path\":%u,\"generation\":%u,\"enabled\":%u,\"strength\":%u,\"look\":\"%s\","
+                       "\"rebuilds\":%u,\"pending\":%u,\"queued\":%u,\"requests\":%u,\"dispatches\":%u,\"deferred\":%u}\n",
+                       common[0x14/4],ram_runtime->saved_sensor_fps,ram_runtime->active_sensor_fps,cfg->fps_limit,
+                       ram_runtime->s2_path,cfg->generation,cfg->enabled,cfg->strength,cfg->look_id,
+                       ram_topology_rebuilds,ram_runtime->refresh_pending,ram_runtime->refresh_queued,
+                       ram_runtime->refresh_requests,ram_runtime->refresh_dispatches,ram_runtime->refresh_deferred);
+                REQUIRE(!fflush(stdout));
+            }
+            else if(command==151) { common[0x14/4]=24; }
+            else if(command==152) { common[0x14/4]=60; }
+            else if(command==153) {
+                struct nx_sfr_config *cfg=(void *)((unsigned)h+h->config_offset);
+                printf("{\"type\":\"fixture_hot\",\"generation\":%u,\"mail_seq\":%u,\"mail_consumed\":%u,\"mail_rejected\":%u,"
+                       "\"synced\":%u,\"applied\":%u,\"passthrough\":%u,\"rendered\":%u,\"s2_frames\":%u,"
+                       "\"captures\":%u,\"control_pause\":%u,\"refresh_pending\":%u,\"refresh_queued\":%u,"
+                       "\"look\":\"%s\",\"strength\":%u,\"enabled\":%u}\n",
+                       cfg->generation,ram_runtime->mail.seq,ram_runtime->mail_consumed,ram_runtime->mail_rejected,
+                       ram_runtime->synced_generation,ram_runtime->bridge.stats.applied_generation,
+                       ram_runtime->bridge.stats.passthrough,ram_runtime->bridge.stats.rendered,ram_runtime->s2_frames,
+                       ram_runtime->captures,ram_runtime->control_pause,ram_runtime->refresh_pending,ram_runtime->refresh_queued,
+                       cfg->look_id,cfg->strength,cfg->enabled);
+                REQUIRE(!fflush(stdout));
+            }
+            else if(command==154) {
+                /* One real frame boundary: IPCM frame callback first (the
+                 * hot-swap mailbox consumption point), then the preview frame
+                 * that runs ensure()/select against the committed config. */
+                filter_mode=15;
+                ram_refresh_callback();
+                ram_off_prepare(1); ram_off_worker();
+            }
+            else if(command==155) {
+                REQUIRE(!ram_pump);
+                ram_pump=1;
+                REQUIRE(!pthread_create(&ram_pump_thread,NULL,ram_pump_worker,NULL));
+            }
+            else if(command==157) {
+                REQUIRE(ram_pump);
+                __atomic_store_n(&ram_pump,0,__ATOMIC_RELEASE);
+                REQUIRE(!pthread_join(ram_pump_thread,NULL));
+            }
+            else if(command==158) {
+                /* Arm a still capture in the running stream worker without
+                 * waiting for it, so a control can run inside the capture
+                 * window. */
+#ifdef NX_LUT_SWITCH_FIXTURE
+                REQUIRE(!ram_stream_stop);
+                __atomic_store_n(&ram_stream_capture,1,__ATOMIC_RELEASE);
+#else
+                REQUIRE(0);
+#endif
+            }
+            else if(command==159) {
+#ifdef NX_LUT_SWITCH_FIXTURE
+                unsigned tries=0;
+                while(!__atomic_load_n(&ram_stream_captured,__ATOMIC_ACQUIRE)) { REQUIRE(++tries<3000); usleep(1000); }
+#else
+                REQUIRE(0);
+#endif
+            }
+            else if(command==161) {
+                /* Free-running stream: frames flow without the controlled
+                 * render block, so the stop-based pause machinery (whose
+                 * release watcher fires on control_pause) is never involved.
+                 * The hot path never pauses admission. */
+#ifdef NX_LUT_SWITCH_FIXTURE
+                ram_stream_stop=ram_stream_frames=ram_stream_processed=ram_stream_capture=ram_stream_captured=0;
+                REQUIRE(!pthread_create(&ram_stream,NULL,ram_stream_worker,NULL));
+#else
+                REQUIRE(0);
+#endif
+            }
+            else if(command==162) {
+#ifdef NX_LUT_SWITCH_FIXTURE
+                __atomic_store_n(&ram_stream_stop,1,__ATOMIC_RELEASE);
+                REQUIRE(!pthread_join(ram_stream,NULL)); ram_block=0;
+                REQUIRE(ram_stream_frames>1&&ram_stream_processed>0&&
+                        !ram_runtime->control_pause&&!ram_runtime->inflight&&!ram_runtime->backend_active);
+                printf("{\"type\":\"fixture_stream_free\",\"frames\":%u,\"processed\":%u,\"captures\":%u}\n",
+                       ram_stream_frames,ram_stream_processed,ram_stream_captured);
+                REQUIRE(!fflush(stdout));
+#else
+                REQUIRE(0);
+#endif
+            }
+            else if(command==163) {
+                REQUIRE(!ram_synth_busy);
+                ram_synth_inflight=ram_runtime->inflight;
+                ram_synth_backend=ram_runtime->backend_active;
+                __sync_fetch_and_add(&ram_runtime->inflight,1);
+                __sync_fetch_and_add(&ram_runtime->backend_active,1);
+                ram_synth_busy=1;
+                REQUIRE(!pthread_create(&ram_synth_thread,NULL,ram_synth_busy_worker,NULL));
+            }
+            else if(command==164) {
+                REQUIRE(!pthread_join(ram_synth_thread,NULL));
+                REQUIRE(ram_runtime->inflight==ram_synth_inflight&&
+                        ram_runtime->backend_active==ram_synth_backend&&!ram_runtime->control_pause);
+                printf("{\"type\":\"fixture_synth_busy_released\",\"inflight\":%u,\"backend\":%u}\n",
+                       ram_runtime->inflight,ram_runtime->backend_active);
+                REQUIRE(!fflush(stdout));
+            }
+            else if(command==160) {
+                /* One frame callback with the capture counter held, and no
+                 * trailing refresh: proves the mailbox consumption gate alone
+                 * (nothing else in this command may consume or queue). */
+                unsigned requests_before=ram_runtime->refresh_requests;
+                unsigned consumed_before=ram_runtime->mail_consumed;
+                ram_runtime->captures=1;
+                ram_refresh_callback();
+                ram_runtime->captures=0;
+                REQUIRE(ram_runtime->refresh_requests==requests_before&&
+                        ram_runtime->mail_consumed==consumed_before&&!ram_runtime->refresh_queued);
+                puts("{\"type\":\"fixture_mail_capture_gate\",\"held\":true}");
                 REQUIRE(!fflush(stdout));
             }
             else if(command==108||command==109) {

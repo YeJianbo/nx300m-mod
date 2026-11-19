@@ -9,6 +9,13 @@ static int feature_x11_mode_ready;
 static int feature_animation_ram_ready;
 static int feature_animation_mode=-1,feature_iso_lock=-1,feature_current_mode=-1;
 static int feature_auto_iso_max;
+extern int __lxstat64(int,const char *,struct stat64 *);
+extern int __fxstat64(int,int,struct stat64 *);
+/* LUT liveview fps cap (P2). 0/1/2 = old-card default, saved selection,
+ * invalid value that the readers fall back to 30 on. The live value is the
+ * saved card preference; the running cap only changes through the control
+ * chain (enable/sync), never from this page alone. */
+static int feature_saved_fps=30,feature_fps_state;
 static int feature_saved_mode_lock,feature_saved_animation,feature_saved_iso_lock;
 static char feature_values[NXUI_MAX_ITEMS][128];
 static unsigned char feature_disabled[NXUI_MAX_ITEMS];
@@ -35,6 +42,35 @@ static void feature_wireless_snapshot(void) {
     if(in){if(fgets(line,sizeof line,in)){line[strcspn(line,"\r\n")]=0;snprintf(feature_telnet_state,sizeof feature_telnet_state,"%.*s",31,line);}fclose(in);}
     in=fopen("/var/run/nx300m-telnet/listen","r");
     if(in){if(fgets(line,sizeof line,in)){line[strcspn(line,"\r\n")]=0;snprintf(feature_telnet_address,sizeof feature_telnet_address,"%.*s",63,line);}fclose(in);}
+}
+static void feature_read_lut_fps(const char *path) {
+    struct stat64 path_stat,fd_stat;
+    char bytes[4];size_t used=0;int fd,bad=0;
+    feature_saved_fps=30;feature_fps_state=0;
+    if(__lxstat64(3,path,&path_stat)){
+        if(errno!=ENOENT)feature_fps_state=2;
+        return;
+    }
+    if(!S_ISREG(path_stat.st_mode)){feature_fps_state=2;return;}
+    fd=open(path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
+    if(fd<0){feature_fps_state=2;return;}
+    if(__fxstat64(3,fd,&fd_stat)||!S_ISREG(fd_stat.st_mode))bad=1;
+    while(!bad&&used<sizeof bytes){
+        ssize_t n=read(fd,bytes+used,sizeof bytes-used);
+        if(n<0&&errno==EINTR)continue;
+        if(n<0){bad=1;break;}
+        if(!n)break;
+        used+=(size_t)n;
+    }
+    close(fd);
+    if(!bad&&used==3&&bytes[2]=='\n'){
+        if(bytes[0]=='3'&&bytes[1]=='0')feature_saved_fps=30;
+        else if(bytes[0]=='4'&&bytes[1]=='5')feature_saved_fps=45;
+        else if(bytes[0]=='6'&&bytes[1]=='0')feature_saved_fps=60;
+        else bad=1;
+        if(!bad){feature_fps_state=1;return;}
+    }
+    feature_fps_state=2;
 }
 static int feature_saved_value(const char *name,int fallback) {
     char path[NXUI_PATH],extra;int value;
@@ -104,6 +140,12 @@ static void feature_snapshot(void) {
         (ceiling==3200||ceiling==6400||ceiling==12800||ceiling==25600))feature_auto_iso_max=ceiling;
         fclose(in);}
     feature_lens_count=0;feature_lens_selected=-1;feature_focal=0;
+    /* Persisted LUT liveview fps cap. A missing file is the old-card default
+     * (30); a present but unreadable/invalid value shows its own fallback
+     * state instead of pretending it was selected. The same strict enum is
+     * re-validated by the preview script and the loader. */
+    snprintf(path,sizeof path,"%s/.state/lut-fps",nx_ui_data_root());
+    feature_read_lut_fps(path);
     snprintf(path,sizeof path,"%s/lenses.txt",nx_ui_data_root());in=fopen(path,"r");
     if(in){while(feature_lens_count<64&&fgets(line,sizeof line,in)){
         struct nx_ui_lens *lens=&feature_lenses[feature_lens_count];
@@ -163,6 +205,12 @@ static void feature_page(int page_id) {
             feature_iso_lock==6400?"开":feature_iso_lock==0?"关":feature_fw_loaded?"未读回":feature_saved_iso_lock?"已存开 · 待加载":"已存关 · 待加载",1);
         {char mode_value[128];snprintf(mode_value,sizeof mode_value,"当前 %s · 点按切 P/A/S/M",feature_mode_name(feature_current_mode));
          feature_add("软件切档","fw-mode",mode_value,feature_fw_loaded&&feature_current_mode>=0);}
+        {char fps_value[128];
+         const char *fps_next=feature_saved_fps==30?"45":feature_saved_fps==45?"60":"30";
+         const char *fps_note=feature_fps_state==2?" · 无效已回退":feature_fps_state==0?" · 默认":"";
+         snprintf(fps_value,sizeof fps_value,"%d fps%s · 点按切 %s%s",
+             feature_saved_fps,fps_note,fps_next,feature_preview_enabled?" · 同步":" · 启用预览后生效");
+         feature_add("LUT 取景帧率","lut-fps",fps_value,1);}
         char flag[NXUI_PATH];snprintf(flag,sizeof flag,"%s/DISABLED",nx_ui_data_root());
         feature_add("MOD 开机自动启动",access(flag,F_OK)?"disable-autostart":"enable-autostart",access(flag,F_OK)?"开":"关",1);
         feature_add("模块状态","modules","查看",1);feature_add("调试与日志","debug","进入",1);
@@ -249,6 +297,25 @@ static int feature_action(const char *action) {
     if(!strcmp(action,"lenses")){feature_page(3);return 1;}
     if(!strcmp(action,"exposure")){feature_page(4);return 1;}
     if(!strcmp(action,"settings")){feature_page(5);return 1;}
+    if(!strcmp(action,"lut-fps")){
+        /* Save failure and a saved selection stay distinct facts: the card
+         * write decides the message, and a running preview re-syncs through
+         * the same control chain a LUT change uses. The blob defers the
+         * sensor-rate rebuild while capture/encoding is busy. */
+        if(mfw_readonly){message("截图模式不保存设置");return 1;}
+        if(child){message("上一个操作仍在执行");return 1;}
+        int next=feature_saved_fps==30?45:feature_saved_fps==45?60:30;
+        char text[32];snprintf(text,sizeof text,"%d\n",next);
+        if(!nx_ui_pref_write("lut-fps",text)){message("保存失败 · 请重试");return 1;}
+        int page=mfw_preview;feature_page(page);
+        if(feature_preview_enabled&&access("/var/run/nx300m-lut-selection",F_OK)==0){
+            if(start_mfw_action("preview-sync"))return 1;
+            message("已保存 · 预览同步未能启动，下次预览操作生效");
+            return 1;
+        }
+        message(feature_preview_enabled?"已保存 · 当前预览无已选 LUT，下次同步生效":"已保存 · 启用预览后生效");
+        return 1;
+    }
     if(!strcmp(action,"lens-select")){feature_page(6);return 1;}
     if(!strcmp(action,"lens-info")){feature_page(9);return 1;}
     if(!strcmp(action,"connection")){

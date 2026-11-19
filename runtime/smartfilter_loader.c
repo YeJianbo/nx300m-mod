@@ -40,6 +40,7 @@ static int admission_file_hash(int,unsigned,const char *);
 /* Fault injection is admitted only for the named isolated fixture process. */
 static int fixture_fail_slot=-1;
 static int timing_requested=-1;
+static int fps_limit_requested=-1;
 #ifdef NX_SFR_SESSION
 static int session_requested=-1,calltrace_requested=-1;
 #endif
@@ -75,6 +76,16 @@ static int state_path(unsigned pid,char *path,unsigned size) {
     if(statfs("/var/run",&fs)||((unsigned long)fs.f_type!=0x01021994UL&&(unsigned long)fs.f_type!=0x858458f6UL)) return 0;
     return snprintf(path,size,"/var/run/nx300m-smartfilter-%u.state",pid)>0;
 }
+/* Stop-free write into target RAM via /proc/pid/mem: permission-checked like
+ * ptrace, but no attach and no thread stop. Used only for the resident hot
+ * mailbox, which stays inert until the final single-word seq publish. */
+static int poke_free(unsigned pid,uint32_t address,const void *data,unsigned length) {
+    char path[64]; snprintf(path,sizeof path,"/proc/%u/mem",pid);
+    int fd=open(path,O_WRONLY|O_CLOEXEC); if(fd<0) return 0;
+    int ok=pwrite(fd,data,length,(off_t)address)==(off_t)length;
+    if(close(fd)) ok=0;
+    return ok;
+}
 static int state_read(const char *path,unsigned pid,struct ram_state *s) {
     int fd=open(path,O_RDONLY|O_CLOEXEC|O_NOFOLLOW); if(fd<0) return 0;
     struct stat64 st;
@@ -102,7 +113,7 @@ static void target_close(struct target *t) {
 }
 static int fixture_bindings(unsigned pid,struct target *t) {
     char path[64]; snprintf(path,sizeof path,"/proc/%u/exe",pid);
-    int fd=open(path,O_RDONLY|O_CLOEXEC); if(fd<0) return 0;
+    int fd=open(path,O_RDONLY|O_CLOEXEC); if(fd<0) { fprintf(stderr,"Fixture binding link unreadable errno=%d.\n",errno); return 0; }
     Elf32_Ehdr eh; int ok=read_exact(fd,&eh,sizeof eh,0)&&eh.e_type==ET_EXEC&&eh.e_machine==EM_ARM&&
         eh.e_shentsize==sizeof(Elf32_Shdr)&&eh.e_shnum>0&&eh.e_shnum<=256;
     unsigned address=0;
@@ -124,8 +135,15 @@ static int fixture_bindings(unsigned pid,struct target *t) {
         free(names);
     }
     close(fd);
-    return ok&&address&&cover(address,sizeof t->fixture_api,1,0)&&read_exact(t->mem,&t->fixture_api,sizeof t->fixture_api,address)&&
-        t->fixture_api.magic==NX_SFR_MAGIC&&t->fixture_api.size==sizeof t->fixture_api;
+    if(!ok||!address) { fprintf(stderr,"Fixture binding symbol unavailable in the original executable.\n"); return 0; }
+    if(!cover(address,sizeof t->fixture_api,1,0)||!read_exact(t->mem,&t->fixture_api,sizeof t->fixture_api,address)) {
+        fprintf(stderr,"Fixture binding unreadable at %08x errno=%d.\n",address,errno); return 0;
+    }
+    if(t->fixture_api.magic!=NX_SFR_MAGIC||t->fixture_api.size!=sizeof t->fixture_api) {
+        fprintf(stderr,"Fixture binding identity differs magic=%08x size=%u expected=%u.\n",
+                t->fixture_api.magic,t->fixture_api.size,(unsigned)sizeof t->fixture_api); return 0;
+    }
+    return 1;
 }
 static int original_allowed(const struct target *t,unsigned slot,unsigned address) {
     if(address==t->images[stock_slots[slot].image].bias+stock_slots[slot].address) return 1;
@@ -166,12 +184,14 @@ static int target_sites(unsigned pid,int fixture,struct target *t) {
 }
 static int target_open(unsigned pid,int fixture,struct target *t) {
     char path[96],exe[512]; snprintf(path,sizeof path,"/proc/%u/exe",pid);
-    ssize_t n=readlink(path,exe,sizeof exe-1); if(n<0) return 0; exe[n]=0;
+    ssize_t n=readlink(path,exe,sizeof exe-1); if(n<0) { fprintf(stderr,"Original executable link unreadable errno=%d.\n",errno); return 0; } exe[n]=0;
     if(strcmp(base(exe),fixture?"smartfilter_fixture.arm":"di-camera-app-nx300")) {
         fprintf(stderr,"Original executable name differs: %s\n",exe); return 0;
     }
     struct thread thread;
-    if(!task_identity(pid,pid,&thread)||!load_maps(pid)) return 0;
+    if(!task_identity(pid,pid,&thread)||!load_maps(pid)) {
+        fprintf(stderr,"Original process identity or maps unreadable errno=%d.\n",errno); return 0;
+    }
     t->start=thread.start;
     admission_cache_begin(pid,t->start,fixture);
     int fd=open(path,O_RDONLY|O_CLOEXEC);
@@ -186,7 +206,8 @@ static int target_open(unsigned pid,int fixture,struct target *t) {
         if(!ok||__fxstat64(3,t->images[i].fd,&t->image_file[i])) { fprintf(stderr,"Original image admission failed: %s expected_bytes=%u errno=%d\n",stock_images[i].name,stock_images[i].size,errno); return 0; }
         t->image_mapping[i]=*t->images[i].first;
     }
-    snprintf(path,sizeof path,"/proc/%u/mem",pid); t->mem=open(path,O_RDONLY|O_CLOEXEC); if(t->mem<0) return 0;
+    snprintf(path,sizeof path,"/proc/%u/mem",pid); t->mem=open(path,O_RDONLY|O_CLOEXEC);
+    if(t->mem<0) { fprintf(stderr,"Original memory unreadable errno=%d.\n",errno); return 0; }
     if(!target_sites(pid,fixture,t)) return 0;
     admission_cache_save(); return 1;
 }
@@ -364,6 +385,9 @@ static void status(unsigned pid,const char *command,int installed,const struct n
         "\"mode_forged\":[%u,%u,%u,%u],\"mode_stock\":%u,\"work_managed\":%u,\"work_stock\":%u,"
         "\"mapping_retained\":%s,\"diag_window\":%u,\"diag_frames\":%u,\"diag_frozen\":%u,\"diag_dropped\":%u,\"diag_clock_errors\":%u,"
         "\"start\":%llu,\"build\":%u,\"token\":\"%s\",\"probe_once\":%u,\"probe_state\":%u,\"probe_outcome\":%u,"
+#ifdef NX_SFR_SESSION
+        "\"fps_limit\":%u,\"mail_seq\":%u,\"mail_consumed\":%u,\"mail_rejected\":%u,"
+#endif
         "\"refresh_requests\":%u,\"refresh_dispatches\":%u,\"refresh_error\":%d,"
         "\"refresh_pending\":%u,\"refresh_resumes\":%u,\"refresh_state\":%u,\"refresh_wakeups\":%u,"
 #ifdef NX_SFR_SESSION
@@ -388,7 +412,11 @@ static void status(unsigned pid,const char *command,int installed,const struct n
         s->mode_forged[0],s->mode_forged[1],s->mode_forged[2],s->mode_forged[3],s->mode_stock,s->work_managed,s->work_stock,
         c->abi==NX_SFR_ABI?"true":"false",s->timing.window,s->timing.next_frame,
         s->timing.frozen,s->timing.dropped,s->timing.clock_errors,
-        start,NX_SFR_BUILD,token,c->probe_once,s->probe.state,s->probe.outcome,refresh_requests,refresh_dispatches,refresh_error,
+        start,NX_SFR_BUILD,token,c->probe_once,s->probe.state,s->probe.outcome,
+#ifdef NX_SFR_SESSION
+        c->fps_limit,s->mail.seq,s->mail_consumed,s->mail_rejected,
+#endif
+        refresh_requests,refresh_dispatches,refresh_error,
         refresh_pending,refresh_resumes,refresh_state,refresh_wakeups
 #ifdef NX_SFR_SESSION
         ,s->session.opens,s->session.closes,s->session.frames,s->session.busy,s->session.lock_busy,
@@ -481,6 +509,134 @@ static int session_export(const struct nx_sfr_config *c,const struct nx_sfr_runt
 }
 #include "ipcs_kdd_probe.h"
 #endif
+#ifdef NX_SFR_SESSION
+/* Stop-free table swap for an already-installed, enabled, same-topology S2
+ * preview. Publishes the latest full request into the resident mailbox while
+ * the camera keeps running; the frame callback consumes it at a safe frame
+ * boundary after its own full re-validation, and this side verifies the
+ * applied generation before reporting success. First install, disabled
+ * preview, strength/topology changes, faults, uncertain session state and
+ * mismatched residents return -1, and the caller falls through to the full
+ * stop-based transaction with all of its guards. */
+static int hot_transaction(unsigned pid,struct target *t,const char *path,
+                           const struct nx_sfr_header *h,const unsigned char *blob,
+                           const char *look,unsigned strength,const unsigned short *table_words,
+                           struct ram_state *s,struct nx_sfr_config *cfg,
+                           struct nx_sfr_runtime *runtime) {
+    unsigned long long started=now_ms();
+    if(access(path,F_OK)!=0||!state_read(path,pid,s)||!resident(t,s,h,blob,cfg,runtime)||
+       !slots_match(t,s,h,1)) {
+        fprintf(stderr,"Hot transaction: resident not verifiable stop-free; full transaction follows.\n");
+        return -1;
+    }
+    if(cfg->profile!=NX_SFR_S2||!cfg->enabled||!cfg->strength||!strength||cfg->probe_once||
+       !id_valid(look)) {
+        fprintf(stderr,"Hot transaction: resident state not hot-eligible (profile/enabled/strength); full transaction follows.\n");
+        return -1;
+    }
+    unsigned fps=fps_limit_requested>=0?(unsigned)fps_limit_requested:cfg->fps_limit;
+    if(cfg->generation==UINT32_MAX) return -1;
+    /* Steady predicates must hold outright; transient session churn (a frame
+     * entering/leaving, the internal spin lock, a first-frame OPENING) only
+     * delays the read a bounded few frames before the full stop-based
+     * transaction takes over. captures>0 is deliberately not a blocker: the
+     * mailbox keeps exactly the latest request until the boundary frees. */
+    struct nx_sfr_runtime live;
+    unsigned try=0;
+    for(;;) {
+        if(!read_exact(t->mem,&live,sizeof live,s->runtime)) return -1;
+        unsigned session_state=live.session.state;
+        if(live.bridge.fault||live.control_pause||live.stream_stopped||
+           live.refresh_pending||live.refresh_queued||live.session.held>=2||
+           (session_state!=NX_IPS_IDLE&&session_state!=NX_IPS_READY)) {
+            fprintf(stderr,"Hot transaction: not hot-eligible (fault=%u pause=%u stream_stopped=%u "
+                    "refresh=%u/%u held=%u session_state=%u).\n",
+                    live.bridge.fault,live.control_pause,live.stream_stopped,
+                    live.refresh_pending,live.refresh_queued,live.session.held,session_state);
+            return -1;
+        }
+        if(!live.session.active&&!live.session.mutex) break;
+        if(++try>6) {
+            fprintf(stderr,"Hot transaction: session churn persisted; full transaction follows.\n");
+            return -1;
+        }
+        struct timespec churn={0,20000000}; nanosleep(&churn,NULL);
+    }
+    /* The resident 0 fps_limit and an explicit 30 mean the same effective cap;
+     * compare effective values so a first sync after install is still a skip. */
+    unsigned resident_fps=cfg->fps_limit?cfg->fps_limit:30U;
+    if(cfg->generation==live.synced_generation&&cfg->generation==live.bridge.stats.applied_generation&&
+       !live.mail.seq&&!strcmp(cfg->look_id,look)&&cfg->strength==strength&&resident_fps==(fps?fps:30U)&&
+       !memcmp(cfg->table,table_words,sizeof cfg->table)) {
+        fprintf(stderr,"Hot transaction: skipped elapsed_ms=%llu generation=%u stop_windows=0 "
+                "reason=latest-request-already-applied.\n",now_ms()-started,cfg->generation);
+        return 0;
+    }
+    unsigned generation=cfg->generation+1;
+    struct nx_sfr_mailbox mail; memset(&mail,0,sizeof mail);
+    /* seq carries the target generation: the single word published last. */
+    mail.seq=generation; mail.generation=generation; mail.strength=strength; mail.fps_limit=fps;
+    snprintf(mail.look_id,sizeof mail.look_id,"%s",look);
+    memcpy(mail.table,table_words,sizeof mail.table);
+    const unsigned char *hashed=(const unsigned char *)&mail.generation;
+    const unsigned char *hashed_end=(const unsigned char *)(mail.table+NX_SF_TABLE_WORDS);
+    unsigned hash=2166136261U;
+    while(hashed<hashed_end) { hash^=*hashed++; hash*=16777619U; }
+    mail.checksum=hash;
+    uint32_t base=s->runtime+offsetof(struct nx_sfr_runtime,mail);
+    /* Everything after seq in one publish, then seq last: the mailbox stays
+     * inert for the consumer until the complete request is present. */
+    if(!poke_free(pid,base+sizeof(unsigned),(const unsigned char *)&mail+sizeof(unsigned),
+                  sizeof mail-sizeof(unsigned))) return -1;
+    unsigned seq_publish=mail.seq;
+    if(!poke_free(pid,base,&seq_publish,sizeof seq_publish)) return -1;
+    unsigned long long budget=2000,rejected_before=live.mail_rejected,extended=0;
+    { const char *override=getenv("NX_SF_HOT_POLL_MS");
+      if(override&&*override) {
+          /* Digits only: the toolchain's atol resolves to a glibc-2.38
+           * symbol the target libc does not ship. */
+          unsigned long long value=0; const char *digit=override;
+          while(*digit>='0'&&*digit<='9') { value=value*10U+((unsigned long long)(*digit-'0')); ++digit; }
+          if(!*digit&&value>=100) budget=value;
+      } }
+    unsigned long long deadline=now_ms()+budget;
+    struct timespec pause={0,5000000};
+    for(;;) {
+        if(!read_exact(t->mem,&live,sizeof live,s->runtime)) return -1;
+        if(live.mail_rejected!=rejected_before) {
+            fprintf(stderr,"Hot transaction: the resident rejected the published request; no target change.\n");
+            return 3;
+        }
+        if(live.synced_generation==generation&&live.bridge.stats.applied_generation==generation) {
+            cfg->generation=generation; cfg->strength=strength; cfg->fps_limit=fps;
+            cfg->enabled=1; cfg->insert_enabled=1;
+            strcpy(cfg->look_id,look); memcpy(cfg->table,table_words,sizeof cfg->table);
+            *runtime=live;
+            fprintf(stderr,"Hot transaction: applied elapsed_ms=%llu generation=%u stop_windows=0.\n",
+                    now_ms()-started,generation);
+            return 0;
+        }
+        if(now_ms()>=deadline) {
+            if(live.captures&&!extended) { deadline=now_ms()+8000; extended=1; continue; }
+            printf("{\"command\":\"hot-apply\",\"status\":\"pending\",\"generation\":%u,\"applied_generation\":%u,"
+                   "\"selected_generation\":%u,\"synced_generation\":%u,\"resident_generation\":%u,"
+                   "\"mail_armed\":%u,\"mail_consumed\":%u,\"mail_rejected\":%u,\"s2_frames\":%u,"
+                   "\"captures\":%u,\"elapsed_ms\":%llu}\n",
+                   generation,live.bridge.stats.applied_generation,live.bridge.stats.selected_generation,
+                   live.synced_generation,live.mail.generation,live.mail.seq,live.mail_consumed,live.mail_rejected,
+                   live.s2_frames,live.captures,now_ms()-started);
+            fprintf(stderr,"Hot transaction: pending elapsed_ms=%llu generation=%u applied=%u selected=%u synced=%u "
+                    "mail_armed=%u consumed=%u rejected=%u stop_windows=0; the latest request stays armed "
+                    "for the next safe frame boundary.\n",
+                    now_ms()-started,generation,live.bridge.stats.applied_generation,
+                    live.bridge.stats.selected_generation,live.synced_generation,
+                    live.mail.seq,live.mail_consumed,live.mail_rejected);
+            return 76;
+        }
+        nanosleep(&pause,NULL);
+    }
+}
+#endif
 static int execute(unsigned pid,const char *command,const char *blob_path,const char *table,const char *look,unsigned strength,int fixture,int s2,struct target *t) {
 #ifdef NX_SFR_SESSION
     if(!strcmp(command,"kdd-probe")) return kdd_observe(pid,blob_path,fixture);
@@ -495,7 +651,7 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     unsigned diag_epoch=0; int status_pending=0,export_pending=0,probe_save_pending=0,timing_attempted=0,probe_attempted=0;
     unsigned allocated_work=0,allocated_region=0;
 #ifdef NX_SFR_SESSION
-    int session_control_attempted=0;
+    int session_control_attempted=0,mailbox_attempted=0;
 #endif
     struct stopped *allocation_leader=NULL;
     struct kept_timing *kept=NULL;
@@ -503,10 +659,11 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     int keep_pending=0;
     if(probe_once_requested) { probe_identity(requested); look="identity"; strength=100; s2=1; }
     if(!state_path(pid,path,sizeof path)||!blob_read(blob_path,&blob,&h)||
-       (!strcmp(command,"apply")&&(!id_valid(look)||(!probe_once_requested&&!table_read(table,requested))))) {
+       ((!strcmp(command,"apply")||!strcmp(command,"hot-apply"))&&
+        (!id_valid(look)||(!probe_once_requested&&!table_read(table,requested))))) {
         fprintf(stderr,"Invalid native module/table or non-RAM state directory; no target changed.\n"); free(blob); return 3;
     }
-    if((!strcmp(command,"apply")||!strcmp(command,"stock"))&&
+    if((!strcmp(command,"apply")||!strcmp(command,"stock")||!strcmp(command,"hot-apply"))&&
        !wait_for_liveview("SmartFilter",pid,12000,fixture)) {
         free(blob);return 75;
     }
@@ -517,11 +674,26 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     fprintf(stderr,"Control admission: %s elapsed_ms=%llu cache_hits=%u hashed_files=%u\n",
             reused?"reused_authenticated_files":admission_cache_hits?"cached_file_identity":"full_hash",
             now_ms()-admission_at,admission_cache_hits,admission_cache_misses);
+    int hot_done=0,stopped_threads=0;
+    unsigned long long t_attach=0,t_checks=0,t_commit=0,t_detach=0;
+#ifdef NX_SFR_SESSION
+    if(!strcmp(command,"hot-apply")) {
+        int hot=hot_transaction(pid,t,path,&h,blob,look,strength,requested,&s,&cfg,&runtime);
+        if(hot>=0) {
+            rc=hot; hot_done=1;
+            if(!rc) { installed=1; status_pending=1; }
+            goto done;
+        }
+        /* Not eligible: the full stop-based transaction below keeps first
+         * install, recovery and topology changes on the guarded path. */
+    }
+#endif
     diag_ledger_load(&ledger,pid,t->start,h.build);
     /* Optional diagnostics must not make restore depend on allocation. Allocate
      * before stopping the target; the authoritative copy is taken after drain. */
     if(keep_timing&&fixture_keep_failure!=1) kept=malloc(sizeof *kept);
     stop_begin=diag_now(); stopped_at=now_ms();
+    stopped_threads=1;
     if(!attach_all(pid)) {
         int detached=detach_all();
         if(detached) diag_ledger_save(&ledger,stop_begin,diag_now(),0);
@@ -529,6 +701,7 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
         fprintf(stderr,"Thread admission failed; detached=%d.\n",detached);
         return detached&&!abort_requested?4:3;
     }
+    t_attach=now_ms(); t_checks=t_attach; t_commit=t_attach; t_detach=t_attach;
     if(!target_refresh(pid,fixture,t)) { fprintf(stderr,"Original process or mappings changed during admission.\n"); goto done; }
     int has_state=access(path,F_OK)==0;
     if(has_state) {
@@ -589,7 +762,28 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     session_busy=runtime.session.held||runtime.session.active||runtime.session.state==NX_IPS_OPENING||
                  runtime.session.state==NX_IPS_DRAINING||runtime.session.mutex;
 #endif
+    /* Attribute every pause to its concrete owner so the card log can tell a
+     * still capture from a preview frame, an unreleased session reference and
+     * a thread still inside module code. */
+#ifdef NX_SFR_SESSION
+    unsigned pause_b2y=runtime.b2y_leases,pause_state=runtime.session.state,
+             pause_held=runtime.session.held,pause_active=runtime.session.active,
+             pause_mutex=runtime.session.mutex;
+#else
+    unsigned pause_b2y=0,pause_state=0,pause_held=0,pause_active=0,pause_mutex=0;
+#endif
+#define NX_SF_PAUSE_LINE do { \
+    unsigned in_module=0; \
+    for(unsigned i=0;has_state&&i<nstops;++i) \
+        if(stops[i].regs.r[15]>=s.region&&stops[i].regs.r[15]<s.region+h.code_size) ++in_module; \
+    fprintf(stderr,"Pause attempt: inflight=%u backend=%u captures=%u b2y_leases=%u ipcs=%u/%u/%u " \
+            "session_state=%u held=%u active=%u mutex=%u pc_in_module=%u.\n", \
+            runtime.inflight,runtime.backend_active,runtime.captures,pause_b2y, \
+            runtime.ipcs.held,runtime.ipcs.opened,runtime.ipcs.touched, \
+            pause_state,pause_held,pause_active,pause_mutex,in_module); } while(0)
     if(runtime.inflight||runtime.backend_active||runtime.captures||runtime.ipcs.held||runtime.ipcs.opened||runtime.ipcs.touched||session_busy) {
+        NX_SF_PAUSE_LINE;
+        t_checks=now_ms(); t_commit=t_checks;
         unsigned paused=1;
         if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,control_pause),&paused,4)) goto done;
 #ifdef NX_SFR_SESSION
@@ -603,7 +797,18 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
         pause_owner=(struct nx_sfr_expect){pid,h.build,runtime.timing.window,cfg.generation,t->start,1};
         fprintf(stderr,"Native frame/capture in flight; preview admission paused until control transaction completes.\n"); rc=4; goto done;
     }
-    for(unsigned i=0;has_state&&i<nstops;++i) if(stops[i].regs.r[15]>=s.region&&stops[i].regs.r[15]<s.region+h.code_size) { rc=4; goto done; }
+    if(has_state) {
+        unsigned in_module=0;
+        for(unsigned i=0;i<nstops;++i)
+            if(stops[i].regs.r[15]>=s.region&&stops[i].regs.r[15]<s.region+h.code_size) ++in_module;
+        if(in_module) {
+            NX_SF_PAUSE_LINE;
+            t_checks=now_ms(); t_commit=t_checks;
+            rc=4; goto done;
+        }
+    }
+#undef NX_SF_PAUSE_LINE
+    t_checks=now_ms();
     if(runtime.bridge.fault&&strcmp(command,"restore")) { fprintf(stderr,"Backend recovery required; restore the candidate first.\n"); goto done; }
     if(!has_state) {
         if(!strcmp(command,"restore")) { status_pending=1; rc=0; goto done; }
@@ -651,8 +856,18 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     if(cfg.generation==UINT32_MAX) goto done;
     ++cfg.generation; cfg.enabled=strcmp(command,"restore")!=0;
     if(timing_requested>=0) cfg.timing_enabled=(unsigned)timing_requested;
+#ifdef NX_SFR_SESSION
+    /* Control-stage input only; absent keeps the resident value, a fresh
+     * install keeps 0 (the blob's 30 fps default). Strictly re-validated.
+     * The ABI4 build accepts the argument for one shared script surface but
+     * has no liveview cap, so the value is ignored there. */
+    if(fps_limit_requested>=0) cfg.fps_limit=(unsigned)fps_limit_requested;
+#endif
     cfg.insert_enabled=cfg.profile==NX_SFR_S2&&cfg.enabled;
-    cfg.strength=!strcmp(command,"apply")?strength:0;
+    /* The hot-apply fallback commits exactly like apply: a not-eligible hot
+     * request is still a real LUT request, never a stock/disable one. */
+    int applying=!strcmp(command,"apply")||!strcmp(command,"hot-apply");
+    cfg.strength=applying?strength:0;
 #ifdef NX_SFR_SESSION
     if(session_requested>=0) cfg.session_mode=(unsigned)session_requested;
     if(calltrace_requested>=0) cfg.calltrace_enabled=(unsigned)calltrace_requested;
@@ -661,10 +876,18 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     cfg.probe_once=probe_once_requested?1U:0U;
     if(cfg.probe_once) cfg.timing_enabled=1;
     memset(cfg.table,0,sizeof cfg.table); memset(cfg.look_id,0,sizeof cfg.look_id);
-    strcpy(cfg.look_id,!strcmp(command,"apply")?look:"stock");
-    if(!strcmp(command,"apply")) memcpy(cfg.table,requested,sizeof requested);
+    strcpy(cfg.look_id,applying?look:"stock");
+    if(applying) memcpy(cfg.table,requested,sizeof requested);
     if(abort_requested) goto done;
     config_attempted=1; if(!poke(pid,s.config,&cfg,sizeof cfg)) goto done;
+#ifdef NX_SFR_SESSION
+    /* A full transaction supersedes any armed hot-swap request: clear it while
+     * every thread is stopped, so the consumer can never apply a stale table
+     * over the freshly committed config. Rollback restores the armed value. */
+    mailbox_attempted=1;
+    unsigned mail_zero=0;
+    if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,mail.seq),&mail_zero,4)) goto done;
+#endif
     int installing=strcmp(command,"restore")!=0||cfg.profile==NX_SFR_S2;
     for(unsigned i=0;i<owned_slots(&s);++i) {
         unsigned desired=installing?s.region+h.entry[i]:t->original[i],actual;
@@ -702,6 +925,7 @@ static int execute(unsigned pid,const char *command,const char *blob_path,const 
     }
 #endif
     { unsigned paused=0; if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,control_pause),&paused,4)) goto done; }
+    t_commit=now_ms();
     pause_owner.present=0;
     runtime.control_pause=0; runtime.timing=armed; runtime.probe=probe;
     installed=installing; status_pending=1; rc=0;
@@ -718,6 +942,12 @@ done:
         if(timing_attempted&&!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,timing),&runtime.timing,sizeof runtime.timing)) transaction_poisoned=1;
         for(int i=attempted-1;i>=0;--i) { unsigned actual; if(!poke(pid,t->slot[i],&t->value[i],4)||!read_exact(t->mem,&actual,4,t->slot[i])||actual!=t->value[i]) transaction_poisoned=1; }
         if(config_attempted) { struct nx_sfr_config check; if(!poke(pid,s.config,&prior_cfg,sizeof prior_cfg)||!read_exact(t->mem,&check,sizeof check,s.config)||memcmp(&check,&prior_cfg,sizeof check)) transaction_poisoned=1; }
+#ifdef NX_SFR_SESSION
+        if(mailbox_attempted) {
+            unsigned mail_restore=runtime.mail.seq;
+            if(!poke(pid,s.runtime+offsetof(struct nx_sfr_runtime,mail.seq),&mail_restore,4)) transaction_poisoned=1;
+        }
+#endif
     }
     /* Only unpublished allocations, with no recovery file and no exposed
      * hook, can be reclaimed here. Published mappings survive all rollbacks. */
@@ -735,9 +965,10 @@ done:
     free(blob);
     if(transaction_poisoned) { free(kept); fprintf(stderr,"Context/rollback recovery incomplete; tracer retained.\n"); return 5; }
     if(!detach_all()) { free(kept); return 5; }
+    t_detach=now_ms();
     struct nx_sft_time stop_end=diag_now();
     unsigned long long stopped_duration=now_ms()-stopped_at;
-    diag_ledger_save(&ledger,stop_begin,stop_end,diag_epoch);
+    if(!hot_done) diag_ledger_save(&ledger,stop_begin,stop_end,diag_epoch);
     if(!rc&&status_pending) {
 #ifdef NX_SFR_SESSION
         if(status_pending==2) { if(!session_export(&cfg,&runtime,pid,&ledger,fixture)) rc=3; }
@@ -773,7 +1004,9 @@ done:
         }
     }
     free(kept);
-    fprintf(stderr,"Target stop window: %llu ms; file verification ran before attach.\n",stopped_duration);
+    if(stopped_threads)
+        fprintf(stderr,"Target stop window: %llu ms; attach=%llu checks=%llu commit=%llu detach=%llu; file verification ran before attach.\n",
+                stopped_duration,t_attach-stopped_at,t_checks-t_attach,t_commit-t_checks,t_detach-t_commit);
     if(rc==3) fprintf(stderr,"SmartFilter admission/transaction failed; exit=3.\n");
     return rc;
 }
@@ -803,8 +1036,10 @@ static int supervise(unsigned pid,const char *command,const char *blob,const cha
          * drain/recovery retries. Every attach rechecks the live sites. */
         struct target target;target_init(&target);
         int result;
+        unsigned attempts=0;
         for(;;) {
             result=execute(pid,command,blob,table,look,strength,fixture,s2,&target);
+            ++attempts;
             if(result!=4||abort_requested) break;
             /* Hashing the native images precedes the first pause request.
              * Start the drain budget only after that request, and always give
@@ -813,6 +1048,7 @@ static int supervise(unsigned pid,const char *command,const char *blob,const cha
             else if(now_ms()>=control_deadline) break;
             struct timespec pause={0,1000000}; nanosleep(&pause,NULL);
         }
+        fprintf(stderr,"Control attempts: count=%u.\n",attempts);
         if(result&&result!=5&&pause_owner.present) {
             /* After verified detach, cancellation still owes admission
              * restoration. This recovery does not submit the cancelled LUT. */
@@ -860,7 +1096,7 @@ int main(int argc,char **argv) {
     if(strcmp(command,"status")&&strcmp(command,"apply")&&strcmp(command,"stock")&&strcmp(command,"restore")&&
        strcmp(command,"diag-export")&&strcmp(command,"probe-save")
 #ifdef NX_SFR_SESSION
-       &&strcmp(command,"open-export")&&strcmp(command,"kdd-probe")
+       &&strcmp(command,"open-export")&&strcmp(command,"kdd-probe")&&strcmp(command,"hot-apply")
 #endif
        ) goto usage;
     for(int i=first;i<argc;++i) {
@@ -900,6 +1136,15 @@ int main(int argc,char **argv) {
             if(strcmp(value,"0")&&strcmp(value,"1")) goto usage;
             timing_requested=value[0]-'0';
         }
+        else if(!strcmp(argv[i],"--fps-limit")) {
+            const char *value=argv[++i];
+            /* Exact enum only; anything else is a usage error, never a
+             * silent fallback — the card-side fallback lives in the script. */
+            if(!strcmp(value,"30")) fps_limit_requested=30;
+            else if(!strcmp(value,"45")) fps_limit_requested=45;
+            else if(!strcmp(value,"60")) fps_limit_requested=60;
+            else goto usage;
+        }
         else if(!strcmp(argv[i],"--blob")) blob=argv[++i];
         else if(!strcmp(argv[i],"--table")) table=argv[++i];
         else if(!strcmp(argv[i],"--look")) look=argv[++i];
@@ -913,12 +1158,13 @@ int main(int argc,char **argv) {
 #ifdef NX_SFR_SESSION
     s2=1;
     if((session_requested>=0||calltrace_requested>=0)&&
-       strcmp(command,"apply")&&strcmp(command,"stock")&&strcmp(command,"restore")) goto usage;
+       strcmp(command,"apply")&&strcmp(command,"stock")&&strcmp(command,"restore")&&
+       strcmp(command,"hot-apply")) goto usage;
 #endif
     if(probe_once_requested) {
         if(strcmp(command,"apply")||table||look||strength_given||timing_requested==0) goto usage;
         s2=1; timing_requested=1;
-    } else if(!strcmp(command,"apply")&&(!table||!look)) goto usage;
+    } else if((!strcmp(command,"apply")||!strcmp(command,"hot-apply"))&&(!table||!look)) goto usage;
     if(probe_expect.present&&(probe_expect.pid!=pid||
        (strcmp(command,"status")&&strcmp(command,"diag-export")&&strcmp(command,"probe-save")
 #ifdef NX_SFR_SESSION
@@ -938,6 +1184,7 @@ int main(int argc,char **argv) {
        (strcmp(diag_log_path,"/mnt/mmc/nx300m-mod/logs/fn-key.log")&&
         (!fixture||strcmp(diag_log_path,"/perf/fn-key.log"))))) goto usage;
     if(timing_requested>=0&&(!strcmp(command,"status")||!strcmp(command,"diag-export")||!strcmp(command,"probe-save"))) goto usage;
+    if(fps_limit_requested>=0&&(!strcmp(command,"status")||!strcmp(command,"diag-export")||!strcmp(command,"probe-save"))) goto usage;
 #ifdef NX_SFR_SESSION
     /* The observer retains its authenticated descriptors across first-frame
      * waiting and acquires control/media/preview leases only for attachment. */
@@ -959,6 +1206,6 @@ int main(int argc,char **argv) {
     int result=supervise(pid,command,blob,table,look,strength,fixture,s2);
     close(lock); return result;
 usage:
-    fprintf(stderr,"usage: smartfilter_loader.arm [status|apply|stock|restore|diag-export|probe-save] --pid PID --blob FILE [--table FILE --look ID --strength 0..100 | --probe-once] [--expect PID:START:BUILD:WINDOW:GEN] [--probe-file FILE --source-id DEV:INO --ack-idle-no-capture] [--timing 0|1] [--keep-timing (restore only)] [--s2] [--fixture]\n");
+    fprintf(stderr,"usage: smartfilter_loader.arm [status|apply|stock|restore|hot-apply|diag-export|probe-save] --pid PID --blob FILE [--table FILE --look ID --strength 0..100 | --probe-once] [--expect PID:START:BUILD:WINDOW:GEN] [--probe-file FILE --source-id DEV:INO --ack-idle-no-capture] [--timing 0|1] [--fps-limit 30|45|60] [--keep-timing (restore only)] [--s2] [--fixture]\n");
     return 64;
 }

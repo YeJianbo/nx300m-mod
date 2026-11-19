@@ -1,4 +1,4 @@
-#ifndef NX_LUT_TABLE_CACHE_H
+﻿#ifndef NX_LUT_TABLE_CACHE_H
 #define NX_LUT_TABLE_CACHE_H
 #include <errno.h>
 #include <fcntl.h>

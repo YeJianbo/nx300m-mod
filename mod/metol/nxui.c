@@ -1342,6 +1342,8 @@ static void poll_child(void) {
             }
             else if (lut_mode && persist_unconfirmed) snprintf(status, sizeof status, "已应用 %s · 保存耐久未确认，可重试", recipes[request_index].label);
             else if (lut_mode && strstr(output, "PERSIST-WARNING")) snprintf(status, sizeof status, "已暂存 %s · 未保存到卡，仅本次有效", recipes[request_index].label);
+            else if (lut_mode && strstr(output, "LUT_PREVIEW_DEFERRED")) snprintf(status, sizeof status, "已保存 %s · 强度 %d%% · 取景恢复后同步预览", recipes[request_index].label, lut_request_inflight.strength);
+            else if (lut_mode && strstr(output, "LUT_PREVIEW_BUSY_PENDING")) snprintf(status, sizeof status, "已保存 %s · 强度 %d%% · 拍摄结束后生效", recipes[request_index].label, lut_request_inflight.strength);
             else if (lut_mode) snprintf(status, sizeof status, "已暂存 %s · 强度 %d%% · 等待原厂 LUT 重载", recipes[request_index].label, lut_request_inflight.strength);
             else snprintf(status, sizeof status, "预览已应用：%s", recipes[busy_recipe].label);
             dirty = 1;
